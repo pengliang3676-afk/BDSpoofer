@@ -1,10 +1,17 @@
 //
 //  BDSpoofer.m
-//  百度极速版设备信息虚拟化插件（基础版）
+//  百度极速版设备信息虚拟化插件
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
-//  基础版只 hook 低风险的系统 API，不拦截 Keychain/Cookie/User-Agent/App Group
+//  1.6.0：
+//    A. iPhone 8 默认硬件参数（与 SE2 硬件一致）
+//    B. _dyld_get_image_name 镜像名过滤（fishhook）
+//    C. C 函数级文件检测 hook（stat/lstat/access/fopen/opendir，fishhook）
+//    D. NSBundle 遍历过滤（allFrameworks/allBundles/loadedBundles）
+//    C 函数 hook 全部使用 fishhook（GOT 替换），不使用 DYLD_INTERPOSE，
+//    原始函数指针直接指向 libSystem 真实地址，结构上杜绝递归。
+//    arm64 iOS 上 stat 已是 64 位 inode，不 hook stat64。
 //
 
 #import <Foundation/Foundation.h>
@@ -16,21 +23,46 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <sys/sysctl.h>
+#import <sys/stat.h>
 #import <mach-o/dyld.h>
+#import <mach-o/loader.h>
+#import <mach-o/nlist.h>
 #import <dlfcn.h>
 #import <WebKit/WebKit.h>
+#import <dirent.h>
+#import <stdio.h>
+#import <unistd.h>
+#import <string.h>
 #import <errno.h>
+#import <stdlib.h>
+#import <mach/mach.h>
+
+#pragma mark - 原子操作
+
+#define BDS_ATOMIC_SET(var, val) __atomic_store_n(&(var), (val), __ATOMIC_RELEASE)
+#define BDS_ATOMIC_GET(var) __atomic_load_n(&(var), __ATOMIC_ACQUIRE)
 
 #pragma mark - 配置
 
 static NSDictionary *g_config = nil;
+
+// C hook 使用的全局开关（原子读写，constructor 中从配置设置）
+static int g_enabledC = 0;
+static int g_spoofSysctlC = 0;
+static int g_bypassJailbreakC = 0;
+
+// C hook 使用的缓存伪造值（constructor 和 saveConfigValues 中更新）
+static char g_hwMachine[32] = "iPhone10,1";
+static char g_hwModel[32] = "D20AP";
+static char g_kernOSVersion[16] = "19H307";
+static char g_kernHostname[65] = "iPhone";
 
 static NSDictionary *BDSDefaultConfig(void) {
     static NSDictionary *defaults;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @150,
+            @"configVersion": @160,
             @"enabled": @YES,
             @"spoofAdvertisingIdentifiers": @YES,
             @"spoofProcessHardware": @NO,
@@ -39,7 +71,7 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"spoofScreen": @NO,
             @"spoofStorage": @NO,
             @"spoofBaiduSDK": @YES,
-            @"spoofSysctl": @NO,
+            @"spoofSysctl": @YES,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
             @"bypassJailbreakDetect": @YES
@@ -66,6 +98,18 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
     return v ? [v integerValue] : def;
 }
 
+static void bds_update_c_cache(void) {
+    NSString *v;
+    v = cfgStr(@"hwMachine", @"iPhone10,1");
+    snprintf(g_hwMachine, sizeof(g_hwMachine), "%s", v.UTF8String);
+    v = cfgStr(@"hwModel", @"D20AP");
+    snprintf(g_hwModel, sizeof(g_hwModel), "%s", v.UTF8String);
+    v = cfgStr(@"kernOSVersion", @"19H307");
+    snprintf(g_kernOSVersion, sizeof(g_kernOSVersion), "%s", v.UTF8String);
+    v = cfgStr(@"kernHostname", @"iPhone");
+    snprintf(g_kernHostname, sizeof(g_kernHostname), "%s", v.UTF8String);
+}
+
 static void loadConfig() {
     NSString *p1 = configPath();
     NSString *p2 = [[NSBundle mainBundle] pathForResource:@"bdspoofer_config" ofType:@"plist"];
@@ -73,7 +117,8 @@ static void loadConfig() {
     NSDictionary *loaded = path ? [NSDictionary dictionaryWithContentsOfFile:path] : nil;
     NSMutableDictionary *merged = [BDSDefaultConfig() mutableCopy];
     if (loaded) [merged addEntriesFromDictionary:loaded];
-    if ([loaded[@"configVersion"] integerValue] < 150) {
+    NSInteger ver = [loaded[@"configVersion"] integerValue];
+    if (ver < 150) {
         [merged addEntriesFromDictionary:@{
             @"configVersion": @150,
             @"enabled": @YES,
@@ -83,9 +128,26 @@ static void loadConfig() {
             @"spoofUserAgent": @YES,
             @"bypassJailbreakDetect": @YES
         }];
+    }
+    if (ver < 160) {
+        [merged addEntriesFromDictionary:@{
+            @"configVersion": @160,
+            @"spoofSysctl": @YES,
+            @"systemVersion": @"15.7.1",
+            @"systemBuild": @"19H307",
+            @"hwMachine": @"iPhone10,1",
+            @"hwModel": @"D20AP",
+            @"kernOSVersion": @"19H307",
+            @"screenWidth": @375,
+            @"screenHeight": @667,
+            @"screenScale": @2,
+            @"memorySize": @2048,
+            @"diskSize": @64
+        }];
         [merged writeToFile:p1 atomically:YES];
     }
     g_config = [merged copy];
+    bds_update_c_cache();
 }
 
 static BOOL saveConfigValues(NSDictionary *values) {
@@ -93,7 +155,13 @@ static BOOL saveConfigValues(NSDictionary *values) {
     NSMutableDictionary *next = [g_config mutableCopy] ?: [NSMutableDictionary dictionary];
     [next addEntriesFromDictionary:values];
     BOOL saved = [next writeToFile:configPath() atomically:YES];
-    if (saved) g_config = [next copy];
+    if (saved) {
+        g_config = [next copy];
+        bds_update_c_cache();
+        BDS_ATOMIC_SET(g_enabledC, cfgBool(@"enabled", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofSysctlC, cfgBool(@"spoofSysctl", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_bypassJailbreakC, cfgBool(@"bypassJailbreakDetect", NO) ? 1 : 0);
+    }
     return saved;
 }
 
@@ -117,16 +185,259 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
     }
 }
 
+#pragma mark - fishhook（内嵌，GOT 符号重绑定）
+// fishhook 通过修改各 image 的 __la_symbol_ptr / __nl_symbol_ptr 中的指针来 hook C 函数。
+// 原始地址保存在 rebinding.replaced 中，直接指向 libSystem 真实实现，
+// 调用原始函数不经过 GOT，因此结构上不可能出现 DYLD_INTERPOSE + dlsym 的递归问题。
+
+// 架构类型定义（标准 fishhook 的 __LP64__ 类型块）
+#ifdef __LP64__
+typedef struct mach_header_64 bds_mach_header_t;
+typedef struct segment_command_64 bds_segment_command_t;
+typedef struct section_64 bds_section_t;
+typedef struct nlist_64 bds_nlist_t;
+#define BDS_LC_SEGMENT LC_SEGMENT_64
+#else
+typedef struct mach_header bds_mach_header_t;
+typedef struct segment_command bds_segment_command_t;
+typedef struct section bds_section_t;
+typedef struct nlist bds_nlist_t;
+#define BDS_LC_SEGMENT LC_SEGMENT
+#endif
+
+// SEG_DATA_CONST 在旧版 SDK 中未定义（官方 fishhook 同样做此兼容）
+#ifndef SEG_DATA_CONST
+#define SEG_DATA_CONST "__DATA_CONST"
+#endif
+
+struct bds_rebinding {
+    const char *name;
+    void *replacement;
+    void **replaced;
+};
+
+struct bds_rebindings_entry {
+    struct bds_rebinding *rebindings;
+    size_t rebindings_nel;
+    struct bds_rebindings_entry *next;
+};
+
+static struct bds_rebindings_entry *bds_rebindings_head = NULL;
+
+static int bds_prepend_rebindings(struct bds_rebindings_entry **head,
+                                  struct bds_rebinding rebindings[],
+                                  size_t nel) {
+    struct bds_rebindings_entry *new_entry =
+        (struct bds_rebindings_entry *)malloc(sizeof(struct bds_rebindings_entry));
+    if (!new_entry) return -1;
+    new_entry->rebindings =
+        (struct bds_rebinding *)malloc(sizeof(struct bds_rebinding) * nel);
+    if (!new_entry->rebindings) { free(new_entry); return -1; }
+    memcpy(new_entry->rebindings, rebindings, sizeof(struct bds_rebinding) * nel);
+    new_entry->rebindings_nel = nel;
+    new_entry->next = *head;
+    *head = new_entry;
+    return 0;
+}
+
+static void bds_perform_rebinding_with_section(struct bds_rebindings_entry *rebindings,
+                                               bds_section_t *section,
+                                               intptr_t slide,
+                                               bds_nlist_t *symtab,
+                                               char *strtab,
+                                               uint32_t *indirect_symtab,
+                                               uint32_t nindirectsyms) {
+    uint32_t *indirect_symbol_indices = indirect_symtab + section->reserved1;
+    void **indirect_symbol_bindings = (void **)((uintptr_t)slide + section->addr);
+    uint32_t pointer_count = (uint32_t)(section->size / sizeof(void *));
+
+    // 越界保护：reserved1 + 指针数不能超过间接符号表大小
+    if (section->reserved1 >= nindirectsyms ||
+        pointer_count > nindirectsyms - section->reserved1) {
+        return;
+    }
+
+    int protected_region = 0;  // 延迟 vm_protect：找到匹配符号后才解除写保护
+
+    for (uint i = 0; i < pointer_count; i++) {
+        uint32_t symtab_index = indirect_symbol_indices[i];
+        if (symtab_index == INDIRECT_SYMBOL_ABS || symtab_index == INDIRECT_SYMBOL_LOCAL ||
+            symtab_index == (INDIRECT_SYMBOL_LOCAL | INDIRECT_SYMBOL_ABS)) {
+            continue;
+        }
+        uint32_t strtab_offset = symtab[symtab_index].n_un.n_strx;
+        char *symbol_name = strtab + strtab_offset;
+        if (!symbol_name[0] || !symbol_name[1]) continue;
+        struct bds_rebindings_entry *cur = rebindings;
+        while (cur) {
+            for (uint j = 0; j < cur->rebindings_nel; j++) {
+                if (strcmp(&symbol_name[1], cur->rebindings[j].name) == 0) {
+                    // 延迟到真正需要写入时才解除该 GOT 区域的写保护
+                    if (!protected_region) {
+                        kern_return_t vr = vm_protect(mach_task_self(),
+                            (vm_address_t)indirect_symbol_bindings,
+                            (vm_size_t)section->size, NO,
+                            VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+                        if (vr != KERN_SUCCESS) return;  // 写保护解除失败，跳过整个节
+                        protected_region = 1;
+                    }
+                    if (cur->rebindings[j].replaced != NULL &&
+                        indirect_symbol_bindings[i] != cur->rebindings[j].replacement) {
+                        *(cur->rebindings[j].replaced) = indirect_symbol_bindings[i];
+                    }
+                    indirect_symbol_bindings[i] = cur->rebindings[j].replacement;
+                    goto bds_symbol_loop;
+                }
+            }
+            cur = cur->next;
+        }
+    bds_symbol_loop:;
+    }
+}
+
+static void bds_rebind_symbols_for_image(struct bds_rebindings_entry *rebindings,
+                                         const struct mach_header *header,
+                                         intptr_t slide) {
+    if (header->magic != MH_MAGIC_64 && header->magic != MH_MAGIC) return;
+
+    bds_segment_command_t *cur_seg_cmd;
+    bds_segment_command_t *linkedit_segment = NULL;
+    struct symtab_command *symtab_cmd = NULL;
+    struct dysymtab_command *dysymtab_cmd = NULL;
+
+    uintptr_t cur = (uintptr_t)header + sizeof(bds_mach_header_t);
+    for (uint i = 0; i < header->ncmds; i++, cur += cur_seg_cmd->cmdsize) {
+        cur_seg_cmd = (bds_segment_command_t *)cur;
+        if (cur_seg_cmd->cmd == BDS_LC_SEGMENT) {
+            if (strcmp(cur_seg_cmd->segname, SEG_LINKEDIT) == 0) {
+                linkedit_segment = cur_seg_cmd;
+            }
+        } else if (cur_seg_cmd->cmd == LC_SYMTAB) {
+            symtab_cmd = (struct symtab_command *)cur_seg_cmd;
+        } else if (cur_seg_cmd->cmd == LC_DYSYMTAB) {
+            dysymtab_cmd = (struct dysymtab_command *)cur_seg_cmd;
+        }
+    }
+
+    if (!symtab_cmd || !dysymtab_cmd || !linkedit_segment) return;
+    if (dysymtab_cmd->nindirectsyms == 0) return;
+
+    uintptr_t linkedit_base =
+        (uintptr_t)slide + linkedit_segment->vmaddr - linkedit_segment->fileoff;
+    bds_nlist_t *symtab = (bds_nlist_t *)(linkedit_base + symtab_cmd->symoff);
+    char *strtab = (char *)(linkedit_base + symtab_cmd->stroff);
+    uint32_t *indirect_symtab =
+        (uint32_t *)(linkedit_base + dysymtab_cmd->indirectsymoff);
+
+    cur = (uintptr_t)header + sizeof(bds_mach_header_t);
+    for (uint i = 0; i < header->ncmds; i++, cur += cur_seg_cmd->cmdsize) {
+        cur_seg_cmd = (bds_segment_command_t *)cur;
+        if (cur_seg_cmd->cmd == BDS_LC_SEGMENT) {
+            // 只扫描 __DATA 和 __DATA_CONST（官方 fishhook 同样如此）。
+            // 不扫描 __AUTH/__AUTH_CONST：arm64e 上这些段的 GOT 指针带 PAC 签名，
+            // 直接写入未签名指针会在调用时触发认证失败崩溃。
+            if (strcmp(cur_seg_cmd->segname, SEG_DATA) != 0 &&
+                strcmp(cur_seg_cmd->segname, SEG_DATA_CONST) != 0) {
+                continue;
+            }
+            for (uint j = 0; j < cur_seg_cmd->nsects; j++) {
+                bds_section_t *sect =
+                    (bds_section_t *)(cur + sizeof(bds_segment_command_t)) + j;
+                uint8_t sect_type = sect->flags & SECTION_TYPE;
+                if (sect_type == S_LAZY_SYMBOL_POINTERS ||
+                    sect_type == S_NON_LAZY_SYMBOL_POINTERS) {
+                    bds_perform_rebinding_with_section(rebindings, sect, slide,
+                                                       symtab, strtab, indirect_symtab,
+                                                       dysymtab_cmd->nindirectsyms);
+                }
+            }
+        }
+    }
+}
+
+static void bds_rebind_symbols_for_image_cb(const struct mach_header *mh, intptr_t slide) {
+    bds_rebind_symbols_for_image(bds_rebindings_head, mh, slide);
+}
+
+static int bds_rebind_symbols(struct bds_rebinding rebindings[], size_t nel) {
+    int retval = bds_prepend_rebindings(&bds_rebindings_head, rebindings, nel);
+    if (retval < 0) return retval;
+    if (bds_rebindings_head->next == NULL) {
+        // 第一次调用：注册 dyld 回调，回调会立即对所有已加载 image 执行 rebind
+        _dyld_register_func_for_add_image(bds_rebind_symbols_for_image_cb);
+    } else {
+        // 后续调用：手动对已加载 image 执行 rebind
+        uint32_t c = _dyld_image_count();
+        for (uint32_t i = 0; i < c; i++) {
+            bds_rebind_symbols_for_image(bds_rebindings_head,
+                                         _dyld_get_image_header(i),
+                                         _dyld_get_image_vmaddr_slide(i));
+        }
+    }
+    return retval;
+}
+
+#pragma mark - 统一越狱路径表（C 数组）
+
+static const char *bds_jailbreak_path_strings[] = {
+    "/Applications/Cydia.app",
+    "/Applications/Sileo.app",
+    "/Applications/Zebra.app",
+    "/Applications/Installer.app",
+    "/Library/MobileSubstrate",
+    "/Library/MobileSubstrate/DynamicLibraries",
+    "/usr/sbin/sshd",
+    "/usr/libexec/sftp-server",
+    "/usr/libexec/ssh-keysign",
+    "/etc/apt",
+    "/etc/ssh/sshd_config",
+    "/private/var/lib/apt",
+    "/private/var/lib/cydia",
+    "/private/var/stash",
+    "/private/var/tmp/cydia.log",
+    "/usr/bin/sshd",
+    "/usr/bin/cycript",
+    "/usr/lib/libsubstrate.dylib",
+    "/usr/lib/libhooker.dylib",
+    "/usr/lib/libellekit.dylib",
+    "/usr/lib/TweakInject",
+    "/bin/bash",
+    "/bin/sh",
+    "/usr/bin/ssh",
+    "/var/jb",
+    "/var/jb/Library",
+    "/var/jb/basebin",
+    "/var/jb/usr/lib/TweakInject",
+    "/.bootstrapped_electra",
+    "/.cydia_no_stash",
+    "/.installed_unc0ver",
+    "/jb",
+    "/var/LIY",
+    "/var/Memory.me",
+    "/var/checkra1n.dmg",
+    NULL
+};
+
+static int bds_c_is_jailbreak_path(const char *path) {
+    if (!path) return 0;
+    for (int i = 0; bds_jailbreak_path_strings[i]; i++) {
+        const char *p = bds_jailbreak_path_strings[i];
+        size_t len = strlen(p);
+        if (strcmp(path, p) == 0) return 1;
+        if (strncmp(path, p, len) == 0 && path[len] == '/') return 1;
+    }
+    return 0;
+}
+
 #pragma mark - UIDevice Hook
 
 static IMP orig_systemVersion = NULL;
 static NSString *new_systemVersion(id self, SEL _cmd) {
-    return cfgStr(@"systemVersion", @"17.5.1");
+    return cfgStr(@"systemVersion", @"15.7.1");
 }
 
 static IMP orig_model = NULL;
 static NSString *new_model(id self, SEL _cmd) {
-    // UIDevice.model 返回设备家族（iPhone/iPad），不是 iPhone15,2 这类硬件标识。
     return cfgStr(@"deviceModel", @"iPhone");
 }
 
@@ -185,15 +496,15 @@ static NSInteger new_trackingAuthorizationStatus(id self, SEL _cmd) {
 
 static IMP orig_operatingSystemVersionString = NULL;
 static NSString *new_operatingSystemVersionString(id self, SEL _cmd) {
-    NSString *v = cfgStr(@"systemVersion", @"17.5.1");
-    NSString *b = cfgStr(@"systemBuild", @"21F79");
+    NSString *v = cfgStr(@"systemVersion", @"15.7.1");
+    NSString *b = cfgStr(@"systemBuild", @"19H307");
     return [NSString stringWithFormat:@"Version %@ (Build %@)", v, b];
 }
 
 static IMP orig_operatingSystemVersion = NULL;
 static NSOperatingSystemVersion new_operatingSystemVersion(id self, SEL _cmd) {
-    NSOperatingSystemVersion v = {17, 5, 1};
-    NSString *s = cfgStr(@"systemVersion", @"17.5.1");
+    NSOperatingSystemVersion v = {15, 7, 1};
+    NSString *s = cfgStr(@"systemVersion", @"15.7.1");
     NSArray *p = [s componentsSeparatedByString:@"."];
     if (p.count >= 1) v.majorVersion = [p[0] integerValue];
     if (p.count >= 2) v.minorVersion = [p[1] integerValue];
@@ -208,7 +519,7 @@ static NSString *new_hostName(id self, SEL _cmd) {
 
 static IMP orig_physicalMemory = NULL;
 static unsigned long long new_physicalMemory(id self, SEL _cmd) {
-    return (unsigned long long)cfgInt(@"memorySize", 6144) * 1024 * 1024;
+    return (unsigned long long)cfgInt(@"memorySize", 2048) * 1024 * 1024;
 }
 
 #pragma mark - NSLocale Hook
@@ -261,22 +572,22 @@ static BOOL new_allowsVOIP(id self, SEL _cmd) {
 
 static IMP orig_bounds = NULL;
 static CGRect new_bounds(id self, SEL _cmd) {
-    CGFloat w = cfgInt(@"screenWidth", 393);
-    CGFloat h = cfgInt(@"screenHeight", 852);
+    CGFloat w = cfgInt(@"screenWidth", 375);
+    CGFloat h = cfgInt(@"screenHeight", 667);
     return CGRectMake(0, 0, w, h);
 }
 
 static IMP orig_nativeBounds = NULL;
 static CGRect new_nativeBounds(id self, SEL _cmd) {
-    CGFloat scale = (CGFloat)cfgInt(@"screenScale", 3);
-    CGFloat w = cfgInt(@"screenWidth", 393) * scale;
-    CGFloat h = cfgInt(@"screenHeight", 852) * scale;
+    CGFloat scale = (CGFloat)cfgInt(@"screenScale", 2);
+    CGFloat w = cfgInt(@"screenWidth", 375) * scale;
+    CGFloat h = cfgInt(@"screenHeight", 667) * scale;
     return CGRectMake(0, 0, w, h);
 }
 
 static IMP orig_scale = NULL;
 static CGFloat new_scale(id self, SEL _cmd) {
-    return (CGFloat)cfgInt(@"screenScale", 3);
+    return (CGFloat)cfgInt(@"screenScale", 2);
 }
 
 #pragma mark - NSFileManager Hook（磁盘大小）
@@ -289,22 +600,13 @@ static NSDictionary *new_attributesOfFileSystemForPath(id self, SEL _cmd, id pat
         : nil;
     if (!orig) return orig;
     NSMutableDictionary *m = [orig mutableCopy];
-    long long diskSize = cfgInt(@"diskSize", 256) * 1024LL * 1024LL * 1024LL;
+    long long diskSize = cfgInt(@"diskSize", 64) * 1024LL * 1024LL * 1024LL;
     m[NSFileSystemSize] = @(diskSize);
     m[NSFileSystemFreeSize] = @(diskSize / 2);
     return m;
 }
 
 #pragma mark - 百度 SDK Hook
-
-// 百度自研设备标识 SDK：CuidSDK / UTDIDModule / MobStat / DeviceIdentifierFetcher
-// 安全策略：
-//   1. 只 hook 同步无参数方法（argc==2），返回类型必须是对象（@）
-//   2. 不 hook 带 block 回调的异步方法（避免改变回调线程/时序）
-//   3. hook 函数中先调用原始 IMP，只有返回值确实是 NSString 时才替换
-//   4. 保存原始 IMP（类方法/实例方法分别保存），支持与其他插件串联
-//   5. 用 _dyld_register_func_for_add_image 支持延迟加载的 framework
-//   6. 所有集合访问用 NSRecursiveLock 保护，防止 dyld 回调与 UI 自检并发
 
 static NSRecursiveLock *g_baiduLock = nil;
 static NSMutableDictionary<NSString *, NSValue *> *g_baiduOrigImps = nil;
@@ -327,7 +629,6 @@ static NSString *bds_fake_value_for_cmd(SEL _cmd) {
     return bds_deviceID_value();
 }
 
-// 通用 IMP：先调用原始实现，确认返回 NSString 后再替换
 static NSString *new_baidu_string_sync(id self, SEL _cmd) {
     BOOL isClassMethod = object_isClass(self);
     NSString *className = isClassMethod ? NSStringFromClass(self) : NSStringFromClass([self class]);
@@ -340,7 +641,6 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
     origValue = g_baiduOrigImps[impKey];
     [g_baiduLock unlock];
 
-    // 功能关闭时直接透传原始实现
     if (!cfgBool(@"spoofBaiduSDK", NO)) {
         if (origValue) {
             IMP orig = [origValue pointerValue];
@@ -349,11 +649,9 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
         return nil;
     }
 
-    // 调用原始 IMP
     if (origValue) {
         IMP orig = [origValue pointerValue];
         id result = ((id (*)(id, SEL))orig)(self, _cmd);
-        // 只有返回值确实是 NSString 时才替换；其他类型（NSDictionary 等）原样返回
         if ([result isKindOfClass:[NSString class]]) {
             return bds_fake_value_for_cmd(_cmd);
         }
@@ -362,7 +660,6 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
     return bds_fake_value_for_cmd(_cmd);
 }
 
-// 检查方法签名是否安全：无参数、返回对象类型
 static BOOL bds_isSafeSyncMethod(Method m) {
     if (!m) return NO;
     if (method_getNumberOfArguments(m) != 2) return NO;
@@ -382,7 +679,6 @@ static void bds_tryHookMethod(Class cls, SEL sel, BOOL isClassMethod) {
 
     [g_baiduLock lock];
 
-    // 原子检查+安装，防止 dyld 回调与扫描线程重复 hook
     if ([g_baiduHookedKeys containsObject:key]) {
         [g_baiduLock unlock];
         return;
@@ -394,12 +690,10 @@ static void bds_tryHookMethod(Class cls, SEL sel, BOOL isClassMethod) {
         return;
     }
 
-    // 在当前类（类方法则在元类）上替换或添加方法，不修改父类实现
     Class targetCls = isClassMethod ? object_getClass(cls) : cls;
     IMP oldImp = class_replaceMethod(targetCls, sel, (IMP)new_baidu_string_sync,
                                      method_getTypeEncoding(m));
     if (!oldImp) {
-        // 方法定义在父类：class_replaceMethod 已在当前类添加覆盖，保存父类原始 IMP
         oldImp = method_getImplementation(m);
     }
 
@@ -446,7 +740,6 @@ static void bds_scanBaiduSDKClasses(void) {
     }
 }
 
-// dyld 回调必须是普通 C 函数，不能是 block
 static void bds_dyld_add_image_cb(const struct mach_header *mh, intptr_t vmaddr_slide) {
     (void)mh; (void)vmaddr_slide;
     bds_scanBaiduSDKClasses();
@@ -457,102 +750,56 @@ static void installBaiduSDKHooks(void) {
     _dyld_register_func_for_add_image(bds_dyld_add_image_cb);
 }
 
-#pragma mark - sysctlbyname Hook (DYLD_INTERPOSE)
+#pragma mark - sysctlbyname Hook（fishhook，纯 C）
 
-static int (*bds_orig_sysctlbyname)(const char *, void *, size_t *, void *, size_t);
-
-// TrollFools loads this dylib after the target executable has already been prepared.
-// A __DATA,__interpose entry in an injected dylib can make dyld terminate the app
-// before our constructor or configuration UI gets a chance to run. Keep the
-// implementation for future loader-specific testing, but do not emit the
-// interpose section in the normal TrollFools build.
-#ifndef BDS_ENABLE_DYLD_INTERPOSE
-#define BDS_ENABLE_DYLD_INTERPOSE 0
-#endif
+static int (*orig_sysctlbyname)(const char *, void *, size_t *, void *, size_t);
 
 static int bds_my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
                                 void *newp, size_t newlen) {
-    if (!bds_orig_sysctlbyname) {
-        bds_orig_sysctlbyname = (int (*)(const char *, void *, size_t *, void *, size_t))dlsym(RTLD_NEXT, "sysctlbyname");
-    }
-    if (!bds_orig_sysctlbyname) return -1;
-
     // 异常参数或写入操作直接透传
     if (!name || (oldp && !oldlenp) || newp) {
-        return bds_orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
+        return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
     }
 
-    // 配置未加载或未开启时直接透传
-    if (!g_config || !cfgBool(@"spoofSysctl", NO)) {
-        return bds_orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofSysctlC)) {
+        return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
     }
 
-    // 判断是否是要 hook 的 key
     const char *fake = NULL;
     if (strcmp(name, "hw.machine") == 0) {
-        fake = [cfgStr(@"hwMachine", @"iPhone15,2") UTF8String];
+        fake = g_hwMachine;
     } else if (strcmp(name, "hw.model") == 0) {
-        fake = [cfgStr(@"hwModel", @"D54AP") UTF8String];
+        fake = g_hwModel;
     } else if (strcmp(name, "kern.osversion") == 0) {
-        fake = [cfgStr(@"kernOSVersion", @"21F79") UTF8String];
+        fake = g_kernOSVersion;
     } else if (strcmp(name, "kern.hostname") == 0) {
-        fake = [cfgStr(@"kernHostname", @"iPhone") UTF8String];
+        fake = g_kernHostname;
     }
 
-    // 非目标 key 直接透传
     if (!fake) {
-        return bds_orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
+        return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
     }
 
-    size_t fakeLen = strlen(fake) + 1; // 包含结尾 \0
+    size_t fakeLen = strlen(fake) + 1;
 
-    // oldp=NULL：调用方在查询所需长度
     if (oldp == NULL) {
         if (oldlenp) *oldlenp = fakeLen;
         return 0;
     }
 
-    // oldp 不为 NULL：缓冲区太小
     if (*oldlenp < fakeLen) {
         *oldlenp = fakeLen;
         return ENOMEM;
     }
 
-    // 写入伪造值并更新实际长度
     memcpy(oldp, fake, fakeLen);
     *oldlenp = fakeLen;
     return 0;
 }
 
-#if BDS_ENABLE_DYLD_INTERPOSE
-__attribute__((used)) static struct {
-    const void *replacement;
-    const void *replacee;
-} bds_interpose_sysctlbyname __attribute__((section("__DATA,__interpose"))) = {
-    (const void *)bds_my_sysctlbyname,
-    (const void *)sysctlbyname
-};
-#endif
+#pragma mark - Keychain Hook（fishhook）
 
-#pragma mark - Keychain Hook (DYLD_INTERPOSE)
-
-typedef OSStatus (*BDSSecItemCopyMatchingFn)(CFDictionaryRef query, CFTypeRef *result);
-
-static BDSSecItemCopyMatchingFn bds_original_SecItemCopyMatching(void) {
-    static BDSSecItemCopyMatchingFn original = NULL;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        // RTLD_FIRST restricts lookup to Security.framework itself. Using
-        // RTLD_NEXT here can resolve back to the interposed replacement when
-        // TrollFools injects the dylib, causing infinite recursion.
-        void *security = dlopen("/System/Library/Frameworks/Security.framework/Security",
-                                RTLD_NOW | RTLD_LOCAL | RTLD_FIRST);
-        if (security) {
-            original = (BDSSecItemCopyMatchingFn)dlsym(security, "SecItemCopyMatching");
-        }
-    });
-    return original;
-}
+static OSStatus (*orig_SecItemCopyMatching)(CFDictionaryRef, CFTypeRef *);
 
 static BOOL bds_keychainValueContainsBaidu(id value) {
     if (![value isKindOfClass:NSString.class]) return NO;
@@ -560,17 +807,10 @@ static BOOL bds_keychainValueContainsBaidu(id value) {
                                     options:NSCaseInsensitiveSearch].location != NSNotFound;
 }
 
-static OSStatus bds_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
-    BDSSecItemCopyMatchingFn original = bds_original_SecItemCopyMatching();
-    if (!original || original == bds_SecItemCopyMatching) {
-        return errSecUnimplemented;
-    }
-
-    // Security.framework can query Keychain before our constructor loads the
-    // plist. In that state, and while the option is disabled, only pass through.
+static OSStatus bds_my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
     if (!g_config || !cfgBool(@"enabled", NO) ||
         !cfgBool(@"spoofKeychain", NO) || !query) {
-        return original(query, result);
+        return orig_SecItemCopyMatching(query, result);
     }
 
     @autoreleasepool {
@@ -591,16 +831,8 @@ static OSStatus bds_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result
         }
     }
 
-    return original(query, result);
+    return orig_SecItemCopyMatching(query, result);
 }
-
-__attribute__((used)) static struct {
-    const void *replacement;
-    const void *replacee;
-} bds_interpose_SecItemCopyMatching __attribute__((section("__DATA,__interpose"))) = {
-    (const void *)bds_SecItemCopyMatching,
-    (const void *)SecItemCopyMatching
-};
 
 #pragma mark - User-Agent Hook
 
@@ -609,8 +841,7 @@ static NSString *new_wk_customUserAgent(id self, SEL _cmd) {
     (void)self; (void)_cmd;
     NSString *custom = cfgStr(@"userAgent", @"");
     if (custom.length > 0) return custom;
-    // 自动生成与配置一致的 UA
-    NSString *v = [cfgStr(@"systemVersion", @"17.5.1") stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+    NSString *v = [cfgStr(@"systemVersion", @"15.7.1") stringByReplacingOccurrencesOfString:@"." withString:@"_"];
     return [NSString stringWithFormat:
         @"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148", v];
 }
@@ -623,7 +854,7 @@ static void new_nsmurl_setValue(id self, SEL _cmd, NSString *value, NSString *fi
         NSString *custom = cfgStr(@"userAgent", @"");
         value = custom.length > 0 ? custom : nil;
         if (!value) {
-            NSString *v = [cfgStr(@"systemVersion", @"17.5.1") stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+            NSString *v = [cfgStr(@"systemVersion", @"15.7.1") stringByReplacingOccurrencesOfString:@"." withString:@"_"];
             value = [NSString stringWithFormat:
                 @"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148", v];
         }
@@ -640,7 +871,7 @@ static void new_nsmurl_addValue(id self, SEL _cmd, NSString *value, NSString *fi
         NSString *custom = cfgStr(@"userAgent", @"");
         value = custom.length > 0 ? custom : nil;
         if (!value) {
-            NSString *v = [cfgStr(@"systemVersion", @"17.5.1") stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+            NSString *v = [cfgStr(@"systemVersion", @"15.7.1") stringByReplacingOccurrencesOfString:@"." withString:@"_"];
             value = [NSString stringWithFormat:
                 @"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148", v];
         }
@@ -649,52 +880,103 @@ static void new_nsmurl_addValue(id self, SEL _cmd, NSString *value, NSString *fi
     if (orig_nsmurl_addValue) ((AddValueIMP)orig_nsmurl_addValue)(self, _cmd, value, field);
 }
 
-#pragma mark - 越狱检测绕过
+#pragma mark - B: dyld 镜像名过滤（fishhook，纯 C）
 
-static NSArray<NSString *> *bds_jailbreakPaths(void) {
-    static NSArray *paths;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        paths = @[
-            @"/Applications/Cydia.app",
-            @"/Applications/Sileo.app",
-            @"/Applications/Zebra.app",
-            @"/Applications/Installer.app",
-            @"/Library/MobileSubstrate",
-            @"/Library/MobileSubstrate/DynamicLibraries",
-            @"/usr/sbin/sshd",
-            @"/usr/libexec/sftp-server",
-            @"/usr/libexec/ssh-keysign",
-            @"/etc/apt",
-            @"/etc/ssh/sshd_config",
-            @"/private/var/lib/apt",
-            @"/private/var/lib/cydia",
-            @"/private/var/stash",
-            @"/private/var/tmp/cydia.log",
-            @"/usr/bin/sshd",
-            @"/usr/bin/cycript",
-            @"/usr/lib/libsubstrate.dylib",
-            @"/usr/lib/libhooker.dylib",
-            @"/usr/lib/libellekit.dylib",
-            @"/usr/lib/TweakInject",
-            @"/bin/bash",
-            @"/bin/sh",
-            @"/usr/bin/ssh",
-            @"/var/jb",
-            @"/var/jb/Library",
-            @"/var/jb/basebin",
-            @"/var/jb/usr/lib/TweakInject",
-            @"/.bootstrapped_electra",
-            @"/.cydia_no_stash",
-            @"/.installed_unc0ver",
-            @"/jb",
-            @"/var/LIY",
-            @"/var/Memory.me",
-            @"/var/checkra1n.dmg"
-        ];
-    });
-    return paths;
+static const char *(*orig_dyld_get_image_name)(uint32_t);
+
+static const char *bds_fake_image_names[] = {
+    "/System/Library/Frameworks/Foundation.framework/Foundation",
+    "/System/Library/Frameworks/UIKit.framework/UIKit",
+    "/usr/lib/libobjc.A.dylib",
+    "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
+    "/usr/lib/system/libsystem_kernel.dylib",
+    "/usr/lib/system/libsystem_c.dylib",
+    "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
+    "/usr/lib/libc++.1.dylib"
+};
+#define BDS_FAKE_IMAGE_COUNT (sizeof(bds_fake_image_names) / sizeof(bds_fake_image_names[0]))
+
+static int bds_c_should_hide_image(const char *name) {
+    if (!name) return 0;
+    static const char *needles[] = {
+        "BDSpoofer", "TrollFools", "TrollStore", "dopamine", "Dopamine",
+        "ellekit", "ElleKit", "libhooker", "substrate", "Substrate",
+        "CydiaSubstrate", "TweakInject", "/var/jb/", "roothide", "RootHide",
+        "Choicy", "A-Bypass", "Shadow", "Liberty", "UnSub",
+        NULL
+    };
+    for (int i = 0; needles[i]; i++) {
+        if (strstr(name, needles[i])) return 1;
+    }
+    return 0;
 }
+
+static const char *bds_my_dyld_get_image_name(uint32_t image_index) {
+    const char *name = orig_dyld_get_image_name(image_index);
+    if (!name) return name;
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_bypassJailbreakC)) return name;
+    if (bds_c_should_hide_image(name)) {
+        return bds_fake_image_names[image_index % BDS_FAKE_IMAGE_COUNT];
+    }
+    return name;
+}
+
+#pragma mark - C: C 函数级文件检测 hook（fishhook）
+// arm64 iOS 上 struct stat 已使用 64 位 inode（__DARWIN_ONLY_64_BIT_INO_T=1），
+// stat64/struct stat64 不公开，因此不 hook stat64。
+
+static int (*orig_stat)(const char *, struct stat *);
+static int (*orig_lstat)(const char *, struct stat *);
+static int (*orig_access)(const char *, int);
+static FILE *(*orig_fopen)(const char *, const char *);
+static DIR *(*orig_opendir)(const char *);
+
+static int bds_my_stat(const char *path, struct stat *buf) {
+    if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC) &&
+        bds_c_is_jailbreak_path(path)) {
+        errno = ENOENT;
+        return -1;
+    }
+    return orig_stat(path, buf);
+}
+
+static int bds_my_lstat(const char *path, struct stat *buf) {
+    if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC) &&
+        bds_c_is_jailbreak_path(path)) {
+        errno = ENOENT;
+        return -1;
+    }
+    return orig_lstat(path, buf);
+}
+
+static int bds_my_access(const char *path, int mode) {
+    if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC) &&
+        bds_c_is_jailbreak_path(path)) {
+        errno = ENOENT;
+        return -1;
+    }
+    return orig_access(path, mode);
+}
+
+static FILE *bds_my_fopen(const char *path, const char *mode) {
+    if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC) &&
+        bds_c_is_jailbreak_path(path)) {
+        errno = ENOENT;
+        return NULL;
+    }
+    return orig_fopen(path, mode);
+}
+
+static DIR *bds_my_opendir(const char *path) {
+    if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC) &&
+        bds_c_is_jailbreak_path(path)) {
+        errno = ENOENT;
+        return NULL;
+    }
+    return orig_opendir(path);
+}
+
+#pragma mark - 越狱检测绕过（ObjC 层）
 
 static NSArray<NSString *> *bds_jailbreakSchemes(void) {
     static NSArray *schemes;
@@ -707,10 +989,18 @@ static NSArray<NSString *> *bds_jailbreakSchemes(void) {
 
 static BOOL bds_isJailbreakPath(NSString *path) {
     if (!path) return NO;
-    for (NSString *p in bds_jailbreakPaths()) {
-        // 精确匹配或路径后接 "/"，避免 /bin/sh 误伤 /bin/shutdown 等
-        if ([path isEqualToString:p]) return YES;
-        if ([path hasPrefix:[p stringByAppendingString:@"/"]]) return YES;
+    return bds_c_is_jailbreak_path(path.UTF8String) ? YES : NO;
+}
+
+static BOOL bds_isSuspiciousBundlePath(NSString *path) {
+    if (!path) return NO;
+    if (bds_isJailbreakPath(path)) return YES;
+    NSString *lower = path.lowercaseString;
+    NSArray *needles = @[@"bdspoofer", @"trollfools", @"trollstore", @"dopamine",
+                         @"ellekit", @"libhooker", @"substrate", @"tweakinject",
+                         @"roothide", @"/var/jb/"];
+    for (NSString *n in needles) {
+        if ([lower containsString:n]) return YES;
     }
     return NO;
 }
@@ -743,6 +1033,69 @@ static BOOL new_canOpenURL(id self, SEL _cmd, NSURL *url) {
     typedef BOOL (*CanOpenIMP)(id, SEL, NSURL *);
     if (orig_canOpenURL) return ((CanOpenIMP)orig_canOpenURL)(self, _cmd, url);
     return NO;
+}
+
+#pragma mark - D: NSBundle 遍历过滤
+
+static IMP orig_allFrameworks = NULL;
+static NSArray *new_allFrameworks(id self, SEL _cmd) {
+    typedef NSArray *(*AllFrameworksIMP)(id, SEL);
+    NSArray *orig = orig_allFrameworks ? ((AllFrameworksIMP)orig_allFrameworks)(self, _cmd) : @[];
+    if (!cfgBool(@"bypassJailbreakDetect", NO)) return orig;
+    NSMutableArray *filtered = [NSMutableArray array];
+    for (NSBundle *bundle in orig) {
+        if (![bundle isKindOfClass:[NSBundle class]]) { [filtered addObject:bundle]; continue; }
+        if (!bds_isSuspiciousBundlePath(bundle.bundlePath)) {
+            [filtered addObject:bundle];
+        }
+    }
+    return filtered;
+}
+
+static IMP orig_allBundles = NULL;
+static NSArray *new_allBundles(id self, SEL _cmd) {
+    typedef NSArray *(*AllBundlesIMP)(id, SEL);
+    NSArray *orig = orig_allBundles ? ((AllBundlesIMP)orig_allBundles)(self, _cmd) : @[];
+    if (!cfgBool(@"bypassJailbreakDetect", NO)) return orig;
+    NSMutableArray *filtered = [NSMutableArray array];
+    for (NSBundle *bundle in orig) {
+        if (![bundle isKindOfClass:[NSBundle class]]) { [filtered addObject:bundle]; continue; }
+        if (!bds_isSuspiciousBundlePath(bundle.bundlePath)) {
+            [filtered addObject:bundle];
+        }
+    }
+    return filtered;
+}
+
+static IMP orig_loadedBundles = NULL;
+static NSArray *new_loadedBundles(id self, SEL _cmd) {
+    typedef NSArray *(*LoadedBundlesIMP)(id, SEL);
+    NSArray *orig = orig_loadedBundles ? ((LoadedBundlesIMP)orig_loadedBundles)(self, _cmd) : @[];
+    if (!cfgBool(@"bypassJailbreakDetect", NO)) return orig;
+    NSMutableArray *filtered = [NSMutableArray array];
+    for (NSBundle *bundle in orig) {
+        if (![bundle isKindOfClass:[NSBundle class]]) { [filtered addObject:bundle]; continue; }
+        if (!bds_isSuspiciousBundlePath(bundle.bundlePath)) {
+            [filtered addObject:bundle];
+        }
+    }
+    return filtered;
+}
+
+#pragma mark - C 函数 hook 安装（fishhook）
+
+static void installCHooks(void) {
+    struct bds_rebinding rebindings[] = {
+        {"sysctlbyname", (void *)bds_my_sysctlbyname, (void **)&orig_sysctlbyname},
+        {"SecItemCopyMatching", (void *)bds_my_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching},
+        {"_dyld_get_image_name", (void *)bds_my_dyld_get_image_name, (void **)&orig_dyld_get_image_name},
+        {"stat", (void *)bds_my_stat, (void **)&orig_stat},
+        {"lstat", (void *)bds_my_lstat, (void **)&orig_lstat},
+        {"access", (void *)bds_my_access, (void **)&orig_access},
+        {"fopen", (void *)bds_my_fopen, (void **)&orig_fopen},
+        {"opendir", (void *)bds_my_opendir, (void **)&orig_opendir},
+    };
+    bds_rebind_symbols(rebindings, sizeof(rebindings) / sizeof(rebindings[0]));
 }
 
 #pragma mark - 悬浮配置入口
@@ -828,8 +1181,8 @@ static NSString *BDSConfigSummary(void) {
         @"容器: %@\n状态: %@\niOS: %@ (%@)\n设备名称: %@\nIDFV: %@\nIDFA: %@\n\n保存后重启百度极速版生效",
         container,
         cfgBool(@"enabled", NO) ? @"已开启" : @"已关闭",
-        cfgStr(@"systemVersion", @"17.5.1"),
-        cfgStr(@"systemBuild", @"21F79"),
+        cfgStr(@"systemVersion", @"15.7.1"),
+        cfgStr(@"systemBuild", @"19H307"),
         cfgStr(@"deviceName", @"iPhone"),
         cfgStr(@"idfv", @"A1B2C3D4-E5F6-7890-ABCD-EF1234567890"),
         cfgStr(@"idfa", @"FEDCBA98-7654-3210-FEDC-BA9876543210")];
@@ -997,13 +1350,13 @@ static NSString *BDSConfigSummary(void) {
                                                                    message:@"版本和 Build 必须保持匹配；保存后重启生效。"
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"例如 17.5.1";
-        field.text = cfgStr(@"systemVersion", @"17.5.1");
+        field.placeholder = @"例如 15.7.1";
+        field.text = cfgStr(@"systemVersion", @"15.7.1");
         field.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
     }];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"例如 21F79";
-        field.text = cfgStr(@"systemBuild", @"21F79");
+        field.placeholder = @"例如 19H307";
+        field.text = cfgStr(@"systemBuild", @"19H307");
         field.autocapitalizationType = UITextAutocapitalizationTypeAllCharacters;
     }];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
@@ -1013,7 +1366,7 @@ static NSString *BDSConfigSummary(void) {
         NSString *build = [alert.textFields[1].text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].uppercaseString;
         NSRange match = [version rangeOfString:@"^[0-9]+\\.[0-9]+(\\.[0-9]+)?$" options:NSRegularExpressionSearch];
         if (match.location == NSNotFound || !build.length || build.length > 16) {
-            [self presentMessage:@"请输入有效版本号和 Build，例如 17.5.1 / 21F79。" title:@"格式错误"];
+            [self presentMessage:@"请输入有效版本号和 Build，例如 15.7.1 / 19H307。" title:@"格式错误"];
             return;
         }
         [self showRestartNotice:saveConfigValues(@{@"systemVersion": version, @"systemBuild": build})];
@@ -1139,14 +1492,14 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"高级功能"
-                                                                   message:@"除 sysctl 外默认开启；随机身份保存后立即用于后续读取。"
+                                                                   message:@"默认全部开启；随机身份保存后立即用于后续读取。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSDictionary *> *items = @[
         @{@"key": @"spoofBaiduSDK", @"name": @"百度 SDK 标识（CUID/UTDID/DeviceID）"},
         @{@"key": @"spoofSysctl", @"name": @"sysctlbyname（hw.machine 等）"},
         @{@"key": @"spoofKeychain", @"name": @"Keychain 拦截"},
         @{@"key": @"spoofUserAgent", @"name": @"User-Agent 替换"},
-        @{@"key": @"bypassJailbreakDetect", @"name": @"越狱检测绕过"}
+        @{@"key": @"bypassJailbreakDetect", @"name": @"越狱检测绕过（含镜像名/C函数/NSBundle）"}
     ];
     for (NSDictionary *item in items) {
         NSString *key = item[@"key"];
@@ -1260,9 +1613,9 @@ static NSString *BDSConfigSummary(void) {
                                                                    message:@"这些值必须与设备型号匹配，否则容易被识别。"
                                                             preferredStyle:UIAlertControllerStyleAlert];
     NSArray<NSDictionary *> *fields = @[
-        @{@"key": @"hwMachine", @"default": @"iPhone15,2", @"placeholder": @"hw.machine，例如 iPhone15,2"},
-        @{@"key": @"hwModel", @"default": @"D54AP", @"placeholder": @"hw.model，例如 D54AP"},
-        @{@"key": @"kernOSVersion", @"default": @"21F79", @"placeholder": @"kern.osversion，例如 21F79"}
+        @{@"key": @"hwMachine", @"default": @"iPhone10,1", @"placeholder": @"hw.machine，例如 iPhone10,1"},
+        @{@"key": @"hwModel", @"default": @"D20AP", @"placeholder": @"hw.model，例如 D20AP"},
+        @{@"key": @"kernOSVersion", @"default": @"19H307", @"placeholder": @"kern.osversion，例如 19H307"}
     ];
     for (NSDictionary *info in fields) {
         [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
@@ -1318,7 +1671,7 @@ static NSString *BDSConfigSummary(void) {
         field.autocapitalizationType = UITextAutocapitalizationTypeNone;
     }];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.text = [NSString stringWithFormat:@"%ld", (long)cfgInt(@"memorySize", 6144)];
+        field.text = [NSString stringWithFormat:@"%ld", (long)cfgInt(@"memorySize", 2048)];
         field.placeholder = @"内存 MB（512 到 16384）";
         field.keyboardType = UIKeyboardTypeNumberPad;
     }];
@@ -1395,10 +1748,10 @@ static NSString *BDSConfigSummary(void) {
                                                                    message:@"屏幕参数会影响布局，建议先记录原值。磁盘单位为 GB。"
                                                             preferredStyle:UIAlertControllerStyleAlert];
     NSArray<NSDictionary *> *fields = @[
-        @{@"key": @"screenWidth", @"default": @393, @"placeholder": @"逻辑宽度"},
-        @{@"key": @"screenHeight", @"default": @852, @"placeholder": @"逻辑高度"},
-        @{@"key": @"screenScale", @"default": @3, @"placeholder": @"缩放倍数"},
-        @{@"key": @"diskSize", @"default": @256, @"placeholder": @"磁盘 GB"}
+        @{@"key": @"screenWidth", @"default": @375, @"placeholder": @"逻辑宽度"},
+        @{@"key": @"screenHeight", @"default": @667, @"placeholder": @"逻辑高度"},
+        @{@"key": @"screenScale", @"default": @2, @"placeholder": @"缩放倍数"},
+        @{@"key": @"diskSize", @"default": @64, @"placeholder": @"磁盘 GB"}
     ];
     for (NSDictionary *info in fields) {
         [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
@@ -1467,16 +1820,15 @@ static NSString *BDSConfigSummary(void) {
          @"内存(MB)\n原始 %llu\n配置 %ld\n当前 %llu\n\n"
          @"屏幕(points / scale)\n原始 %.0fx%.0f / %.2f\n配置 %ldx%ld / %ld\n当前 %.0fx%.0f / %.2f",
         cfgBool(@"enabled", NO) ? @"基础功能已开启" : @"基础功能已关闭",
-        realVersion, cfgStr(@"systemVersion", @"17.5.1"), cfgStr(@"systemBuild", @"21F79"), currentVersion,
+        realVersion, cfgStr(@"systemVersion", @"15.7.1"), cfgStr(@"systemBuild", @"19H307"), currentVersion,
         realName, cfgStr(@"deviceName", @"iPhone"), currentName,
         realIDFV, cfgStr(@"idfv", @"A1B2C3D4-E5F6-7890-ABCD-EF1234567890"), currentIDFV,
         realProcess, currentProcess,
-        realMemory, (long)cfgInt(@"memorySize", 6144), currentMemory,
+        realMemory, (long)cfgInt(@"memorySize", 2048), currentMemory,
         CGRectGetWidth(realBounds), CGRectGetHeight(realBounds), realScale,
-        (long)cfgInt(@"screenWidth", 393), (long)cfgInt(@"screenHeight", 852), (long)cfgInt(@"screenScale", 3),
+        (long)cfgInt(@"screenWidth", 375), (long)cfgInt(@"screenHeight", 667), (long)cfgInt(@"screenScale", 2),
         CGRectGetWidth(currentBounds), CGRectGetHeight(currentBounds), currentScale];
 
-    // 高级功能自检
     NSMutableString *advanced = [NSMutableString stringWithString:@"\n\n--- 高级功能 ---"];
 
     [advanced appendFormat:@"\n百度SDK：%@", cfgBool(@"spoofBaiduSDK", NO) ? @"开" : @"关"];
@@ -1518,10 +1870,24 @@ static NSString *BDSConfigSummary(void) {
         WKWebView *wv = [[WKWebView alloc] init];
         NSString *ua = [wv performSelector:@selector(customUserAgent)];
         [advanced appendFormat:@"\n  WKWebView getter：%@", ua ?: @"nil（App未设置）"];
-        [advanced appendString:@"\n  注：仅验证getter，不代表实际请求头"];
     }
 
     [advanced appendFormat:@"\n越狱绕过：%@", cfgBool(@"bypassJailbreakDetect", NO) ? @"开" : @"关"];
+    if (cfgBool(@"bypassJailbreakDetect", NO)) {
+        // B: 镜像名过滤自检
+        if (orig_dyld_get_image_name) {
+            uint32_t count = _dyld_image_count();
+            int suspicious = 0;
+            for (uint32_t i = 0; i < count; i++) {
+                const char *orig = orig_dyld_get_image_name(i);
+                if (orig && bds_c_should_hide_image(orig)) suspicious++;
+            }
+            [advanced appendFormat:@"\n  镜像名过滤：隐藏 %u 个可疑镜像", suspicious];
+        }
+        [advanced appendFormat:@"\n  C函数检测：stat/access/fopen 已拦截"];
+        NSArray *frameworks = [NSBundle allFrameworks];
+        [advanced appendFormat:@"\n  NSBundle过滤：%lu 个 framework", (unsigned long)frameworks.count];
+    }
 
     message = [message stringByAppendingString:advanced];
 
@@ -1566,16 +1932,27 @@ static void BDSInstallUI(void) {
 __attribute__((constructor))
 static void bds_initialize() {
     @autoreleasepool {
+        // 先加载配置
         loadConfig();
 
         NSString *bundleID = [NSBundle mainBundle].bundleIdentifier;
         if (![bundleID isEqualToString:@"com.baidu.BaiduMobileInfo"]) return;
 
-        // 配置入口始终安装；即使功能关闭，也可以从右侧“隐”按钮重新开启。
+        // 配置入口始终安装
         BDSInstallUI();
 
-        // 配置缺失或读取失败时默认不启用，避免注入后意外改变百度行为。
         if (!cfgBool(@"enabled", NO)) return;
+
+        // 安装 C 函数 hook（fishhook GOT 替换）
+        // fishhook 保存的 orig 指针直接指向 libSystem 真实地址，
+        // 调用 orig 不经过 GOT，结构上不可能递归。
+        // 必须在 enabled 检查之后安装，避免禁用状态下修改 GOT。
+        installCHooks();
+
+        // 同步 C 全局开关
+        BDS_ATOMIC_SET(g_enabledC, 1);
+        BDS_ATOMIC_SET(g_spoofSysctlC, cfgBool(@"spoofSysctl", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_bypassJailbreakC, cfgBool(@"bypassJailbreakDetect", NO) ? 1 : 0);
 
         // UIDevice
         Class cls = objc_getClass("UIDevice");
@@ -1587,12 +1964,10 @@ static void bds_initialize() {
         hookInst(cls, @selector(identifierForVendor), (IMP)new_identifierForVendor, &orig_identifierForVendor);
 
         if (cfgBool(@"spoofAdvertisingIdentifiers", YES)) {
-            // ASIdentifierManager
             cls = objc_getClass("ASIdentifierManager");
             hookInst(cls, @selector(advertisingIdentifier), (IMP)new_advertisingIdentifier, &orig_advertisingIdentifier);
             hookInst(cls, @selector(isAdvertisingTrackingEnabled), (IMP)new_isAdvertisingTrackingEnabled, &orig_isAdvertisingTrackingEnabled);
 
-            // ATTrackingManager (iOS 14+)
             cls = objc_getClass("ATTrackingManager");
             if (cls) {
                 hookClass(cls, @selector(trackingAuthorizationStatus), (IMP)new_trackingAuthorizationStatus, &orig_trackingAuthorizationStatus);
@@ -1609,18 +1984,15 @@ static void bds_initialize() {
         }
 
         if (cfgBool(@"spoofLocale", NO)) {
-            // NSLocale
             cls = objc_getClass("NSLocale");
             hookInst(cls, @selector(localeIdentifier), (IMP)new_localeIdentifier, &orig_localeIdentifier);
         }
 
         if (cfgBool(@"spoofCarrier", NO)) {
-            // CTTelephonyNetworkInfo
             cls = objc_getClass("CTTelephonyNetworkInfo");
             hookInst(cls, @selector(subscriberCellularProvider), (IMP)new_subscriberCellularProvider, &orig_subscriberCellularProvider);
             hookInst(cls, @selector(serviceSubscriberCellularProviders), (IMP)new_serviceSubscriberCellularProviders, &orig_serviceSubscriberCellularProviders);
 
-            // CTCarrier
             cls = objc_getClass("CTCarrier");
             hookInst(cls, @selector(carrierName), (IMP)new_carrierName, &orig_carrierName);
             hookInst(cls, @selector(mobileCountryCode), (IMP)new_mobileCountryCode, &orig_mobileCountryCode);
@@ -1629,7 +2001,6 @@ static void bds_initialize() {
             hookInst(cls, @selector(allowsVOIP), (IMP)new_allowsVOIP, &orig_allowsVOIP);
         }
 
-        // UIScreen：默认关闭，避免改变真实窗口尺寸导致布局或启动异常。
         if (cfgBool(@"spoofScreen", NO)) {
             cls = objc_getClass("UIScreen");
             hookInst(cls, @selector(bounds), (IMP)new_bounds, &orig_bounds);
@@ -1638,7 +2009,6 @@ static void bds_initialize() {
         }
 
         if (cfgBool(@"spoofStorage", NO)) {
-            // NSFileManager
             cls = objc_getClass("NSFileManager");
             hookInst(cls, @selector(attributesOfFileSystemForPath:error:), (IMP)new_attributesOfFileSystemForPath, &orig_attributesOfFileSystemForPath);
         }
@@ -1661,7 +2031,7 @@ static void bds_initialize() {
             }
         }
 
-        // 越狱检测绕过
+        // 越狱检测绕过（ObjC 层 + D: NSBundle 过滤）
         if (cfgBool(@"bypassJailbreakDetect", NO)) {
             cls = objc_getClass("NSFileManager");
             hookInst(cls, @selector(fileExistsAtPath:), (IMP)new_fileExistsAtPath, &orig_fileExistsAtPath);
@@ -1669,10 +2039,15 @@ static void bds_initialize() {
 
             cls = objc_getClass("UIApplication");
             hookInst(cls, @selector(canOpenURL:), (IMP)new_canOpenURL, &orig_canOpenURL);
-        }
 
-        // TrollFools 常规构建不生成 DYLD_INTERPOSE，避免加载阶段立即闪退。
-        // spoofSysctl 配置项暂时保留，供以后按加载器单独验证。
-        // 高级功能默认全部关闭，通过"隐"按钮逐项开启。
+            // D: NSBundle 遍历过滤
+            cls = objc_getClass("NSBundle");
+            hookClass(cls, @selector(allFrameworks), (IMP)new_allFrameworks, &orig_allFrameworks);
+            hookClass(cls, @selector(allBundles), (IMP)new_allBundles, &orig_allBundles);
+            Method m = class_getClassMethod(cls, @selector(loadedBundles));
+            if (m) {
+                hookClass(cls, @selector(loadedBundles), (IMP)new_loadedBundles, &orig_loadedBundles);
+            }
+        }
     }
 }

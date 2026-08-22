@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>configVersion</key>
-	<integer>150</integer>
+	<integer>160</integer>
 	<key>enabled</key>
 	<true/>
 	<key>spoofScreen</key>
@@ -21,7 +21,7 @@
 	<key>spoofBaiduSDK</key>
 	<true/>
 	<key>spoofSysctl</key>
-	<false/>
+	<true/>
 	<key>spoofKeychain</key>
 	<true/>
 	<key>spoofUserAgent</key>
@@ -35,9 +35,9 @@
 	<key>marketingModel</key>
 	<string>iPhone</string>
 	<key>systemVersion</key>
-	<string>17.5.1</string>
+	<string>15.7.1</string>
 	<key>systemBuild</key>
-	<string>21F79</string>
+	<string>19H307</string>
 	<key>idfa</key>
 	<string>8C4BF2A1-7D3E-4F5A-9B6C-2D8E1F3A5B7C</string>
 	<key>idfv</key>
@@ -59,23 +59,23 @@
 	<key>isoCountryCode</key>
 	<string>cn</string>
 	<key>diskSize</key>
-	<integer>256</integer>
+	<integer>64</integer>
 	<key>memorySize</key>
-	<integer>6144</integer>
+	<integer>2048</integer>
 	<key>kernHostname</key>
 	<string>iPhone</string>
 	<key>hwMachine</key>
-	<string>iPhone15,2</string>
+	<string>iPhone10,1</string>
 	<key>hwModel</key>
-	<string>D54AP</string>
+	<string>D20AP</string>
 	<key>kernOSVersion</key>
-	<string>21F79</string>
+	<string>19H307</string>
 	<key>screenWidth</key>
-	<integer>393</integer>
+	<integer>375</integer>
 	<key>screenHeight</key>
-	<integer>852</integer>
+	<integer>667</integer>
 	<key>screenScale</key>
-	<integer>3</integer>
+	<integer>2</integer>
 	<key>localeIdentifier</key>
 	<string>zh_CN</string>
 </dict>
