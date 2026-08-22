@@ -2,12 +2,12 @@
 
 通过 TrollFools 注入到百度极速版，虚拟化设备信息。
 
-## 当前版本：1.4.0 Keychain 拦截版
+## 当前版本：1.5.0 默认开启与随机身份版
 
-> 1.4.0 继续禁用会递归的 sysctl `DYLD_INTERPOSE`；Keychain interpose 通过
-> Security.framework 的明确句柄解析原函数，避免 `RTLD_NEXT` 回到替换函数。
+> 总开关、百度 SDK、Keychain、User-Agent 和越狱检测绕过默认开启；
+> sysctl 保持关闭。随机身份由用户手动生成一次并持久保存，不会在启动时自动变化。
 
-### 基础功能（默认关闭，通过"隐"按钮开启）
+### 基础功能（默认开启）
 
 - UIDevice：systemVersion、model、localizedModel、name、systemName、identifierForVendor
 - ASIdentifierManager：advertisingIdentifier、isAdvertisingTrackingEnabled
@@ -18,13 +18,17 @@
 - UIScreen：bounds、nativeBounds、scale
 - NSFileManager：磁盘大小
 
-### 高级功能（默认关闭，逐项开启测试）
+### 高级功能（除 sysctl 外默认开启）
 
 - **百度 SDK 标识**（spoofBaiduSDK）：hook CuidSDK、UTDIDModule、MobStat、DeviceIdentifierFetcher，返回伪造的 CUID/UTDID/DeviceID
-- **sysctlbyname**（spoofSysctl）：通过 DYLD_INTERPOSE 拦截 hw.machine、hw.model、kern.osversion、kern.hostname
+- **sysctlbyname**（spoofSysctl）：配置项保留，但常规构建保持关闭且不生成对应 interpose
 - **Keychain 拦截**（spoofKeychain）：查询的 access group、service、account、description、label 或 agrp 包含 baidu 时返回未找到
 - **User-Agent**（spoofUserAgent）：hook WKWebView customUserAgent 和 NSMutableURLRequest 请求头，自动保持与系统版本一致。注意：只覆盖显式设置的 UA 和 WKWebView 的 UA，NSURLSession 自动生成的默认 UA 不经过这两个方法，可能无法覆盖。
 - **越狱检测绕过**（bypassJailbreakDetect）：hook fileExistsAtPath/canOpenURL，对越狱路径和 URL scheme 返回否定结果
+
+### 一键随机身份
+
+高级功能面板末尾的“一键随机更换身份参数”会生成并持久保存新的 IDFA、IDFV、DeviceID、CUID、UTDID 和设备名称。后续 API 读取立即使用新值；App 已缓存的启动值不会被追溯修改。
 
 ### 不包含
 

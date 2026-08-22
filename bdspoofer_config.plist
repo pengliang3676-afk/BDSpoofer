@@ -2,8 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>configVersion</key>
+	<integer>150</integer>
 	<key>enabled</key>
-	<false/>
+	<true/>
 	<key>spoofScreen</key>
 	<false/>
 	<key>spoofAdvertisingIdentifiers</key>
@@ -17,15 +19,15 @@
 	<key>spoofStorage</key>
 	<false/>
 	<key>spoofBaiduSDK</key>
-	<false/>
+	<true/>
 	<key>spoofSysctl</key>
 	<false/>
 	<key>spoofKeychain</key>
-	<false/>
+	<true/>
 	<key>spoofUserAgent</key>
-	<false/>
+	<true/>
 	<key>bypassJailbreakDetect</key>
-	<false/>
+	<true/>
 	<key>deviceName</key>
 	<string>iPhone</string>
 	<key>deviceModel</key>

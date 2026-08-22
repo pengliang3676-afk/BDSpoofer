@@ -25,6 +25,29 @@
 
 static NSDictionary *g_config = nil;
 
+static NSDictionary *BDSDefaultConfig(void) {
+    static NSDictionary *defaults;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        defaults = @{
+            @"configVersion": @150,
+            @"enabled": @YES,
+            @"spoofAdvertisingIdentifiers": @YES,
+            @"spoofProcessHardware": @NO,
+            @"spoofLocale": @NO,
+            @"spoofCarrier": @NO,
+            @"spoofScreen": @NO,
+            @"spoofStorage": @NO,
+            @"spoofBaiduSDK": @YES,
+            @"spoofSysctl": @NO,
+            @"spoofKeychain": @YES,
+            @"spoofUserAgent": @YES,
+            @"bypassJailbreakDetect": @YES
+        };
+    });
+    return defaults;
+}
+
 static NSString *configPath(void) {
     NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
     return [docs stringByAppendingPathComponent:@"bdspoofer_config.plist"];
@@ -47,8 +70,22 @@ static void loadConfig() {
     NSString *p1 = configPath();
     NSString *p2 = [[NSBundle mainBundle] pathForResource:@"bdspoofer_config" ofType:@"plist"];
     NSString *path = [[NSFileManager defaultManager] fileExistsAtPath:p1] ? p1 : p2;
-    if (path) g_config = [NSDictionary dictionaryWithContentsOfFile:path];
-    if (!g_config) g_config = @{};
+    NSDictionary *loaded = path ? [NSDictionary dictionaryWithContentsOfFile:path] : nil;
+    NSMutableDictionary *merged = [BDSDefaultConfig() mutableCopy];
+    if (loaded) [merged addEntriesFromDictionary:loaded];
+    if ([loaded[@"configVersion"] integerValue] < 150) {
+        [merged addEntriesFromDictionary:@{
+            @"configVersion": @150,
+            @"enabled": @YES,
+            @"spoofBaiduSDK": @YES,
+            @"spoofSysctl": @NO,
+            @"spoofKeychain": @YES,
+            @"spoofUserAgent": @YES,
+            @"bypassJailbreakDetect": @YES
+        }];
+        [merged writeToFile:p1 atomically:YES];
+    }
+    g_config = [merged copy];
 }
 
 static BOOL saveConfigValues(NSDictionary *values) {
@@ -766,6 +803,24 @@ static NSString *BDSOnOff(BOOL value) {
     return value ? @"开" : @"关";
 }
 
+static NSString *BDSRandomHex32(BOOL uppercase) {
+    NSString *value = [[NSUUID.UUID.UUIDString
+        stringByReplacingOccurrencesOfString:@"-" withString:@""] substringToIndex:32];
+    return uppercase ? value.uppercaseString : value.lowercaseString;
+}
+
+static NSDictionary *BDSRandomIdentityValues(void) {
+    NSString *deviceSuffix = [BDSRandomHex32(YES) substringToIndex:6];
+    return @{
+        @"idfa": NSUUID.UUID.UUIDString.uppercaseString,
+        @"idfv": NSUUID.UUID.UUIDString.uppercaseString,
+        @"deviceID": NSUUID.UUID.UUIDString.uppercaseString,
+        @"cuid": BDSRandomHex32(YES),
+        @"utdid": BDSRandomHex32(NO),
+        @"deviceName": [@"iPhone-" stringByAppendingString:deviceSuffix]
+    };
+}
+
 static NSString *BDSConfigSummary(void) {
     NSString *container = NSHomeDirectory().lastPathComponent ?: @"unknown";
     if (container.length > 12) container = [container substringFromIndex:container.length - 12];
@@ -1084,7 +1139,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"高级功能"
-                                                                   message:@"这些功能有一定风险，建议逐项开启测试；修改后重启生效。"
+                                                                   message:@"除 sysctl 外默认开启；随机身份保存后立即用于后续读取。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSDictionary *> *items = @[
         @{@"key": @"spoofBaiduSDK", @"name": @"百度 SDK 标识（CUID/UTDID/DeviceID）"},
@@ -1101,6 +1156,26 @@ static NSString *BDSConfigSummary(void) {
             [self showRestartNotice:saveConfigValues(@{key: @(!cfgBool(key, NO))})];
         }]];
     }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"一键随机更换身份参数"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        (void)action;
+        NSDictionary *values = BDSRandomIdentityValues();
+        BOOL saved = saveConfigValues(values);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (!saved) {
+                [self presentMessage:@"配置文件写入失败，身份参数未更换。" title:@"保存失败"];
+                return;
+            }
+            NSString *message = [NSString stringWithFormat:
+                @"已生成并持久保存。后续 API 读取立即使用新值；App 启动时已缓存的值不会被追溯修改。\n\n"
+                 @"设备名称：%@\nIDFA：%@\nIDFV：%@\nCUID：%@\nUTDID：%@\nDeviceID：%@",
+                values[@"deviceName"], values[@"idfa"], values[@"idfv"],
+                values[@"cuid"], values[@"utdid"], values[@"deviceID"]];
+            [self presentMessage:message title:@"身份参数已更换"];
+        });
+    }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     if (sheet.popoverPresentationController) {
         sheet.popoverPresentationController.sourceView = presenter.view;
