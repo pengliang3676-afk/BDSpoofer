@@ -423,6 +423,15 @@ static void installBaiduSDKHooks(void) {
 
 static int (*bds_orig_sysctlbyname)(const char *, void *, size_t *, void *, size_t);
 
+// TrollFools loads this dylib after the target executable has already been prepared.
+// A __DATA,__interpose entry in an injected dylib can make dyld terminate the app
+// before our constructor or configuration UI gets a chance to run. Keep the
+// implementation for future loader-specific testing, but do not emit the
+// interpose section in the normal TrollFools build.
+#ifndef BDS_ENABLE_DYLD_INTERPOSE
+#define BDS_ENABLE_DYLD_INTERPOSE 0
+#endif
+
 static int bds_my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
                                 void *newp, size_t newlen) {
     if (!bds_orig_sysctlbyname) {
@@ -477,6 +486,7 @@ static int bds_my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
     return 0;
 }
 
+#if BDS_ENABLE_DYLD_INTERPOSE
 __attribute__((used)) static struct {
     const void *replacement;
     const void *replacee;
@@ -484,6 +494,7 @@ __attribute__((used)) static struct {
     (const void *)bds_my_sysctlbyname,
     (const void *)sysctlbyname
 };
+#endif
 
 #pragma mark - User-Agent Hook
 
@@ -1512,7 +1523,8 @@ static void bds_initialize() {
             hookInst(cls, @selector(canOpenURL:), (IMP)new_canOpenURL, &orig_canOpenURL);
         }
 
-        // sysctlbyname 通过 DYLD_INTERPOSE 自动生效，无需在此安装。
+        // TrollFools 常规构建不生成 DYLD_INTERPOSE，避免加载阶段立即闪退。
+        // spoofSysctl 配置项暂时保留，供以后按加载器单独验证。
         // 高级功能默认全部关闭，通过"隐"按钮逐项开启。
     }
 }
