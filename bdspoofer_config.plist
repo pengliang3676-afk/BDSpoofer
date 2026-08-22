@@ -20,6 +20,8 @@
 	<false/>
 	<key>spoofSysctl</key>
 	<false/>
+	<key>spoofKeychain</key>
+	<false/>
 	<key>spoofUserAgent</key>
 	<false/>
 	<key>bypassJailbreakDetect</key>

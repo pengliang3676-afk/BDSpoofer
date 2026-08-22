@@ -12,6 +12,7 @@
 #import <AdSupport/AdSupport.h>
 #import <CoreTelephony/CTTelephonyNetworkInfo.h>
 #import <CoreTelephony/CTCarrier.h>
+#import <Security/Security.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <sys/sysctl.h>
@@ -496,6 +497,74 @@ __attribute__((used)) static struct {
 };
 #endif
 
+#pragma mark - Keychain Hook (DYLD_INTERPOSE)
+
+typedef OSStatus (*BDSSecItemCopyMatchingFn)(CFDictionaryRef query, CFTypeRef *result);
+
+static BDSSecItemCopyMatchingFn bds_original_SecItemCopyMatching(void) {
+    static BDSSecItemCopyMatchingFn original = NULL;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // RTLD_FIRST restricts lookup to Security.framework itself. Using
+        // RTLD_NEXT here can resolve back to the interposed replacement when
+        // TrollFools injects the dylib, causing infinite recursion.
+        void *security = dlopen("/System/Library/Frameworks/Security.framework/Security",
+                                RTLD_NOW | RTLD_LOCAL | RTLD_FIRST);
+        if (security) {
+            original = (BDSSecItemCopyMatchingFn)dlsym(security, "SecItemCopyMatching");
+        }
+    });
+    return original;
+}
+
+static BOOL bds_keychainValueContainsBaidu(id value) {
+    if (![value isKindOfClass:NSString.class]) return NO;
+    return [(NSString *)value rangeOfString:@"baidu"
+                                    options:NSCaseInsensitiveSearch].location != NSNotFound;
+}
+
+static OSStatus bds_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
+    BDSSecItemCopyMatchingFn original = bds_original_SecItemCopyMatching();
+    if (!original || original == bds_SecItemCopyMatching) {
+        return errSecUnimplemented;
+    }
+
+    // Security.framework can query Keychain before our constructor loads the
+    // plist. In that state, and while the option is disabled, only pass through.
+    if (!g_config || !cfgBool(@"enabled", NO) ||
+        !cfgBool(@"spoofKeychain", NO) || !query) {
+        return original(query, result);
+    }
+
+    @autoreleasepool {
+        NSDictionary *dictionary = (__bridge NSDictionary *)query;
+        NSArray *keys = @[
+            (__bridge id)kSecAttrAccessGroup,
+            (__bridge id)kSecAttrService,
+            (__bridge id)kSecAttrAccount,
+            (__bridge id)kSecAttrDescription,
+            (__bridge id)kSecAttrLabel,
+            @"agrp"
+        ];
+        for (id key in keys) {
+            if (bds_keychainValueContainsBaidu(dictionary[key])) {
+                if (result) *result = NULL;
+                return errSecItemNotFound;
+            }
+        }
+    }
+
+    return original(query, result);
+}
+
+__attribute__((used)) static struct {
+    const void *replacement;
+    const void *replacee;
+} bds_interpose_SecItemCopyMatching __attribute__((section("__DATA,__interpose"))) = {
+    (const void *)bds_SecItemCopyMatching,
+    (const void *)SecItemCopyMatching
+};
+
 #pragma mark - User-Agent Hook
 
 static IMP orig_wk_customUserAgent = NULL;
@@ -856,6 +925,7 @@ static NSString *BDSConfigSummary(void) {
             @"spoofStorage": @NO,
             @"spoofBaiduSDK": @NO,
             @"spoofSysctl": @NO,
+            @"spoofKeychain": @NO,
             @"spoofUserAgent": @NO,
             @"bypassJailbreakDetect": @NO
         };
@@ -1019,6 +1089,7 @@ static NSString *BDSConfigSummary(void) {
     NSArray<NSDictionary *> *items = @[
         @{@"key": @"spoofBaiduSDK", @"name": @"百度 SDK 标识（CUID/UTDID/DeviceID）"},
         @{@"key": @"spoofSysctl", @"name": @"sysctlbyname（hw.machine 等）"},
+        @{@"key": @"spoofKeychain", @"name": @"Keychain 拦截"},
         @{@"key": @"spoofUserAgent", @"name": @"User-Agent 替换"},
         @{@"key": @"bypassJailbreakDetect", @"name": @"越狱检测绕过"}
     ];
@@ -1364,6 +1435,8 @@ static NSString *BDSConfigSummary(void) {
             [advanced appendFormat:@"\n  kern.osversion：%s", buf];
         }
     }
+
+    [advanced appendFormat:@"\nKeychain 拦截：%@", cfgBool(@"spoofKeychain", NO) ? @"开" : @"关"];
 
     [advanced appendFormat:@"\nUser-Agent：%@", cfgBool(@"spoofUserAgent", NO) ? @"开" : @"关"];
     if (cfgBool(@"spoofUserAgent", NO)) {

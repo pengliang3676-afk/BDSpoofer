@@ -2,10 +2,10 @@
 
 通过 TrollFools 注入到百度极速版，虚拟化设备信息。
 
-## 当前版本：1.3.5 TrollFools 启动修复版
+## 当前版本：1.4.0 Keychain 拦截版
 
-> 1.3.5 默认禁用注入 dylib 中的 `DYLD_INTERPOSE`，避免 TrollFools 加载阶段立即闪退。
-> `spoofSysctl` 配置项暂时保留，但本版本不会启用该功能。
+> 1.4.0 继续禁用会递归的 sysctl `DYLD_INTERPOSE`；Keychain interpose 通过
+> Security.framework 的明确句柄解析原函数，避免 `RTLD_NEXT` 回到替换函数。
 
 ### 基础功能（默认关闭，通过"隐"按钮开启）
 
@@ -22,12 +22,12 @@
 
 - **百度 SDK 标识**（spoofBaiduSDK）：hook CuidSDK、UTDIDModule、MobStat、DeviceIdentifierFetcher，返回伪造的 CUID/UTDID/DeviceID
 - **sysctlbyname**（spoofSysctl）：通过 DYLD_INTERPOSE 拦截 hw.machine、hw.model、kern.osversion、kern.hostname
+- **Keychain 拦截**（spoofKeychain）：查询的 access group、service、account、description、label 或 agrp 包含 baidu 时返回未找到
 - **User-Agent**（spoofUserAgent）：hook WKWebView customUserAgent 和 NSMutableURLRequest 请求头，自动保持与系统版本一致。注意：只覆盖显式设置的 UA 和 WKWebView 的 UA，NSURLSession 自动生成的默认 UA 不经过这两个方法，可能无法覆盖。
 - **越狱检测绕过**（bypassJailbreakDetect）：hook fileExistsAtPath/canOpenURL，对越狱路径和 URL scheme 返回否定结果
 
 ### 不包含
 
-- Keychain 拦截（后续版本）
 - Cookie 过滤（后续版本）
 - App Group 隔离（后续版本）
 - MGCopyAnswer 私有 API（后续版本）
@@ -56,14 +56,14 @@ SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
 xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK_PATH" -miphoneos-version-min=15.0 \
   -fobjc-arc -dynamiclib \
   -framework Foundation -framework UIKit -framework CoreGraphics \
-  -framework AdSupport -framework CoreTelephony -framework WebKit \
+  -framework AdSupport -framework CoreTelephony -framework Security -framework WebKit \
   -install_name @rpath/BDSpoofer.dylib -o BDSpoofer_arm64.dylib BDSpoofer.m
 
 # arm64e
 xcrun --sdk iphoneos clang -arch arm64e -isysroot "$SDK_PATH" -miphoneos-version-min=15.0 \
   -fobjc-arc -dynamiclib \
   -framework Foundation -framework UIKit -framework CoreGraphics \
-  -framework AdSupport -framework CoreTelephony -framework WebKit \
+  -framework AdSupport -framework CoreTelephony -framework Security -framework WebKit \
   -install_name @rpath/BDSpoofer.dylib -o BDSpoofer_arm64e.dylib BDSpoofer.m
 
 # 合并
