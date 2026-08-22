@@ -4,6 +4,10 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  1.6.1：
+//    E. 基础页面增加“一键随机整套设备参数”
+//       （iPhone 8 至 iPhone 13 系列，含 SE2/SE3；iOS 15/16）
+//    F. 基础功能默认开启；随机操作仅在手动点击时执行并持久保存
 //  1.6.0：
 //    A. iPhone 8 默认硬件参数（与 SE2 硬件一致）
 //    B. _dyld_get_image_name 镜像名过滤（fishhook）
@@ -54,7 +58,7 @@ static int g_bypassJailbreakC = 0;
 // C hook 使用的缓存伪造值（constructor 和 saveConfigValues 中更新）
 static char g_hwMachine[32] = "iPhone10,1";
 static char g_hwModel[32] = "D20AP";
-static char g_kernOSVersion[16] = "19H307";
+static char g_kernOSVersion[16] = "19H117";
 static char g_kernHostname[65] = "iPhone";
 
 static NSDictionary *BDSDefaultConfig(void) {
@@ -62,14 +66,14 @@ static NSDictionary *BDSDefaultConfig(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @160,
+            @"configVersion": @161,
             @"enabled": @YES,
             @"spoofAdvertisingIdentifiers": @YES,
-            @"spoofProcessHardware": @NO,
-            @"spoofLocale": @NO,
-            @"spoofCarrier": @NO,
-            @"spoofScreen": @NO,
-            @"spoofStorage": @NO,
+            @"spoofProcessHardware": @YES,
+            @"spoofLocale": @YES,
+            @"spoofCarrier": @YES,
+            @"spoofScreen": @YES,
+            @"spoofStorage": @YES,
             @"spoofBaiduSDK": @YES,
             @"spoofSysctl": @YES,
             @"spoofKeychain": @YES,
@@ -104,7 +108,7 @@ static void bds_update_c_cache(void) {
     snprintf(g_hwMachine, sizeof(g_hwMachine), "%s", v.UTF8String);
     v = cfgStr(@"hwModel", @"D20AP");
     snprintf(g_hwModel, sizeof(g_hwModel), "%s", v.UTF8String);
-    v = cfgStr(@"kernOSVersion", @"19H307");
+    v = cfgStr(@"kernOSVersion", @"19H117");
     snprintf(g_kernOSVersion, sizeof(g_kernOSVersion), "%s", v.UTF8String);
     v = cfgStr(@"kernHostname", @"iPhone");
     snprintf(g_kernHostname, sizeof(g_kernHostname), "%s", v.UTF8String);
@@ -134,16 +138,41 @@ static void loadConfig() {
             @"configVersion": @160,
             @"spoofSysctl": @YES,
             @"systemVersion": @"15.7.1",
-            @"systemBuild": @"19H307",
+            @"systemBuild": @"19H117",
             @"hwMachine": @"iPhone10,1",
             @"hwModel": @"D20AP",
-            @"kernOSVersion": @"19H307",
+            @"kernOSVersion": @"19H117",
             @"screenWidth": @375,
             @"screenHeight": @667,
             @"screenScale": @2,
             @"memorySize": @2048,
             @"diskSize": @64
         }];
+        [merged writeToFile:p1 atomically:YES];
+    }
+    if (ver < 161) {
+        // 1.6.1 只迁移基础功能开关；高级功能保持 1.6.0 的已有状态。
+        [merged addEntriesFromDictionary:@{
+            @"configVersion": @161,
+            @"enabled": @YES,
+            @"spoofAdvertisingIdentifiers": @YES,
+            @"spoofProcessHardware": @YES,
+            @"spoofLocale": @YES,
+            @"spoofCarrier": @YES,
+            @"spoofScreen": @YES,
+            @"spoofStorage": @YES
+        }];
+        if (!loaded[@"nativeScreenWidth"]) merged[@"nativeScreenWidth"] = @750;
+        if (!loaded[@"nativeScreenHeight"]) merged[@"nativeScreenHeight"] = @1334;
+        if (!loaded[@"deviceProfileName"]) merged[@"deviceProfileName"] = @"iPhone 8";
+        // 修正旧默认值中 15.7.1 与 15.7.3 Build 混用的问题，不覆盖用户自定义组合。
+        if ([merged[@"systemVersion"] isEqualToString:@"15.7.1"] &&
+            [merged[@"systemBuild"] isEqualToString:@"19H307"]) {
+            merged[@"systemBuild"] = @"19H117";
+            if ([merged[@"kernOSVersion"] isEqualToString:@"19H307"]) {
+                merged[@"kernOSVersion"] = @"19H117";
+            }
+        }
         [merged writeToFile:p1 atomically:YES];
     }
     g_config = [merged copy];
@@ -497,7 +526,7 @@ static NSInteger new_trackingAuthorizationStatus(id self, SEL _cmd) {
 static IMP orig_operatingSystemVersionString = NULL;
 static NSString *new_operatingSystemVersionString(id self, SEL _cmd) {
     NSString *v = cfgStr(@"systemVersion", @"15.7.1");
-    NSString *b = cfgStr(@"systemBuild", @"19H307");
+    NSString *b = cfgStr(@"systemBuild", @"19H117");
     return [NSString stringWithFormat:@"Version %@ (Build %@)", v, b];
 }
 
@@ -580,8 +609,10 @@ static CGRect new_bounds(id self, SEL _cmd) {
 static IMP orig_nativeBounds = NULL;
 static CGRect new_nativeBounds(id self, SEL _cmd) {
     CGFloat scale = (CGFloat)cfgInt(@"screenScale", 2);
-    CGFloat w = cfgInt(@"screenWidth", 375) * scale;
-    CGFloat h = cfgInt(@"screenHeight", 667) * scale;
+    CGFloat w = (CGFloat)cfgInt(@"nativeScreenWidth",
+                                cfgInt(@"screenWidth", 375) * scale);
+    CGFloat h = (CGFloat)cfgInt(@"nativeScreenHeight",
+                                cfgInt(@"screenHeight", 667) * scale);
     return CGRectMake(0, 0, w, h);
 }
 
@@ -1109,6 +1140,7 @@ static const void *BDSButtonKey = &BDSButtonKey;
 - (void)editSystemVersion;
 - (void)editDeviceName;
 - (void)editIdentifiers;
+- (void)randomizeBasicProfile;
 - (void)showOptionalSwitches;
 - (void)showOptionalEditors;
 - (void)showAdvancedSwitches;
@@ -1174,15 +1206,138 @@ static NSDictionary *BDSRandomIdentityValues(void) {
     };
 }
 
+static NSArray<NSDictionary *> *BDSDeviceProfiles(void) {
+    static NSArray<NSDictionary *> *profiles;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        profiles = @[
+            @{@"name": @"iPhone 8", @"machine": @"iPhone10,1", @"model": @"D20AP",
+              @"width": @375, @"height": @667, @"nativeWidth": @750, @"nativeHeight": @1334,
+              @"scale": @2, @"memory": @2048, @"disks": @[@64, @256]},
+            @{@"name": @"iPhone 8 Plus", @"machine": @"iPhone10,2", @"model": @"D21AP",
+              @"width": @414, @"height": @736, @"nativeWidth": @1080, @"nativeHeight": @1920,
+              @"scale": @3, @"memory": @3072, @"disks": @[@64, @256]},
+            @{@"name": @"iPhone X", @"machine": @"iPhone10,3", @"model": @"D22AP",
+              @"width": @375, @"height": @812, @"nativeWidth": @1125, @"nativeHeight": @2436,
+              @"scale": @3, @"memory": @3072, @"disks": @[@64, @256]},
+            @{@"name": @"iPhone XR", @"machine": @"iPhone11,8", @"model": @"N841AP",
+              @"width": @414, @"height": @896, @"nativeWidth": @828, @"nativeHeight": @1792,
+              @"scale": @2, @"memory": @3072, @"disks": @[@64, @128, @256]},
+            @{@"name": @"iPhone XS", @"machine": @"iPhone11,2", @"model": @"D321AP",
+              @"width": @375, @"height": @812, @"nativeWidth": @1125, @"nativeHeight": @2436,
+              @"scale": @3, @"memory": @4096, @"disks": @[@64, @256, @512]},
+            @{@"name": @"iPhone XS Max", @"machine": @"iPhone11,6", @"model": @"D331pAP",
+              @"width": @414, @"height": @896, @"nativeWidth": @1242, @"nativeHeight": @2688,
+              @"scale": @3, @"memory": @4096, @"disks": @[@64, @256, @512]},
+            @{@"name": @"iPhone 11", @"machine": @"iPhone12,1", @"model": @"N104AP",
+              @"width": @414, @"height": @896, @"nativeWidth": @828, @"nativeHeight": @1792,
+              @"scale": @2, @"memory": @4096, @"disks": @[@64, @128, @256]},
+            @{@"name": @"iPhone 11 Pro", @"machine": @"iPhone12,3", @"model": @"D421AP",
+              @"width": @375, @"height": @812, @"nativeWidth": @1125, @"nativeHeight": @2436,
+              @"scale": @3, @"memory": @4096, @"disks": @[@64, @256, @512]},
+            @{@"name": @"iPhone 11 Pro Max", @"machine": @"iPhone12,5", @"model": @"D431AP",
+              @"width": @414, @"height": @896, @"nativeWidth": @1242, @"nativeHeight": @2688,
+              @"scale": @3, @"memory": @4096, @"disks": @[@64, @256, @512]},
+            @{@"name": @"iPhone SE (2nd generation)", @"machine": @"iPhone12,8", @"model": @"D79AP",
+              @"width": @375, @"height": @667, @"nativeWidth": @750, @"nativeHeight": @1334,
+              @"scale": @2, @"memory": @3072, @"disks": @[@64, @128, @256]},
+            @{@"name": @"iPhone 12 mini", @"machine": @"iPhone13,1", @"model": @"D52gAP",
+              @"width": @375, @"height": @812, @"nativeWidth": @1080, @"nativeHeight": @2340,
+              @"scale": @3, @"memory": @4096, @"disks": @[@64, @128, @256]},
+            @{@"name": @"iPhone 12", @"machine": @"iPhone13,2", @"model": @"D53gAP",
+              @"width": @390, @"height": @844, @"nativeWidth": @1170, @"nativeHeight": @2532,
+              @"scale": @3, @"memory": @4096, @"disks": @[@64, @128, @256]},
+            @{@"name": @"iPhone 12 Pro", @"machine": @"iPhone13,3", @"model": @"D53pAP",
+              @"width": @390, @"height": @844, @"nativeWidth": @1170, @"nativeHeight": @2532,
+              @"scale": @3, @"memory": @6144, @"disks": @[@128, @256, @512]},
+            @{@"name": @"iPhone 12 Pro Max", @"machine": @"iPhone13,4", @"model": @"D54pAP",
+              @"width": @428, @"height": @926, @"nativeWidth": @1284, @"nativeHeight": @2778,
+              @"scale": @3, @"memory": @6144, @"disks": @[@128, @256, @512]},
+            @{@"name": @"iPhone 13 mini", @"machine": @"iPhone14,4", @"model": @"D16AP",
+              @"width": @375, @"height": @812, @"nativeWidth": @1080, @"nativeHeight": @2340,
+              @"scale": @3, @"memory": @4096, @"disks": @[@128, @256, @512]},
+            @{@"name": @"iPhone 13", @"machine": @"iPhone14,5", @"model": @"D17AP",
+              @"width": @390, @"height": @844, @"nativeWidth": @1170, @"nativeHeight": @2532,
+              @"scale": @3, @"memory": @4096, @"disks": @[@128, @256, @512]},
+            @{@"name": @"iPhone 13 Pro", @"machine": @"iPhone14,2", @"model": @"D63AP",
+              @"width": @390, @"height": @844, @"nativeWidth": @1170, @"nativeHeight": @2532,
+              @"scale": @3, @"memory": @6144, @"disks": @[@128, @256, @512, @1024]},
+            @{@"name": @"iPhone 13 Pro Max", @"machine": @"iPhone14,3", @"model": @"D64AP",
+              @"width": @428, @"height": @926, @"nativeWidth": @1284, @"nativeHeight": @2778,
+              @"scale": @3, @"memory": @6144, @"disks": @[@128, @256, @512, @1024]},
+            @{@"name": @"iPhone SE (3rd generation)", @"machine": @"iPhone14,6", @"model": @"D49AP",
+              @"width": @375, @"height": @667, @"nativeWidth": @750, @"nativeHeight": @1334,
+              @"scale": @2, @"memory": @4096, @"disks": @[@64, @128, @256]}
+        ];
+    });
+    return profiles;
+}
+
+static NSArray<NSDictionary *> *BDSSystemProfiles(void) {
+    static NSArray<NSDictionary *> *profiles;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        profiles = @[
+            @{@"version": @"15.7.1", @"build": @"19H117"},
+            @{@"version": @"15.7.3", @"build": @"19H307"},
+            @{@"version": @"16.6.1", @"build": @"20G81"},
+            @{@"version": @"16.7", @"build": @"20H19"}
+        ];
+    });
+    return profiles;
+}
+
+static NSDictionary *BDSRandomBasicProfileValues(void) {
+    NSArray<NSDictionary *> *allDevices = BDSDeviceProfiles();
+    NSString *currentMachine = cfgStr(@"hwMachine", @"");
+    NSMutableArray<NSDictionary *> *candidates = [NSMutableArray array];
+    for (NSDictionary *profile in allDevices) {
+        if (![profile[@"machine"] isEqualToString:currentMachine]) [candidates addObject:profile];
+    }
+    if (!candidates.count) [candidates addObjectsFromArray:allDevices];
+    NSDictionary *device = candidates[arc4random_uniform((uint32_t)candidates.count)];
+    NSArray<NSDictionary *> *systems = BDSSystemProfiles();
+    NSDictionary *system = systems[arc4random_uniform((uint32_t)systems.count)];
+    NSArray<NSNumber *> *disks = device[@"disks"];
+    NSNumber *disk = disks[arc4random_uniform((uint32_t)disks.count)];
+
+    NSMutableDictionary *values = [BDSRandomIdentityValues() mutableCopy];
+    values[@"enabled"] = @YES;
+    values[@"spoofAdvertisingIdentifiers"] = @YES;
+    values[@"spoofProcessHardware"] = @YES;
+    values[@"spoofLocale"] = @YES;
+    values[@"spoofCarrier"] = @YES;
+    values[@"spoofScreen"] = @YES;
+    values[@"spoofStorage"] = @YES;
+    values[@"deviceProfileName"] = device[@"name"];
+    values[@"deviceModel"] = @"iPhone";
+    values[@"marketingModel"] = @"iPhone";
+    values[@"systemVersion"] = system[@"version"];
+    values[@"systemBuild"] = system[@"build"];
+    values[@"kernOSVersion"] = system[@"build"];
+    values[@"hwMachine"] = device[@"machine"];
+    values[@"hwModel"] = device[@"model"];
+    values[@"screenWidth"] = device[@"width"];
+    values[@"screenHeight"] = device[@"height"];
+    values[@"nativeScreenWidth"] = device[@"nativeWidth"];
+    values[@"nativeScreenHeight"] = device[@"nativeHeight"];
+    values[@"screenScale"] = device[@"scale"];
+    values[@"memorySize"] = device[@"memory"];
+    values[@"diskSize"] = disk;
+    values[@"kernHostname"] = values[@"deviceName"];
+    return values;
+}
+
 static NSString *BDSConfigSummary(void) {
     NSString *container = NSHomeDirectory().lastPathComponent ?: @"unknown";
     if (container.length > 12) container = [container substringFromIndex:container.length - 12];
     return [NSString stringWithFormat:
-        @"容器: %@\n状态: %@\niOS: %@ (%@)\n设备名称: %@\nIDFV: %@\nIDFA: %@\n\n保存后重启百度极速版生效",
+        @"容器: %@\n状态: %@\n设备配置: %@\niOS: %@ (%@)\n设备名称: %@\nIDFV: %@\nIDFA: %@\n\n保存后重启百度极速版生效",
         container,
         cfgBool(@"enabled", NO) ? @"已开启" : @"已关闭",
+        cfgStr(@"deviceProfileName", @"iPhone 8"),
         cfgStr(@"systemVersion", @"15.7.1"),
-        cfgStr(@"systemBuild", @"19H307"),
+        cfgStr(@"systemBuild", @"19H117"),
         cfgStr(@"deviceName", @"iPhone"),
         cfgStr(@"idfv", @"A1B2C3D4-E5F6-7890-ABCD-EF1234567890"),
         cfgStr(@"idfa", @"FEDCBA98-7654-3210-FEDC-BA9876543210")];
@@ -1276,6 +1431,10 @@ static NSString *BDSConfigSummary(void) {
         (void)action;
         [self showRestartNotice:saveConfigValues(@{@"enabled": @(!cfgBool(@"enabled", NO))})];
     }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"一键随机整套基础参数" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        [self randomizeBasicProfile];
+    }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"修改系统版本" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -1294,13 +1453,13 @@ static NSString *BDSConfigSummary(void) {
             [self editIdentifiers];
         });
     }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"可选功能开关" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [alert addAction:[UIAlertAction actionWithTitle:@"基础功能开关" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self showOptionalSwitches];
         });
     }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"编辑可选参数" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [alert addAction:[UIAlertAction actionWithTitle:@"编辑基础参数" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self showOptionalEditors];
@@ -1355,8 +1514,8 @@ static NSString *BDSConfigSummary(void) {
         field.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
     }];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"例如 19H307";
-        field.text = cfgStr(@"systemBuild", @"19H307");
+        field.placeholder = @"例如 19H117";
+        field.text = cfgStr(@"systemBuild", @"19H117");
         field.autocapitalizationType = UITextAutocapitalizationTypeAllCharacters;
     }];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
@@ -1366,7 +1525,7 @@ static NSString *BDSConfigSummary(void) {
         NSString *build = [alert.textFields[1].text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].uppercaseString;
         NSRange match = [version rangeOfString:@"^[0-9]+\\.[0-9]+(\\.[0-9]+)?$" options:NSRegularExpressionSearch];
         if (match.location == NSNotFound || !build.length || build.length > 16) {
-            [self presentMessage:@"请输入有效版本号和 Build，例如 15.7.1 / 19H307。" title:@"格式错误"];
+            [self presentMessage:@"请输入有效版本号和 Build，例如 15.7.1 / 19H117。" title:@"格式错误"];
             return;
         }
         [self showRestartNotice:saveConfigValues(@{@"systemVersion": version, @"systemBuild": build})];
@@ -1427,11 +1586,31 @@ static NSString *BDSConfigSummary(void) {
     [presenter presentViewController:alert animated:YES completion:nil];
 }
 
+- (void)randomizeBasicProfile {
+    NSDictionary *values = BDSRandomBasicProfileValues();
+    BOOL saved = saveConfigValues(values);
+    if (!saved) {
+        [self presentMessage:@"配置文件写入失败，基础参数没有更换。" title:@"保存失败"];
+        return;
+    }
+    NSString *message = [NSString stringWithFormat:
+        @"已整套随机并保存；基础功能保持开启，高级功能没有改动。\n"
+         "请彻底关闭 App 后重新打开。\n\n"
+         "机型：%@\n系统：%@ (%@)\n"
+         "屏幕：%@×%@ / %@x\n内存：%@ MB\n磁盘：%@ GB\n\n"
+         "IDFA：%@\nIDFV：%@\nCUID：%@\nUTDID：%@\nDeviceID：%@",
+        values[@"deviceProfileName"], values[@"systemVersion"], values[@"systemBuild"],
+        values[@"screenWidth"], values[@"screenHeight"], values[@"screenScale"],
+        values[@"memorySize"], values[@"diskSize"],
+        values[@"idfa"], values[@"idfv"], values[@"cuid"], values[@"utdid"], values[@"deviceID"]];
+    [self presentMessage:message title:@"基础参数已更换"];
+}
+
 - (void)showOptionalSwitches {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"可选功能"
-                                                                   message:@"这些功能默认关闭，修改后重启生效。"
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"基础功能开关"
+                                                                   message:@"默认全部开启，修改后重启生效。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSDictionary *> *items = @[
         @{@"key": @"spoofAdvertisingIdentifiers", @"name": @"广告标识符"},
@@ -1460,7 +1639,7 @@ static NSString *BDSConfigSummary(void) {
 - (void)showOptionalEditors {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"编辑可选参数"
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"编辑基础参数"
                                                                    message:@"这里只修改本机公开 API 的测试值；对应开关开启并重启后生效。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSDictionary *> *items = @[
@@ -1615,7 +1794,7 @@ static NSString *BDSConfigSummary(void) {
     NSArray<NSDictionary *> *fields = @[
         @{@"key": @"hwMachine", @"default": @"iPhone10,1", @"placeholder": @"hw.machine，例如 iPhone10,1"},
         @{@"key": @"hwModel", @"default": @"D20AP", @"placeholder": @"hw.model，例如 D20AP"},
-        @{@"key": @"kernOSVersion", @"default": @"19H307", @"placeholder": @"kern.osversion，例如 19H307"}
+        @{@"key": @"kernOSVersion", @"default": @"19H117", @"placeholder": @"kern.osversion，例如 19H117"}
     ];
     for (NSDictionary *info in fields) {
         [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
@@ -1774,6 +1953,8 @@ static NSString *BDSConfigSummary(void) {
         }
         [self showRestartNotice:saveConfigValues(@{
             @"screenWidth": @(width), @"screenHeight": @(height),
+            @"nativeScreenWidth": @(width * scale),
+            @"nativeScreenHeight": @(height * scale),
             @"screenScale": @(scale), @"diskSize": @(disk)
         })];
     }]];
@@ -1820,7 +2001,7 @@ static NSString *BDSConfigSummary(void) {
          @"内存(MB)\n原始 %llu\n配置 %ld\n当前 %llu\n\n"
          @"屏幕(points / scale)\n原始 %.0fx%.0f / %.2f\n配置 %ldx%ld / %ld\n当前 %.0fx%.0f / %.2f",
         cfgBool(@"enabled", NO) ? @"基础功能已开启" : @"基础功能已关闭",
-        realVersion, cfgStr(@"systemVersion", @"15.7.1"), cfgStr(@"systemBuild", @"19H307"), currentVersion,
+        realVersion, cfgStr(@"systemVersion", @"15.7.1"), cfgStr(@"systemBuild", @"19H117"), currentVersion,
         realName, cfgStr(@"deviceName", @"iPhone"), currentName,
         realIDFV, cfgStr(@"idfv", @"A1B2C3D4-E5F6-7890-ABCD-EF1234567890"), currentIDFV,
         realProcess, currentProcess,

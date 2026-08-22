@@ -3,21 +3,21 @@
 <plist version="1.0">
 <dict>
 	<key>configVersion</key>
-	<integer>160</integer>
+	<integer>161</integer>
 	<key>enabled</key>
 	<true/>
 	<key>spoofScreen</key>
-	<false/>
+	<true/>
 	<key>spoofAdvertisingIdentifiers</key>
 	<true/>
 	<key>spoofProcessHardware</key>
-	<false/>
+	<true/>
 	<key>spoofLocale</key>
-	<false/>
+	<true/>
 	<key>spoofCarrier</key>
-	<false/>
+	<true/>
 	<key>spoofStorage</key>
-	<false/>
+	<true/>
 	<key>spoofBaiduSDK</key>
 	<true/>
 	<key>spoofSysctl</key>
@@ -37,7 +37,7 @@
 	<key>systemVersion</key>
 	<string>15.7.1</string>
 	<key>systemBuild</key>
-	<string>19H307</string>
+	<string>19H117</string>
 	<key>idfa</key>
 	<string>8C4BF2A1-7D3E-4F5A-9B6C-2D8E1F3A5B7C</string>
 	<key>idfv</key>
@@ -69,13 +69,19 @@
 	<key>hwModel</key>
 	<string>D20AP</string>
 	<key>kernOSVersion</key>
-	<string>19H307</string>
+	<string>19H117</string>
+	<key>deviceProfileName</key>
+	<string>iPhone 8</string>
 	<key>screenWidth</key>
 	<integer>375</integer>
 	<key>screenHeight</key>
 	<integer>667</integer>
 	<key>screenScale</key>
 	<integer>2</integer>
+	<key>nativeScreenWidth</key>
+	<integer>750</integer>
+	<key>nativeScreenHeight</key>
+	<integer>1334</integer>
 	<key>localeIdentifier</key>
 	<string>zh_CN</string>
 </dict>
