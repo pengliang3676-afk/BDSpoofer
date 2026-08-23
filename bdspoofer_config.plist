@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>configVersion</key>
-	<integer>172</integer>
+	<integer>173</integer>
 	<key>enabled</key>
 	<true/>
 	<key>spoofScreen</key>
@@ -28,6 +28,26 @@
 	<false/>
 	<key>bypassJailbreakDetect</key>
 	<true/>
+	<key>spoofWiFi</key>
+	<true/>
+	<key>spoofLocalIP</key>
+	<true/>
+	<key>spoofAppGroup</key>
+	<true/>
+	<key>spoofPasteboard</key>
+	<true/>
+	<key>spoofBootTime</key>
+	<true/>
+	<key>spoofCPU</key>
+	<true/>
+	<key>spoofLocation</key>
+	<true/>
+	<key>spoofProxyDetection</key>
+	<true/>
+	<key>wifiSSID</key>
+	<string></string>
+	<key>bootTimeOffsetSeconds</key>
+	<integer>0</integer>
 	<key>deviceName</key>
 	<string>iPhone</string>
 	<key>deviceModel</key>

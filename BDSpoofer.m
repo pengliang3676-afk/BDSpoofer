@@ -4,6 +4,16 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  1.7.3：
+//    P. 反关联增强（独立二级页面）：
+//       - WiFi SSID/BSSID 隐藏（CNCopyCurrentNetworkInfo fishhook）
+//       - 本地 IP 隐藏（getifaddrs fishhook，清空 en0 地址）
+//       - App Group 共享容器隔离（拦截 baidu group identifier）
+//       - 剪贴板保护（UIPasteboard 读取返回空）
+//       - 系统启动时间随机化（kern.boottime sysctl）
+//       - CPU 参数伪装（hw.ncpu/hw.physicalcpu sysctl）
+//       - 定位保护（CLLocationManager 返回拒绝/nil）
+//       - 代理/VPN 检测绕过（CFNetworkCopySystemProxySettings / SCDynamicStoreCopyProxies）
 //  1.7.2：
 //    M. 机型随机增加兼容/扩展两种范围，默认兼容模式
 //    N. IDFA 遵循真实 ATT 授权；UA 默认透传；Keychain 默认关闭
@@ -53,6 +63,12 @@
 #import <errno.h>
 #import <stdlib.h>
 #import <mach/mach.h>
+#import <SystemConfiguration/CaptiveNetwork.h>
+#import <SystemConfiguration/SystemConfiguration.h>
+#import <CoreLocation/CoreLocation.h>
+#import <ifaddrs.h>
+#import <net/if_dl.h>
+#import <arpa/inet.h>
 
 #pragma mark - 原子操作
 
@@ -67,19 +83,33 @@ static NSDictionary *g_config = nil;
 static int g_enabledC = 0;
 static int g_spoofSysctlC = 0;
 static int g_bypassJailbreakC = 0;
+static int g_spoofWiFiC = 0;
+static int g_spoofLocalIPC = 0;
+static int g_spoofProxyC = 0;
+static int g_spoofBootTimeC = 0;
+static int g_spoofCPUC = 0;
 
 // C hook 使用的缓存伪造值（constructor 和 saveConfigValues 中更新）
 static char g_hwMachine[32] = "iPhone10,1";
 static char g_hwModel[32] = "D20AP";
 static char g_kernOSVersion[16] = "19H117";
 static char g_kernHostname[65] = "iPhone";
+static char g_wifiSSID[64] = "";
+
+// 伪造的启动时间（constructor 中初始化为当前时间减去随机 1-7 天）
+static struct timeval g_fakeBootTime = {0, 0};
+
+// 当前支持的 A11-A15 设备均为 6 个物理 CPU 核心。
+static int g_fakeNcpu = 6;
+static int g_fakePhysicalCPU = 6;
+static int g_fakeActiveCPU = 6;
 
 static NSDictionary *BDSDefaultConfig(void) {
     static NSDictionary *defaults;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @172,
+            @"configVersion": @173,
             @"enabled": @YES,
             @"spoofAdvertisingIdentifiers": @YES,
             @"spoofProcessHardware": @YES,
@@ -92,6 +122,16 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"spoofKeychain": @NO,
             @"spoofUserAgent": @NO,
             @"bypassJailbreakDetect": @YES,
+            @"spoofWiFi": @YES,
+            @"spoofLocalIP": @YES,
+            @"spoofAppGroup": @YES,
+            @"spoofPasteboard": @YES,
+            @"spoofBootTime": @YES,
+            @"spoofCPU": @YES,
+            @"spoofLocation": @YES,
+            @"spoofProxyDetection": @YES,
+            @"wifiSSID": @"",
+            @"bootTimeOffsetSeconds": @0,
             @"deviceRandomMode": @"compatible",
             @"floatingButtonSide": @"right",
             @"floatingButtonYPermille": @520
@@ -128,6 +168,14 @@ static void bds_update_c_cache(void) {
     snprintf(g_kernOSVersion, sizeof(g_kernOSVersion), "%s", v.UTF8String);
     v = cfgStr(@"kernHostname", @"iPhone");
     snprintf(g_kernHostname, sizeof(g_kernHostname), "%s", v.UTF8String);
+    v = cfgStr(@"wifiSSID", @"");
+    const char *wifiUTF8 = v.UTF8String;
+    size_t wifiLength = wifiUTF8 ? strlen(wifiUTF8) : 0;
+    if (!wifiUTF8 || wifiLength >= sizeof(g_wifiSSID)) {
+        g_wifiSSID[0] = '\0';
+    } else {
+        memcpy(g_wifiSSID, wifiUTF8, wifiLength + 1);
+    }
 }
 
 static void loadConfig() {
@@ -216,6 +264,21 @@ static void loadConfig() {
         merged[@"spoofUserAgent"] = @NO;
         [merged writeToFile:p1 atomically:YES];
     }
+    if (ver < 173) {
+        // 1.7.3 新功能默认开启；只补齐旧配置缺失的键，
+        // 不覆盖用户已经明确保存的开关选择。
+        merged[@"configVersion"] = @173;
+        NSArray<NSString *> *newSwitches = @[
+            @"spoofWiFi", @"spoofLocalIP", @"spoofAppGroup", @"spoofPasteboard",
+            @"spoofBootTime", @"spoofCPU", @"spoofLocation", @"spoofProxyDetection"
+        ];
+        for (NSString *key in newSwitches) {
+            if (!loaded[key]) merged[key] = @YES;
+        }
+        if (!loaded[@"wifiSSID"]) merged[@"wifiSSID"] = @"";
+        if (!loaded[@"bootTimeOffsetSeconds"]) merged[@"bootTimeOffsetSeconds"] = @0;
+        [merged writeToFile:p1 atomically:YES];
+    }
     g_config = [merged copy];
     bds_update_c_cache();
 }
@@ -231,6 +294,11 @@ static BOOL saveConfigValues(NSDictionary *values) {
         BDS_ATOMIC_SET(g_enabledC, cfgBool(@"enabled", NO) ? 1 : 0);
         BDS_ATOMIC_SET(g_spoofSysctlC, cfgBool(@"spoofSysctl", NO) ? 1 : 0);
         BDS_ATOMIC_SET(g_bypassJailbreakC, cfgBool(@"bypassJailbreakDetect", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofWiFiC, cfgBool(@"spoofWiFi", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofLocalIPC, cfgBool(@"spoofLocalIP", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofProxyC, cfgBool(@"spoofProxyDetection", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofBootTimeC, cfgBool(@"spoofBootTime", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofCPUC, cfgBool(@"spoofCPU", NO) ? 1 : 0);
     }
     return saved;
 }
@@ -248,6 +316,7 @@ typedef struct {
     volatile uint64_t hits;
     volatile uint64_t passed;
     volatile uint64_t changed;
+    volatile uint64_t blocked;
     volatile int lastState;
 } BDSDiagCounter;
 
@@ -265,11 +334,21 @@ static BDSDiagCounter g_diagDyld;
 static BDSDiagCounter g_diagCFiles;
 static BDSDiagCounter g_diagObjCJailbreak;
 static BDSDiagCounter g_diagBundles;
+static BDSDiagCounter g_diagWiFi;
+static BDSDiagCounter g_diagLocalIP;
+static BDSDiagCounter g_diagAppGroup;
+static BDSDiagCounter g_diagPasteboard;
+static BDSDiagCounter g_diagBootTime;
+static BDSDiagCounter g_diagCPU;
+static BDSDiagCounter g_diagLocation;
+static BDSDiagCounter g_diagProxy;
 
 #define BDS_DIAG_RECORD(counter, state) do { \
     __atomic_fetch_add(&(counter).hits, 1, __ATOMIC_RELAXED); \
     if ((state) == BDSDiagStatePassed) { \
         __atomic_fetch_add(&(counter).passed, 1, __ATOMIC_RELAXED); \
+    } else if ((state) == BDSDiagStateBlocked) { \
+        __atomic_fetch_add(&(counter).blocked, 1, __ATOMIC_RELAXED); \
     } else { \
         __atomic_fetch_add(&(counter).changed, 1, __ATOMIC_RELAXED); \
     } \
@@ -288,6 +367,7 @@ static void bds_diag_reset_counter(BDSDiagCounter *counter) {
     __atomic_store_n(&counter->hits, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&counter->passed, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&counter->changed, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&counter->blocked, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&counter->lastState, BDSDiagStateNever, __ATOMIC_RELAXED);
 }
 
@@ -296,7 +376,9 @@ static void bds_diag_reset_all(void) {
         &g_diagUIDevice, &g_diagIDFV, &g_diagAdvertising, &g_diagProcess,
         &g_diagLocaleCarrier, &g_diagScreenStorage, &g_diagBaiduSDK,
         &g_diagSysctl, &g_diagKeychain, &g_diagUserAgent, &g_diagDyld,
-        &g_diagCFiles, &g_diagObjCJailbreak, &g_diagBundles
+        &g_diagCFiles, &g_diagObjCJailbreak, &g_diagBundles,
+        &g_diagWiFi, &g_diagLocalIP, &g_diagAppGroup, &g_diagPasteboard,
+        &g_diagBootTime, &g_diagCPU, &g_diagLocation, &g_diagProxy
     };
     for (size_t i = 0; i < sizeof(counters) / sizeof(counters[0]); i++) {
         bds_diag_reset_counter(counters[i]);
@@ -948,44 +1030,91 @@ static int bds_my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
         return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
     }
 
-    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofSysctlC)) {
+    if (!BDS_ATOMIC_GET(g_enabledC)) {
         BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStatePassed);
         return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
     }
 
-    const char *fake = NULL;
-    if (strcmp(name, "hw.machine") == 0) {
-        fake = g_hwMachine;
-    } else if (strcmp(name, "hw.model") == 0) {
-        fake = g_hwModel;
-    } else if (strcmp(name, "kern.osversion") == 0) {
-        fake = g_kernOSVersion;
-    } else if (strcmp(name, "kern.hostname") == 0) {
-        fake = g_kernHostname;
+    // 原有 sysctl 字符串伪装受 spoofSysctl 控制；启动时间和 CPU 使用各自独立开关。
+    const char *fakeStr = NULL;
+    if (BDS_ATOMIC_GET(g_spoofSysctlC)) {
+        if (strcmp(name, "hw.machine") == 0) {
+            fakeStr = g_hwMachine;
+        } else if (strcmp(name, "hw.model") == 0) {
+            fakeStr = g_hwModel;
+        } else if (strcmp(name, "kern.osversion") == 0) {
+            fakeStr = g_kernOSVersion;
+        } else if (strcmp(name, "kern.hostname") == 0) {
+            fakeStr = g_kernHostname;
+        }
     }
 
-    if (!fake) {
-        BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStatePassed);
-        return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
-    }
-
-    BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStateChanged);
-
-    size_t fakeLen = strlen(fake) + 1;
-
-    if (oldp == NULL) {
-        if (oldlenp) *oldlenp = fakeLen;
+    if (fakeStr) {
+        BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStateChanged);
+        size_t fakeLen = strlen(fakeStr) + 1;
+        if (oldp == NULL) {
+            if (oldlenp) *oldlenp = fakeLen;
+            return 0;
+        }
+        if (*oldlenp < fakeLen) {
+            *oldlenp = fakeLen;
+            errno = ENOMEM;
+            return -1;
+        }
+        memcpy(oldp, fakeStr, fakeLen);
+        *oldlenp = fakeLen;
         return 0;
     }
 
-    if (*oldlenp < fakeLen) {
+    // kern.boottime（struct timeval，16 字节）
+    if (BDS_ATOMIC_GET(g_spoofBootTimeC) && strcmp(name, "kern.boottime") == 0) {
+        BDS_DIAG_RECORD(g_diagBootTime, BDSDiagStateChanged);
+        size_t fakeLen = sizeof(struct timeval);
+        if (oldp == NULL) {
+            if (oldlenp) *oldlenp = fakeLen;
+            return 0;
+        }
+        if (*oldlenp < fakeLen) {
+            *oldlenp = fakeLen;
+            errno = ENOMEM;
+            return -1;
+        }
+        *(struct timeval *)oldp = g_fakeBootTime;
         *oldlenp = fakeLen;
-        return ENOMEM;
+        return 0;
     }
 
-    memcpy(oldp, fake, fakeLen);
-    *oldlenp = fakeLen;
-    return 0;
+    // CPU 参数（int，4 字节）
+    if (BDS_ATOMIC_GET(g_spoofCPUC)) {
+        int fakeInt = 0;
+        int isCPUKey = 0;
+        if (strcmp(name, "hw.ncpu") == 0) {
+            fakeInt = g_fakeNcpu; isCPUKey = 1;
+        } else if (strcmp(name, "hw.activecpu") == 0) {
+            fakeInt = g_fakeActiveCPU; isCPUKey = 1;
+        } else if (strcmp(name, "hw.physicalcpu") == 0) {
+            fakeInt = g_fakePhysicalCPU; isCPUKey = 1;
+        }
+        if (isCPUKey) {
+            BDS_DIAG_RECORD(g_diagCPU, BDSDiagStateChanged);
+            size_t fakeLen = sizeof(int);
+            if (oldp == NULL) {
+                if (oldlenp) *oldlenp = fakeLen;
+                return 0;
+            }
+            if (*oldlenp < fakeLen) {
+                *oldlenp = fakeLen;
+                errno = ENOMEM;
+                return -1;
+            }
+            *(int *)oldp = fakeInt;
+            *oldlenp = fakeLen;
+            return 0;
+        }
+    }
+
+    BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStatePassed);
+    return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
 }
 
 #pragma mark - Keychain Hook（fishhook）
@@ -1320,6 +1449,223 @@ static NSArray *new_loadedBundles(id self, SEL _cmd) {
     return filtered;
 }
 
+#pragma mark - P3: App Group 共享容器隔离
+
+static IMP orig_containerURL = NULL;
+static NSURL *new_containerURL(id self, SEL _cmd, NSString *groupIdentifier) {
+    if (cfgBool(@"spoofAppGroup", NO) && groupIdentifier &&
+        [groupIdentifier rangeOfString:@"baidu" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+        BDS_DIAG_RECORD(g_diagAppGroup, BDSDiagStateBlocked);
+        return nil;
+    }
+    BDS_DIAG_RECORD(g_diagAppGroup, BDSDiagStatePassed);
+    typedef NSURL *(*ContainerURLIMP)(id, SEL, NSString *);
+    if (orig_containerURL) return ((ContainerURLIMP)orig_containerURL)(self, _cmd, groupIdentifier);
+    return nil;
+}
+
+#pragma mark - P4: 剪贴板保护
+
+static BOOL bds_shouldBlockPasteboardRead(id pasteboard) {
+    if (!cfgBool(@"spoofPasteboard", NO)) return NO;
+    UIPasteboard *general = [UIPasteboard generalPasteboard];
+    if (pasteboard != general) return NO;
+    // 前台读取通常来自用户主动粘贴；只阻止 App 非活动状态下读取通用剪贴板。
+    return UIApplication.sharedApplication.applicationState != UIApplicationStateActive;
+}
+
+static IMP orig_pb_string = NULL;
+static NSString *new_pb_string(id self, SEL _cmd) {
+    if (bds_shouldBlockPasteboardRead(self)) {
+        BDS_DIAG_RECORD(g_diagPasteboard, BDSDiagStateBlocked);
+        return @"";
+    }
+    BDS_DIAG_RECORD(g_diagPasteboard, BDSDiagStatePassed);
+    typedef NSString *(*PBStringIMP)(id, SEL);
+    if (orig_pb_string) return ((PBStringIMP)orig_pb_string)(self, _cmd);
+    return @"";
+}
+
+static IMP orig_pb_strings = NULL;
+static NSArray *new_pb_strings(id self, SEL _cmd) {
+    if (bds_shouldBlockPasteboardRead(self)) {
+        BDS_DIAG_RECORD(g_diagPasteboard, BDSDiagStateBlocked);
+        return @[];
+    }
+    BDS_DIAG_RECORD(g_diagPasteboard, BDSDiagStatePassed);
+    typedef NSArray *(*PBStringsIMP)(id, SEL);
+    if (orig_pb_strings) return ((PBStringsIMP)orig_pb_strings)(self, _cmd);
+    return @[];
+}
+
+static IMP orig_pb_URL = NULL;
+static NSURL *new_pb_URL(id self, SEL _cmd) {
+    if (bds_shouldBlockPasteboardRead(self)) {
+        BDS_DIAG_RECORD(g_diagPasteboard, BDSDiagStateBlocked);
+        return nil;
+    }
+    BDS_DIAG_RECORD(g_diagPasteboard, BDSDiagStatePassed);
+    typedef NSURL *(*PBURLIMP)(id, SEL);
+    if (orig_pb_URL) return ((PBURLIMP)orig_pb_URL)(self, _cmd);
+    return nil;
+}
+
+static IMP orig_pb_items = NULL;
+static NSArray *new_pb_items(id self, SEL _cmd) {
+    if (bds_shouldBlockPasteboardRead(self)) {
+        BDS_DIAG_RECORD(g_diagPasteboard, BDSDiagStateBlocked);
+        return @[];
+    }
+    BDS_DIAG_RECORD(g_diagPasteboard, BDSDiagStatePassed);
+    typedef NSArray *(*PBItemsIMP)(id, SEL);
+    if (orig_pb_items) return ((PBItemsIMP)orig_pb_items)(self, _cmd);
+    return @[];
+}
+
+#pragma mark - P7: 定位保护
+
+static IMP orig_clm_locationServicesEnabled_class = NULL;
+static BOOL new_clm_locationServicesEnabled_class(id self, SEL _cmd) {
+    if (cfgBool(@"spoofLocation", NO)) {
+        BDS_DIAG_RECORD(g_diagLocation, BDSDiagStateChanged);
+        return NO;
+    }
+    BDS_DIAG_RECORD(g_diagLocation, BDSDiagStatePassed);
+    typedef BOOL (*CLMBoolIMP)(id, SEL);
+    if (orig_clm_locationServicesEnabled_class) return ((CLMBoolIMP)orig_clm_locationServicesEnabled_class)(self, _cmd);
+    return NO;
+}
+
+static IMP orig_clm_authorizationStatus_class = NULL;
+static NSInteger new_clm_authorizationStatus_class(id self, SEL _cmd) {
+    if (cfgBool(@"spoofLocation", NO)) {
+        BDS_DIAG_RECORD(g_diagLocation, BDSDiagStateChanged);
+        return kCLAuthorizationStatusDenied;
+    }
+    BDS_DIAG_RECORD(g_diagLocation, BDSDiagStatePassed);
+    typedef NSInteger (*CLMIntIMP)(id, SEL);
+    if (orig_clm_authorizationStatus_class) return ((CLMIntIMP)orig_clm_authorizationStatus_class)(self, _cmd);
+    return kCLAuthorizationStatusNotDetermined;
+}
+
+static IMP orig_clm_authorizationStatus_instance = NULL;
+static NSInteger new_clm_authorizationStatus_instance(id self, SEL _cmd) {
+    if (cfgBool(@"spoofLocation", NO)) {
+        BDS_DIAG_RECORD(g_diagLocation, BDSDiagStateChanged);
+        return kCLAuthorizationStatusDenied;
+    }
+    BDS_DIAG_RECORD(g_diagLocation, BDSDiagStatePassed);
+    typedef NSInteger (*CLMIntIMP)(id, SEL);
+    if (orig_clm_authorizationStatus_instance) {
+        return ((CLMIntIMP)orig_clm_authorizationStatus_instance)(self, _cmd);
+    }
+    return kCLAuthorizationStatusNotDetermined;
+}
+
+static IMP orig_clm_location = NULL;
+static CLLocation *new_clm_location(id self, SEL _cmd) {
+    if (cfgBool(@"spoofLocation", NO)) {
+        BDS_DIAG_RECORD(g_diagLocation, BDSDiagStateChanged);
+        return nil;
+    }
+    BDS_DIAG_RECORD(g_diagLocation, BDSDiagStatePassed);
+    typedef CLLocation *(*CLMLocIMP)(id, SEL);
+    if (orig_clm_location) return ((CLMLocIMP)orig_clm_location)(self, _cmd);
+    return nil;
+}
+
+#pragma mark - P1: WiFi SSID/BSSID Hook（fishhook）
+
+static CFDictionaryRef (*orig_CNCopyCurrentNetworkInfo)(CFStringRef);
+
+static CFDictionaryRef bds_my_CNCopyCurrentNetworkInfo(CFStringRef interfaceName) {
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofWiFiC)) {
+        BDS_DIAG_RECORD(g_diagWiFi, BDSDiagStatePassed);
+        return orig_CNCopyCurrentNetworkInfo(interfaceName);
+    }
+    if (g_wifiSSID[0] != '\0') {
+        // 返回伪造的 SSID
+        NSString *ssid = [[NSString alloc] initWithBytes:g_wifiSSID
+                                                  length:strlen(g_wifiSSID)
+                                                encoding:NSUTF8StringEncoding];
+        if (!ssid) {
+            BDS_DIAG_RECORD(g_diagWiFi, BDSDiagStateBlocked);
+            return NULL;
+        }
+        NSData *ssidData = [ssid dataUsingEncoding:NSUTF8StringEncoding];
+        NSDictionary *fake = @{
+            (__bridge NSString *)kCNNetworkInfoKeySSID: ssid,
+            (__bridge NSString *)kCNNetworkInfoKeyBSSID: @"00:00:00:00:00:00",
+            (__bridge NSString *)kCNNetworkInfoKeySSIDData: ssidData
+        };
+        BDS_DIAG_RECORD(g_diagWiFi, BDSDiagStateChanged);
+        return CFRetain((__bridge CFDictionaryRef)fake);
+    }
+    // 返回 NULL 表示无法获取 WiFi 信息（相当于没有连接 WiFi 或无权限）
+    BDS_DIAG_RECORD(g_diagWiFi, BDSDiagStateBlocked);
+    return NULL;
+}
+
+#pragma mark - P2: 本地 IP Hook（fishhook）
+
+static int (*orig_getifaddrs)(struct ifaddrs **);
+
+static int bds_my_getifaddrs(struct ifaddrs **ifap) {
+    int result = orig_getifaddrs(ifap);
+    if (result != 0 || !ifap || !*ifap) {
+        BDS_DIAG_RECORD(g_diagLocalIP, BDSDiagStatePassed);
+        return result;
+    }
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofLocalIPC)) {
+        BDS_DIAG_RECORD(g_diagLocalIP, BDSDiagStatePassed);
+        return result;
+    }
+    // 不返回 0.0.0.0/零掩码这种互相矛盾的数据；把 en0 的 IP 地址项标记为未指定。
+    // 调用方仍可按原约定 freeifaddrs() 释放完整链表。
+    int modified = 0;
+    for (struct ifaddrs *ifa = *ifap; ifa; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_name || !ifa->ifa_addr) continue;
+        if (strcmp(ifa->ifa_name, "en0") != 0) continue;
+        sa_family_t family = ifa->ifa_addr->sa_family;
+        if (family == AF_INET || family == AF_INET6) {
+            modified = 1;
+            ifa->ifa_addr->sa_family = AF_UNSPEC;
+            if (ifa->ifa_netmask) ifa->ifa_netmask->sa_family = AF_UNSPEC;
+            if (ifa->ifa_dstaddr) ifa->ifa_dstaddr->sa_family = AF_UNSPEC;
+        }
+    }
+    BDS_DIAG_RECORD(g_diagLocalIP, modified ? BDSDiagStateChanged : BDSDiagStatePassed);
+    return result;
+}
+
+#pragma mark - P8: 代理/VPN 检测绕过（fishhook）
+
+static CFDictionaryRef (*orig_CFNetworkCopySystemProxySettings)(void);
+static CFDictionaryRef (*orig_SCDynamicStoreCopyProxies)(SCDynamicStoreRef);
+
+static CFDictionaryRef bds_my_CFNetworkCopySystemProxySettings(void) {
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofProxyC)) {
+        BDS_DIAG_RECORD(g_diagProxy, BDSDiagStatePassed);
+        return orig_CFNetworkCopySystemProxySettings();
+    }
+    BDS_DIAG_RECORD(g_diagProxy, BDSDiagStateChanged);
+    // 返回空字典，表示没有代理
+    return CFDictionaryCreate(NULL, NULL, NULL, 0,
+                              &kCFTypeDictionaryKeyCallBacks,
+                              &kCFTypeDictionaryValueCallBacks);
+}
+
+static CFDictionaryRef bds_my_SCDynamicStoreCopyProxies(SCDynamicStoreRef store) {
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofProxyC)) {
+        BDS_DIAG_RECORD(g_diagProxy, BDSDiagStatePassed);
+        return orig_SCDynamicStoreCopyProxies(store);
+    }
+    BDS_DIAG_RECORD(g_diagProxy, BDSDiagStateChanged);
+    return CFDictionaryCreate(NULL, NULL, NULL, 0,
+                              &kCFTypeDictionaryKeyCallBacks,
+                              &kCFTypeDictionaryValueCallBacks);
+}
+
 #pragma mark - C 函数 hook 安装（fishhook）
 
 static void installCHooks(void) {
@@ -1332,6 +1678,10 @@ static void installCHooks(void) {
         {"access", (void *)bds_my_access, (void **)&orig_access},
         {"fopen", (void *)bds_my_fopen, (void **)&orig_fopen},
         {"opendir", (void *)bds_my_opendir, (void **)&orig_opendir},
+        {"CNCopyCurrentNetworkInfo", (void *)bds_my_CNCopyCurrentNetworkInfo, (void **)&orig_CNCopyCurrentNetworkInfo},
+        {"getifaddrs", (void *)bds_my_getifaddrs, (void **)&orig_getifaddrs},
+        {"CFNetworkCopySystemProxySettings", (void *)bds_my_CFNetworkCopySystemProxySettings, (void **)&orig_CFNetworkCopySystemProxySettings},
+        {"SCDynamicStoreCopyProxies", (void *)bds_my_SCDynamicStoreCopyProxies, (void **)&orig_SCDynamicStoreCopyProxies},
     };
     bds_rebind_symbols(rebindings, sizeof(rebindings) / sizeof(rebindings[0]));
 }
@@ -1357,6 +1707,8 @@ static const NSTimeInterval BDSButtonCollapseDelay = 5.0;
 - (void)showOptionalEditors;
 - (void)showAdvancedSwitches;
 - (void)showAdvancedEditors;
+- (void)showAntiAssociation;
+- (void)editWiFiSSID;
 - (void)editProcessHardware;
 - (void)editLocaleCarrier;
 - (void)editScreenStorage;
@@ -1420,10 +1772,11 @@ static void BDSAppendDiagLine(NSMutableString *text, NSString *name, BDSDiagCoun
     uint64_t hits = bds_diag_load64(&counter->hits);
     uint64_t passed = bds_diag_load64(&counter->passed);
     uint64_t changed = bds_diag_load64(&counter->changed);
+    uint64_t blocked = bds_diag_load64(&counter->blocked);
     int state = bds_diag_load_state(&counter->lastState);
-    [text appendFormat:@"\n%@：命中 %llu / 透传 %llu / 修改或拦截 %llu / 最近 %@",
+    [text appendFormat:@"\n%@：读取 %llu 次 / 返回原值 %llu 次 / 返回修改值 %llu 次 / 拦截 %llu 次 / 最近：%@",
         name, (unsigned long long)hits, (unsigned long long)passed,
-        (unsigned long long)changed, BDSDiagStateText(state)];
+        (unsigned long long)changed, (unsigned long long)blocked, BDSDiagStateText(state)];
 }
 
 static NSString *BDSRandomHex32(BOOL uppercase) {
@@ -1779,6 +2132,12 @@ static NSString *BDSConfigSummary(void) {
             [self showAdvancedSwitches];
         });
     }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"反关联增强  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self showAntiAssociation];
+        });
+    }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"诊断与自检  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         [self showSelfTest];
@@ -1796,7 +2155,15 @@ static NSString *BDSConfigSummary(void) {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @NO,
             @"spoofUserAgent": @NO,
-            @"bypassJailbreakDetect": @NO
+            @"bypassJailbreakDetect": @NO,
+            @"spoofWiFi": @NO,
+            @"spoofLocalIP": @NO,
+            @"spoofAppGroup": @NO,
+            @"spoofPasteboard": @NO,
+            @"spoofBootTime": @NO,
+            @"spoofCPU": @NO,
+            @"spoofLocation": @NO,
+            @"spoofProxyDetection": @NO
         };
         [self showRestartNotice:saveConfigValues(safe)];
     }]];
@@ -2179,6 +2546,75 @@ static NSString *BDSConfigSummary(void) {
     [presenter presentViewController:alert animated:YES completion:nil];
 }
 
+- (void)showAntiAssociation {
+    UIViewController *presenter = BDSTopController();
+    if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"反关联增强"
+                                                                   message:@"以下功能默认开启；已保留兼容处理。App Group 等项目仍可能影响 App 功能，可单独关闭。修改后重启生效。"
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray<NSDictionary *> *items = @[
+        @{@"key": @"spoofWiFi", @"name": @"WiFi SSID/BSSID 隐藏"},
+        @{@"key": @"spoofLocalIP", @"name": @"本地 IP 隐藏（实验）"},
+        @{@"key": @"spoofAppGroup", @"name": @"App Group 隔离（可能影响登录）"},
+        @{@"key": @"spoofPasteboard", @"name": @"剪贴板保护"},
+        @{@"key": @"spoofBootTime", @"name": @"系统启动时间随机化"},
+        @{@"key": @"spoofCPU", @"name": @"CPU 参数伪装"},
+        @{@"key": @"spoofLocation", @"name": @"定位保护"},
+        @{@"key": @"spoofProxyDetection", @"name": @"代理设置隐藏（可能影响网络）"}
+    ];
+    for (NSDictionary *item in items) {
+        NSString *key = item[@"key"];
+        NSString *title = [NSString stringWithFormat:@"%@：%@", item[@"name"], BDSOnOff(cfgBool(key, YES))];
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            (void)action;
+            [self showRestartNotice:saveConfigValues(@{key: @(!cfgBool(key, YES))})];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"编辑伪造 WiFi SSID"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self editWiFiSSID]; });
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self openPanel]; });
+    }]];
+    if (sheet.popoverPresentationController) {
+        sheet.popoverPresentationController.sourceView = presenter.view;
+        sheet.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(presenter.view.bounds), CGRectGetMidY(presenter.view.bounds), 1, 1);
+    }
+    [presenter presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)editWiFiSSID {
+    UIViewController *presenter = BDSTopController();
+    if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"伪造 WiFi SSID"
+                                                                   message:@"留空时返回 NULL（相当于获取不到 WiFi 信息）；填写后返回伪造的 SSID 和全零 BSSID。"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.text = cfgStr(@"wifiSSID", @"");
+        field.placeholder = @"留空 = 隐藏 WiFi 信息";
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        NSString *ssid = [alert.textFields[0].text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSUInteger byteLength = [ssid lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
+        if (byteLength > 32) {
+            [self presentMessage:@"WiFi SSID 最多 32 个 UTF-8 字节；中文和 emoji 通常会占多个字节。"
+                            title:@"SSID 过长"];
+            return;
+        }
+        [self showRestartNotice:saveConfigValues(@{@"wifiSSID": ssid ?: @""})];
+    }]];
+    [presenter presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)editProcessHardware {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
@@ -2370,6 +2806,7 @@ static NSString *BDSConfigSummary(void) {
 - (void)showHookDiagnostics {
     NSMutableString *message = [NSMutableString stringWithString:
         @"范围：百度极速版当前进程；不代表这些值已经上传到服务器。\n"
+         "读取表示 App 调用了对应 API；返回状态表示插件交给 App 的结果类型。\n"
          "统计从 App 启动或上次清零开始。"];
     BDSAppendDiagLine(message, @"UIDevice", &g_diagUIDevice);
     BDSAppendDiagLine(message, @"IDFV", &g_diagIDFV);
@@ -2385,6 +2822,15 @@ static NSString *BDSConfigSummary(void) {
     BDSAppendDiagLine(message, @"C 文件查询", &g_diagCFiles);
     BDSAppendDiagLine(message, @"ObjC 文件 / URL", &g_diagObjCJailbreak);
     BDSAppendDiagLine(message, @"NSBundle 遍历", &g_diagBundles);
+    [message appendString:@"\n\n--- 8 项读取与返回统计 ---"];
+    BDSAppendDiagLine(message, @"WiFi SSID/BSSID", &g_diagWiFi);
+    BDSAppendDiagLine(message, @"本地 IP", &g_diagLocalIP);
+    BDSAppendDiagLine(message, @"App Group", &g_diagAppGroup);
+    BDSAppendDiagLine(message, @"剪贴板", &g_diagPasteboard);
+    BDSAppendDiagLine(message, @"启动时间", &g_diagBootTime);
+    BDSAppendDiagLine(message, @"CPU 参数", &g_diagCPU);
+    BDSAppendDiagLine(message, @"定位", &g_diagLocation);
+    BDSAppendDiagLine(message, @"代理设置", &g_diagProxy);
 
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
@@ -2529,6 +2975,33 @@ static NSString *BDSConfigSummary(void) {
         [advanced appendFormat:@"\n  NSBundle过滤：%lu 个 framework", (unsigned long)frameworks.count];
     }
 
+    [advanced appendFormat:@"\n--- 反关联增强 ---"];
+    [advanced appendFormat:@"\nWiFi 隐藏：%@", cfgBool(@"spoofWiFi", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n本地 IP：%@", cfgBool(@"spoofLocalIP", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\nApp Group：%@", cfgBool(@"spoofAppGroup", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n剪贴板：%@", cfgBool(@"spoofPasteboard", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n启动时间：%@", cfgBool(@"spoofBootTime", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\nCPU 参数：%@", cfgBool(@"spoofCPU", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n定位保护：%@", cfgBool(@"spoofLocation", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n代理设置隐藏：%@", cfgBool(@"spoofProxyDetection", YES) ? @"开" : @"关"];
+    if (cfgBool(@"spoofBootTime", YES)) {
+        struct timeval bt;
+        size_t btLen = sizeof(bt);
+        if (sysctlbyname("kern.boottime", &bt, &btLen, NULL, 0) == 0) {
+            NSDate *bootDate = [NSDate dateWithTimeIntervalSince1970:bt.tv_sec];
+            NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+            fmt.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+            [advanced appendFormat:@"\n  伪造启动时间：%@", [fmt stringFromDate:bootDate]];
+        }
+    }
+    if (cfgBool(@"spoofCPU", YES)) {
+        int ncpu = 0; size_t ncpuLen = sizeof(ncpu);
+        int physcpu = 0; size_t physLen = sizeof(physcpu);
+        sysctlbyname("hw.ncpu", &ncpu, &ncpuLen, NULL, 0);
+        sysctlbyname("hw.physicalcpu", &physcpu, &physLen, NULL, 0);
+        [advanced appendFormat:@"\n  CPU：%d 核 / %d 物理核", ncpu, physcpu];
+    }
+
     message = [message stringByAppendingString:advanced];
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
@@ -2601,6 +3074,29 @@ static void bds_initialize() {
         BDS_ATOMIC_SET(g_enabledC, 1);
         BDS_ATOMIC_SET(g_spoofSysctlC, cfgBool(@"spoofSysctl", NO) ? 1 : 0);
         BDS_ATOMIC_SET(g_bypassJailbreakC, cfgBool(@"bypassJailbreakDetect", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofWiFiC, cfgBool(@"spoofWiFi", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofLocalIPC, cfgBool(@"spoofLocalIP", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofProxyC, cfgBool(@"spoofProxyDetection", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofBootTimeC, cfgBool(@"spoofBootTime", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofCPUC, cfgBool(@"spoofCPU", NO) ? 1 : 0);
+
+        // 使用持久化偏移量和真实 boot time 生成稳定值：同一次系统启动期间，
+        // App 重启不会重新跳到另一个随机日期；设备真实重启后会随之更新。
+        if (BDS_ATOMIC_GET(g_spoofBootTimeC) && g_fakeBootTime.tv_sec == 0) {
+            NSInteger offsetSeconds = cfgInt(@"bootTimeOffsetSeconds", 0);
+            if (offsetSeconds < 86400 || offsetSeconds >= 8 * 86400) {
+                offsetSeconds = 86400 + (NSInteger)arc4random_uniform(7 * 86400);
+                saveConfigValues(@{@"bootTimeOffsetSeconds": @(offsetSeconds)});
+            }
+            struct timeval realBootTime = {0, 0};
+            size_t realBootTimeLength = sizeof(realBootTime);
+            if (!orig_sysctlbyname ||
+                orig_sysctlbyname("kern.boottime", &realBootTime, &realBootTimeLength, NULL, 0) != 0) {
+                gettimeofday(&realBootTime, NULL);
+            }
+            g_fakeBootTime = realBootTime;
+            g_fakeBootTime.tv_sec -= offsetSeconds;
+        }
 
         // UIDevice
         Class cls = objc_getClass("UIDevice");
@@ -2689,6 +3185,42 @@ static void bds_initialize() {
             Method m = class_getClassMethod(cls, @selector(loadedBundles));
             if (m) {
                 hookClass(cls, @selector(loadedBundles), (IMP)new_loadedBundles, &orig_loadedBundles);
+            }
+        }
+
+        // P3: App Group 共享容器隔离
+        if (cfgBool(@"spoofAppGroup", NO)) {
+            cls = objc_getClass("NSFileManager");
+            hookInst(cls, @selector(containerURLForSecurityApplicationGroupIdentifier:),
+                     (IMP)new_containerURL, &orig_containerURL);
+        }
+
+        // P4: 剪贴板保护
+        if (cfgBool(@"spoofPasteboard", NO)) {
+            cls = objc_getClass("UIPasteboard");
+            hookInst(cls, @selector(string), (IMP)new_pb_string, &orig_pb_string);
+            hookInst(cls, @selector(strings), (IMP)new_pb_strings, &orig_pb_strings);
+            hookInst(cls, @selector(URL), (IMP)new_pb_URL, &orig_pb_URL);
+            hookInst(cls, @selector(items), (IMP)new_pb_items, &orig_pb_items);
+        }
+
+        // P7: 定位保护
+        if (cfgBool(@"spoofLocation", NO)) {
+            cls = objc_getClass("CLLocationManager");
+            if (cls) {
+                hookClass(cls, @selector(locationServicesEnabled),
+                          (IMP)new_clm_locationServicesEnabled_class,
+                          &orig_clm_locationServicesEnabled_class);
+                Method authMethod = class_getClassMethod(cls, @selector(authorizationStatus));
+                if (authMethod) {
+                    hookClass(cls, @selector(authorizationStatus),
+                              (IMP)new_clm_authorizationStatus_class,
+                              &orig_clm_authorizationStatus_class);
+                }
+                hookInst(cls, @selector(authorizationStatus),
+                         (IMP)new_clm_authorizationStatus_instance,
+                         &orig_clm_authorizationStatus_instance);
+                hookInst(cls, @selector(location), (IMP)new_clm_location, &orig_clm_location);
             }
         }
     }
