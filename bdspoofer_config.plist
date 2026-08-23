@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>configVersion</key>
-	<integer>171</integer>
+	<integer>172</integer>
 	<key>enabled</key>
 	<true/>
 	<key>spoofScreen</key>
@@ -23,9 +23,9 @@
 	<key>spoofSysctl</key>
 	<true/>
 	<key>spoofKeychain</key>
-	<true/>
+	<false/>
 	<key>spoofUserAgent</key>
-	<true/>
+	<false/>
 	<key>bypassJailbreakDetect</key>
 	<true/>
 	<key>deviceName</key>
@@ -72,6 +72,8 @@
 	<string>19H117</string>
 	<key>deviceProfileName</key>
 	<string>iPhone 8</string>
+	<key>deviceRandomMode</key>
+	<string>compatible</string>
 	<key>screenWidth</key>
 	<integer>375</integer>
 	<key>screenHeight</key>

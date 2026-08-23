@@ -4,6 +4,10 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  1.7.2：
+//    M. 机型随机增加兼容/扩展两种范围，默认兼容模式
+//    N. IDFA 遵循真实 ATT 授权；UA 默认透传；Keychain 默认关闭
+//    O. API 返回值与 Hook 统计拆分，自检支持复制确认和 TXT 分享
 //  1.7.1：
 //    K. 公开 API 自检增加进程内 hook 命中/透传/修改统计与最近状态
 //    L. 诊断计数使用纯原子操作，C/dyld hook 内不调用 Objective-C
@@ -75,7 +79,7 @@ static NSDictionary *BDSDefaultConfig(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @171,
+            @"configVersion": @172,
             @"enabled": @YES,
             @"spoofAdvertisingIdentifiers": @YES,
             @"spoofProcessHardware": @YES,
@@ -85,9 +89,10 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"spoofStorage": @YES,
             @"spoofBaiduSDK": @YES,
             @"spoofSysctl": @YES,
-            @"spoofKeychain": @YES,
-            @"spoofUserAgent": @YES,
+            @"spoofKeychain": @NO,
+            @"spoofUserAgent": @NO,
             @"bypassJailbreakDetect": @YES,
+            @"deviceRandomMode": @"compatible",
             @"floatingButtonSide": @"right",
             @"floatingButtonYPermille": @520
         };
@@ -201,6 +206,14 @@ static void loadConfig() {
     if (ver < 171) {
         // 1.7.1 仅增加内存中的诊断计数，不改变用户现有功能和参数。
         merged[@"configVersion"] = @171;
+        [merged writeToFile:p1 atomically:YES];
+    }
+    if (ver < 172) {
+        // 1.7.2 迁移到一致性优先的默认值；保留其他现有参数。
+        merged[@"configVersion"] = @172;
+        merged[@"deviceRandomMode"] = @"compatible";
+        merged[@"spoofKeychain"] = @NO;
+        merged[@"spoofUserAgent"] = @NO;
         [merged writeToFile:p1 atomically:YES];
     }
     g_config = [merged copy];
@@ -604,33 +617,41 @@ static NSUUID *new_identifierForVendor(id self, SEL _cmd) {
 #pragma mark - ASIdentifierManager Hook
 
 static IMP orig_advertisingIdentifier = NULL;
+
+static NSInteger bds_realTrackingAuthorizationStatus(void) {
+    Class cls = objc_getClass("ATTrackingManager");
+    SEL sel = NSSelectorFromString(@"trackingAuthorizationStatus");
+    Method method = cls ? class_getClassMethod(cls, sel) : NULL;
+    if (!method) return -1;
+    IMP imp = method_getImplementation(method);
+    return imp ? ((NSInteger (*)(id, SEL))imp)(cls, sel) : -1;
+}
+
+static BOOL bds_realAdvertisingTrackingEnabled(id manager) {
+    NSInteger status = bds_realTrackingAuthorizationStatus();
+    if (status >= 0) return status == 3; // ATTrackingManagerAuthorizationStatusAuthorized
+    SEL sel = @selector(isAdvertisingTrackingEnabled);
+    Method method = class_getInstanceMethod([manager class], sel);
+    IMP imp = method ? method_getImplementation(method) : NULL;
+    return imp ? ((BOOL (*)(id, SEL))imp)(manager, sel) : NO;
+}
+
 static NSUUID *new_advertisingIdentifier(id self, SEL _cmd) {
-    NSString *uuid = cfgStr(@"idfa", @"FEDCBA98-7654-3210-FEDC-BA9876543210");
-    NSUUID *value = [[NSUUID alloc] initWithUUIDString:uuid];
-    if (value) {
-        BDS_DIAG_RECORD(g_diagAdvertising, BDSDiagStateChanged);
-        return value;
+    NSUUID *original = orig_advertisingIdentifier
+        ? ((NSUUID *(*)(id, SEL))orig_advertisingIdentifier)(self, _cmd) : nil;
+    NSUUID *value = nil;
+    if (bds_realAdvertisingTrackingEnabled(self)) {
+        NSString *uuid = cfgStr(@"idfa", @"FEDCBA98-7654-3210-FEDC-BA9876543210");
+        value = [[NSUUID alloc] initWithUUIDString:uuid] ?: original;
+    } else {
+        value = [[NSUUID alloc] initWithUUIDString:@"00000000-0000-0000-0000-000000000000"];
     }
-    BDS_DIAG_RECORD(g_diagAdvertising, BDSDiagStatePassed);
-    if (orig_advertisingIdentifier) {
-        return ((NSUUID *(*)(id, SEL))orig_advertisingIdentifier)(self, _cmd);
-    }
-    return nil;
+    BOOL changed = original ? ![value isEqual:original] : value != nil;
+    BDS_DIAG_RECORD(g_diagAdvertising, changed ? BDSDiagStateChanged : BDSDiagStatePassed);
+    return value;
 }
 
-static IMP orig_isAdvertisingTrackingEnabled = NULL;
-static BOOL new_isAdvertisingTrackingEnabled(id self, SEL _cmd) {
-    BDS_DIAG_RECORD(g_diagAdvertising, BDSDiagStateChanged);
-    return NO;
-}
-
-#pragma mark - ATTrackingManager Hook (iOS 14+)
-
-static IMP orig_trackingAuthorizationStatus = NULL;
-static NSInteger new_trackingAuthorizationStatus(id self, SEL _cmd) {
-    BDS_DIAG_RECORD(g_diagAdvertising, BDSDiagStateChanged);
-    return 2; // denied
-}
+// ATT 和“广告跟踪已开启”保持系统真实状态，不再 hook。
 
 #pragma mark - NSProcessInfo Hook
 
@@ -1011,13 +1032,16 @@ static OSStatus bds_my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *res
 
 static IMP orig_wk_customUserAgent = NULL;
 static NSString *new_wk_customUserAgent(id self, SEL _cmd) {
-    (void)self; (void)_cmd;
-    BDS_DIAG_RECORD(g_diagUserAgent, BDSDiagStateChanged);
+    typedef NSString *(*UserAgentGetterIMP)(id, SEL);
+    NSString *original = orig_wk_customUserAgent
+        ? ((UserAgentGetterIMP)orig_wk_customUserAgent)(self, _cmd) : nil;
     NSString *custom = cfgStr(@"userAgent", @"");
-    if (custom.length > 0) return custom;
-    NSString *v = [cfgStr(@"systemVersion", @"15.7.1") stringByReplacingOccurrencesOfString:@"." withString:@"_"];
-    return [NSString stringWithFormat:
-        @"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148", v];
+    if (custom.length > 0) {
+        BDS_DIAG_RECORD(g_diagUserAgent, BDSDiagStateChanged);
+        return custom;
+    }
+    BDS_DIAG_RECORD(g_diagUserAgent, BDSDiagStatePassed);
+    return original;
 }
 
 static IMP orig_nsmurl_setValue = NULL;
@@ -1027,13 +1051,10 @@ static void new_nsmurl_setValue(id self, SEL _cmd, NSString *value, NSString *fi
         [field caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame &&
         cfgBool(@"spoofUserAgent", NO)) {
         NSString *custom = cfgStr(@"userAgent", @"");
-        value = custom.length > 0 ? custom : nil;
-        if (!value) {
-            NSString *v = [cfgStr(@"systemVersion", @"15.7.1") stringByReplacingOccurrencesOfString:@"." withString:@"_"];
-            value = [NSString stringWithFormat:
-                @"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148", v];
+        if (custom.length > 0) {
+            value = custom;
+            changed = YES;
         }
-        changed = YES;
     }
     BDS_DIAG_RECORD(g_diagUserAgent, changed ? BDSDiagStateChanged : BDSDiagStatePassed);
     typedef void (*SetValueIMP)(id, SEL, NSString *, NSString *);
@@ -1047,13 +1068,10 @@ static void new_nsmurl_addValue(id self, SEL _cmd, NSString *value, NSString *fi
         [field caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame &&
         cfgBool(@"spoofUserAgent", NO)) {
         NSString *custom = cfgStr(@"userAgent", @"");
-        value = custom.length > 0 ? custom : nil;
-        if (!value) {
-            NSString *v = [cfgStr(@"systemVersion", @"15.7.1") stringByReplacingOccurrencesOfString:@"." withString:@"_"];
-            value = [NSString stringWithFormat:
-                @"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148", v];
+        if (custom.length > 0) {
+            value = custom;
+            changed = YES;
         }
-        changed = YES;
     }
     BDS_DIAG_RECORD(g_diagUserAgent, changed ? BDSDiagStateChanged : BDSDiagStatePassed);
     typedef void (*AddValueIMP)(id, SEL, NSString *, NSString *);
@@ -1343,6 +1361,10 @@ static const NSTimeInterval BDSButtonCollapseDelay = 5.0;
 - (void)editLocaleCarrier;
 - (void)editScreenStorage;
 - (void)showSelfTest;
+- (void)showPublicAPITest;
+- (void)showHookDiagnostics;
+- (void)copyDiagnosticText:(NSString *)text;
+- (void)shareDiagnosticText:(NSString *)text;
 - (void)presentMessage:(NSString *)message title:(NSString *)title;
 - (void)showRestartNotice:(BOOL)saved;
 - (void)scheduleButtonCollapse:(UIButton *)button;
@@ -1487,6 +1509,34 @@ static NSArray<NSDictionary *> *BDSDeviceProfiles(void) {
     return profiles;
 }
 
+static BOOL BDSUsesExtendedDeviceRange(void) {
+    return [cfgStr(@"deviceRandomMode", @"compatible") isEqualToString:@"extended"];
+}
+
+static NSString *BDSDeviceRangeName(void) {
+    return BDSUsesExtendedDeviceRange() ? @"扩展模式（8款）" : @"兼容模式（3款）";
+}
+
+static NSArray<NSDictionary *> *BDSDeviceProfilesForCurrentMode(void) {
+    NSSet<NSString *> *machines = BDSUsesExtendedDeviceRange()
+        ? [NSSet setWithArray:@[
+            @"iPhone10,1", // iPhone 8
+            @"iPhone10,3", // iPhone X
+            @"iPhone11,2", // iPhone XS
+            @"iPhone12,3", // iPhone 11 Pro
+            @"iPhone13,1", // iPhone 12 mini
+            @"iPhone14,4", // iPhone 13 mini
+            @"iPhone12,8", // iPhone SE2
+            @"iPhone14,6"  // iPhone SE3
+        ]]
+        : [NSSet setWithArray:@[@"iPhone10,1", @"iPhone12,8", @"iPhone14,6"]];
+    NSMutableArray<NSDictionary *> *filtered = [NSMutableArray array];
+    for (NSDictionary *profile in BDSDeviceProfiles()) {
+        if ([machines containsObject:profile[@"machine"]]) [filtered addObject:profile];
+    }
+    return filtered;
+}
+
 static NSArray<NSDictionary *> *BDSSystemProfiles(void) {
     static NSArray<NSDictionary *> *profiles;
     static dispatch_once_t onceToken;
@@ -1502,7 +1552,7 @@ static NSArray<NSDictionary *> *BDSSystemProfiles(void) {
 }
 
 static NSDictionary *BDSRandomBasicProfileValues(void) {
-    NSArray<NSDictionary *> *allDevices = BDSDeviceProfiles();
+    NSArray<NSDictionary *> *allDevices = BDSDeviceProfilesForCurrentMode();
     NSString *currentMachine = cfgStr(@"hwMachine", @"");
     NSMutableArray<NSDictionary *> *candidates = [NSMutableArray array];
     for (NSDictionary *profile in allDevices) {
@@ -1543,11 +1593,12 @@ static NSDictionary *BDSRandomBasicProfileValues(void) {
 
 static NSString *BDSConfigSummary(void) {
     return [NSString stringWithFormat:
-        @"状态：%@\n设备：%@\n系统：iOS %@ (%@)",
+        @"状态：%@\n设备：%@\n系统：iOS %@ (%@)\n随机范围：%@",
         cfgBool(@"enabled", NO) ? @"已开启" : @"已关闭",
         cfgStr(@"deviceProfileName", @"iPhone 8"),
         cfgStr(@"systemVersion", @"15.7.1"),
-        cfgStr(@"systemBuild", @"19H117")];
+        cfgStr(@"systemBuild", @"19H117"),
+        BDSDeviceRangeName()];
 }
 
 @implementation BDSUIController
@@ -1728,7 +1779,7 @@ static NSString *BDSConfigSummary(void) {
             [self showAdvancedSwitches];
         });
     }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"公开 API 自检" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [alert addAction:[UIAlertAction actionWithTitle:@"诊断与自检  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         [self showSelfTest];
     }]];
@@ -1847,9 +1898,9 @@ static NSString *BDSConfigSummary(void) {
     NSString *message = [NSString stringWithFormat:
         @"已随机并保存基础参数；高级参数没有改动。\n"
          "请彻底关闭 App 后重新打开。\n\n"
-         "机型：%@\n系统：%@ (%@)\n"
+         "随机范围：%@\n机型：%@\n系统：%@ (%@)\n"
          "内存：%@ MB\n磁盘：%@ GB\n设备名称：%@",
-        values[@"deviceProfileName"], values[@"systemVersion"], values[@"systemBuild"],
+        BDSDeviceRangeName(), values[@"deviceProfileName"], values[@"systemVersion"], values[@"systemBuild"],
         values[@"memorySize"], values[@"diskSize"], values[@"deviceName"]];
     [self presentMessage:message title:@"基础参数已更换"];
 }
@@ -1861,12 +1912,25 @@ static NSString *BDSConfigSummary(void) {
         [self presentMessage:@"配置文件写入失败，高级参数没有更换。" title:@"保存失败"];
         return;
     }
+    BOOL idfaHit = bds_diag_load64(&g_diagAdvertising.hits) > 0;
+    BOOL idfvHit = bds_diag_load64(&g_diagIDFV.hits) > 0;
+    BOOL baiduHit = bds_diag_load64(&g_diagBaiduSDK.hits) > 0;
+    NSInteger attStatus = bds_realTrackingAuthorizationStatus();
+    NSString *attText = attStatus == 3 ? @"已授权" :
+                        attStatus == 2 ? @"已拒绝" :
+                        attStatus == 1 ? @"受限制" :
+                        attStatus == 0 ? @"未决定" : @"不可用";
     NSString *message = [NSString stringWithFormat:
         @"已随机并保存高级参数；基础参数没有改动。\n"
-         "请彻底关闭 App 后重新打开。\n\n"
-         "IDFA：%@\nIDFV：%@\nCUID：%@\nUTDID：%@\nDeviceID：%@",
-        values[@"idfa"], values[@"idfv"], values[@"cuid"],
-        values[@"utdid"], values[@"deviceID"]];
+         "请彻底关闭 App 后重新打开，再通过诊断确认新值被读取。\n\n"
+         "ATT：%@\n"
+         "IDFA：已保存；运行时%@（未授权时固定返回全零）\n"
+         "IDFV：已保存；运行时%@\n"
+         "CUID/UTDID/DeviceID：已保存；百度SDK运行时%@\n\n"
+         "本进程命中只表示接口被调用过，不代表本次新值已上传。",
+        attText, idfaHit ? @"已命中" : @"未命中",
+        idfvHit ? @"已命中" : @"未命中",
+        baiduHit ? @"已命中" : @"未命中"];
     [self presentMessage:message title:@"高级参数已更换"];
 }
 
@@ -1876,6 +1940,22 @@ static NSString *BDSConfigSummary(void) {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"基础功能设置"
                                                                    message:@"屏幕始终保持本机真实尺寸，不在这里显示。修改后重启生效。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:
+        [NSString stringWithFormat:@"机型随机范围：%@", BDSDeviceRangeName()]
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        (void)action;
+        NSString *nextMode = BDSUsesExtendedDeviceRange() ? @"compatible" : @"extended";
+        BOOL saved = saveConfigValues(@{@"deviceRandomMode": nextMode});
+        NSString *name = [nextMode isEqualToString:@"extended"] ? @"扩展模式（8款）" : @"兼容模式（3款）";
+        NSString *detail = [nextMode isEqualToString:@"extended"]
+            ? @"扩展模式包含 X、XS、11 Pro 和 mini 系列；屏幕仍保持 SE2 真实尺寸，机型与屏幕可能不完全一致。"
+            : @"兼容模式只使用 iPhone 8、SE2、SE3，屏幕参数与本机一致。";
+        [self presentMessage:(saved
+            ? [NSString stringWithFormat:@"已切换为%@，下次点击基础随机时使用。无需重启。\n\n%@", name, detail]
+            : @"随机范围保存失败。")
+                        title:(saved ? @"设置成功" : @"保存失败")];
+    }]];
     NSArray<NSDictionary *> *items = @[
         @{@"key": @"enabled", @"name": @"基础功能总开关"},
         @{@"key": @"spoofAdvertisingIdentifiers", @"name": @"广告标识符"},
@@ -1939,13 +2019,13 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"高级功能设置"
-                                                                   message:@"高级功能默认全部开启，修改后重启生效。"
+                                                                   message:@"Keychain 和 User-Agent 默认关闭；其余保持原设置。修改后重启生效。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSDictionary *> *items = @[
         @{@"key": @"spoofBaiduSDK", @"name": @"百度 SDK 标识（CUID/UTDID/DeviceID）"},
         @{@"key": @"spoofSysctl", @"name": @"sysctlbyname（hw.machine 等）"},
-        @{@"key": @"spoofKeychain", @"name": @"Keychain 拦截"},
-        @{@"key": @"spoofUserAgent", @"name": @"User-Agent 替换"},
+        @{@"key": @"spoofKeychain", @"name": @"Keychain 拦截（默认关）"},
+        @{@"key": @"spoofUserAgent", @"name": @"User-Agent 自定义（空值透传）"},
         @{@"key": @"bypassJailbreakDetect", @"name": @"越狱检测绕过（含镜像名/C函数/NSBundle）"}
     ];
     for (NSDictionary *item in items) {
@@ -2083,11 +2163,11 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"自定义 User-Agent"
-                                                                   message:@"留空则根据系统版本自动生成。"
+                                                                   message:@"留空时完整透传百度原始 User-Agent；只有明确填写时才替换。"
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
         field.text = cfgStr(@"userAgent", @"");
-        field.placeholder = @"留空自动生成";
+        field.placeholder = @"留空透传原始值";
         field.autocapitalizationType = UITextAutocapitalizationTypeNone;
     }];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
@@ -2222,28 +2302,112 @@ static NSString *BDSConfigSummary(void) {
     [presenter presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)showSelfTest {
-    // 先做快照，再读取公开 API，避免本次自检调用污染当前显示的数据。
-    NSMutableString *diagnostics = [NSMutableString stringWithString:
-        @"\n\n--- 1.7.1 Hook 命中统计 ---\n"
-         "范围：百度极速版当前进程；不代表这些值已经上传到服务器。\n"
-         "统计从 App 启动或上次清零开始。"];
-    BDSAppendDiagLine(diagnostics, @"UIDevice", &g_diagUIDevice);
-    BDSAppendDiagLine(diagnostics, @"IDFV", &g_diagIDFV);
-    BDSAppendDiagLine(diagnostics, @"IDFA / ATT", &g_diagAdvertising);
-    BDSAppendDiagLine(diagnostics, @"NSProcessInfo", &g_diagProcess);
-    BDSAppendDiagLine(diagnostics, @"语言 / 运营商", &g_diagLocaleCarrier);
-    BDSAppendDiagLine(diagnostics, @"屏幕 / 磁盘", &g_diagScreenStorage);
-    BDSAppendDiagLine(diagnostics, @"百度 SDK 标识", &g_diagBaiduSDK);
-    BDSAppendDiagLine(diagnostics, @"sysctlbyname", &g_diagSysctl);
-    BDSAppendDiagLine(diagnostics, @"Keychain", &g_diagKeychain);
-    BDSAppendDiagLine(diagnostics, @"User-Agent", &g_diagUserAgent);
-    BDSAppendDiagLine(diagnostics, @"dyld 镜像名", &g_diagDyld);
-    BDSAppendDiagLine(diagnostics, @"C 文件查询", &g_diagCFiles);
-    BDSAppendDiagLine(diagnostics, @"ObjC 文件 / URL", &g_diagObjCJailbreak);
-    BDSAppendDiagLine(diagnostics, @"NSBundle 遍历", &g_diagBundles);
-    [diagnostics appendString:@"\n说明：本次打开自检产生的读取不会进入上面的当前快照。"];
+- (void)copyDiagnosticText:(NSString *)text {
+    UIPasteboard.generalPasteboard.string = text ?: @"";
+    [self presentMessage:@"结果已经写入系统剪贴板。" title:@"复制成功"];
+}
 
+- (void)shareDiagnosticText:(NSString *)text {
+    NSString *fileName = [NSString stringWithFormat:@"BDSpoofer_diagnostics_%lld.txt",
+        (long long)NSDate.date.timeIntervalSince1970];
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:fileName];
+    NSError *error = nil;
+    BOOL saved = [text writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:&error];
+    if (!saved) {
+        [self presentMessage:(error.localizedDescription ?: @"TXT 文件生成失败。") title:@"导出失败"];
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.30 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIViewController *presenter = BDSTopController();
+        if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
+        UIActivityViewController *share = [[UIActivityViewController alloc]
+            initWithActivityItems:@[[NSURL fileURLWithPath:path]] applicationActivities:nil];
+        if (share.popoverPresentationController) {
+            share.popoverPresentationController.sourceView = presenter.view;
+            share.popoverPresentationController.sourceRect = CGRectMake(
+                CGRectGetMidX(presenter.view.bounds), CGRectGetMidY(presenter.view.bounds), 1, 1);
+        }
+        [presenter presentViewController:share animated:YES completion:nil];
+    });
+}
+
+- (void)showSelfTest {
+    UIViewController *presenter = BDSTopController();
+    if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"诊断与自检"
+                                                                   message:@"API 返回值与 Hook 命中统计已分开显示。"
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"公开 API 返回值  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self showPublicAPITest]; });
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Hook 命中统计  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self showHookDiagnostics]; });
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"开始新诊断（清零统计）" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        bds_diag_reset_all();
+        [self presentMessage:@"统计已清零。现在正常操作百度极速版；出现问题后再打开“Hook 命中统计”。"
+                        title:@"诊断已开始"];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self openPanel]; });
+    }]];
+    if (sheet.popoverPresentationController) {
+        sheet.popoverPresentationController.sourceView = presenter.view;
+        sheet.popoverPresentationController.sourceRect = CGRectMake(
+            CGRectGetMidX(presenter.view.bounds), CGRectGetMidY(presenter.view.bounds), 1, 1);
+    }
+    [presenter presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)showHookDiagnostics {
+    NSMutableString *message = [NSMutableString stringWithString:
+        @"范围：百度极速版当前进程；不代表这些值已经上传到服务器。\n"
+         "统计从 App 启动或上次清零开始。"];
+    BDSAppendDiagLine(message, @"UIDevice", &g_diagUIDevice);
+    BDSAppendDiagLine(message, @"IDFV", &g_diagIDFV);
+    BDSAppendDiagLine(message, @"IDFA", &g_diagAdvertising);
+    BDSAppendDiagLine(message, @"NSProcessInfo", &g_diagProcess);
+    BDSAppendDiagLine(message, @"语言 / 运营商", &g_diagLocaleCarrier);
+    BDSAppendDiagLine(message, @"屏幕 / 磁盘", &g_diagScreenStorage);
+    BDSAppendDiagLine(message, @"百度 SDK 标识", &g_diagBaiduSDK);
+    BDSAppendDiagLine(message, @"sysctlbyname", &g_diagSysctl);
+    BDSAppendDiagLine(message, @"Keychain", &g_diagKeychain);
+    BDSAppendDiagLine(message, @"User-Agent", &g_diagUserAgent);
+    BDSAppendDiagLine(message, @"dyld 镜像名", &g_diagDyld);
+    BDSAppendDiagLine(message, @"C 文件查询", &g_diagCFiles);
+    BDSAppendDiagLine(message, @"ObjC 文件 / URL", &g_diagObjCJailbreak);
+    BDSAppendDiagLine(message, @"NSBundle 遍历", &g_diagBundles);
+
+    UIViewController *presenter = BDSTopController();
+    if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Hook 命中统计"
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"复制结果" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        [self copyDiagnosticText:message];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"分享 TXT" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        [self shareDiagnosticText:message];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self showSelfTest]; });
+    }]];
+    [presenter presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)showPublicAPITest {
     UIDevice *device = UIDevice.currentDevice;
     NSProcessInfo *process = NSProcessInfo.processInfo;
     UIScreen *screen = UIScreen.mainScreen;
@@ -2263,6 +2427,17 @@ static NSString *BDSConfigSummary(void) {
     NSUUID *realUUID = orig_identifierForVendor
         ? ((UUIDGetterIMP)orig_identifierForVendor)(device, @selector(identifierForVendor)) : device.identifierForVendor;
     NSString *realIDFV = realUUID.UUIDString ?: @"nil";
+    ASIdentifierManager *adManager = ASIdentifierManager.sharedManager;
+    NSString *currentIDFA = adManager.advertisingIdentifier.UUIDString ?: @"nil";
+    NSUUID *realAdUUID = orig_advertisingIdentifier
+        ? ((UUIDGetterIMP)orig_advertisingIdentifier)(adManager, @selector(advertisingIdentifier))
+        : adManager.advertisingIdentifier;
+    NSString *realIDFA = realAdUUID.UUIDString ?: @"nil";
+    NSInteger attStatus = bds_realTrackingAuthorizationStatus();
+    NSString *attText = attStatus == 3 ? @"已授权" :
+                        attStatus == 2 ? @"已拒绝" :
+                        attStatus == 1 ? @"受限制" :
+                        attStatus == 0 ? @"未决定" : @"不可用";
     NSString *currentProcess = process.operatingSystemVersionString ?: @"nil";
     NSString *realProcess = orig_operatingSystemVersionString
         ? ((StringGetterIMP)orig_operatingSystemVersionString)(process, @selector(operatingSystemVersionString)) : currentProcess;
@@ -2279,6 +2454,7 @@ static NSString *BDSConfigSummary(void) {
          @"iOS\n原始 %@\n配置 %@ (%@)\n当前 %@\n\n"
          @"设备名称\n原始 %@\n配置 %@\n当前 %@\n\n"
          @"IDFV\n原始 %@\n配置 %@\n当前 %@\n\n"
+         @"IDFA / ATT\n原始 %@\n配置 %@\n当前 %@\nATT %@\n\n"
          @"NSProcessInfo\n原始 %@\n当前 %@\n\n"
          @"内存(MB)\n原始 %llu\n配置 %ld\n当前 %llu\n\n"
          @"屏幕(points / scale)\n原始 %.0fx%.0f / %.2f\n配置 %ldx%ld / %ld\n当前 %.0fx%.0f / %.2f",
@@ -2286,6 +2462,7 @@ static NSString *BDSConfigSummary(void) {
         realVersion, cfgStr(@"systemVersion", @"15.7.1"), cfgStr(@"systemBuild", @"19H117"), currentVersion,
         realName, cfgStr(@"deviceName", @"iPhone"), currentName,
         realIDFV, cfgStr(@"idfv", @"A1B2C3D4-E5F6-7890-ABCD-EF1234567890"), currentIDFV,
+        realIDFA, cfgStr(@"idfa", @"FEDCBA98-7654-3210-FEDC-BA9876543210"), currentIDFA, attText,
         realProcess, currentProcess,
         realMemory, (long)cfgInt(@"memorySize", 2048), currentMemory,
         CGRectGetWidth(realBounds), CGRectGetHeight(realBounds), realScale,
@@ -2352,26 +2529,28 @@ static NSString *BDSConfigSummary(void) {
         [advanced appendFormat:@"\n  NSBundle过滤：%lu 个 framework", (unsigned long)frameworks.count];
     }
 
-    message = [[message stringByAppendingString:advanced] stringByAppendingString:diagnostics];
+    message = [message stringByAppendingString:advanced];
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         UIViewController *presenter = BDSTopController();
         if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"公开 API 对照自检"
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"公开 API 返回值"
                                                                        message:message
                                                                 preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"复制结果" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
             (void)action;
-            UIPasteboard.generalPasteboard.string = message;
+            [self copyDiagnosticText:message];
         }]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"清零命中统计" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"分享 TXT" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
             (void)action;
-            bds_diag_reset_all();
-            [self presentMessage:@"统计已清零。关闭面板后正常操作百度极速版，再重新打开自检查看命中情况。"
-                            title:@"已清零"];
+            [self shareDiagnosticText:message];
         }]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleCancel handler:nil]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+            (void)action;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ [self showSelfTest]; });
+        }]];
         [presenter presentViewController:alert animated:YES completion:nil];
     });
 }
@@ -2435,12 +2614,6 @@ static void bds_initialize() {
         if (cfgBool(@"spoofAdvertisingIdentifiers", YES)) {
             cls = objc_getClass("ASIdentifierManager");
             hookInst(cls, @selector(advertisingIdentifier), (IMP)new_advertisingIdentifier, &orig_advertisingIdentifier);
-            hookInst(cls, @selector(isAdvertisingTrackingEnabled), (IMP)new_isAdvertisingTrackingEnabled, &orig_isAdvertisingTrackingEnabled);
-
-            cls = objc_getClass("ATTrackingManager");
-            if (cls) {
-                hookClass(cls, @selector(trackingAuthorizationStatus), (IMP)new_trackingAuthorizationStatus, &orig_trackingAuthorizationStatus);
-            }
         }
 
         // NSProcessInfo
