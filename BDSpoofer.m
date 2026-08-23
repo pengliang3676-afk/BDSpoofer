@@ -4,6 +4,10 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  1.7.0：
+//    H. 主面板精简，基础/高级功能改为独立二级页面
+//    I. 基础随机与高级身份随机彻底分离
+//    J. 悬浮按钮自动贴边，静置 5 秒后收成半透明把手
 //  1.6.2：
 //    G. 整套随机保留本机真实屏幕尺寸，避免 UIScreen hook 导致界面缩放
 //  1.6.1：
@@ -68,7 +72,7 @@ static NSDictionary *BDSDefaultConfig(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @162,
+            @"configVersion": @170,
             @"enabled": @YES,
             @"spoofAdvertisingIdentifiers": @YES,
             @"spoofProcessHardware": @YES,
@@ -80,7 +84,9 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"spoofSysctl": @YES,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            @"bypassJailbreakDetect": @YES
+            @"bypassJailbreakDetect": @YES,
+            @"floatingButtonSide": @"right",
+            @"floatingButtonYPermille": @520
         };
     });
     return defaults;
@@ -181,6 +187,12 @@ static void loadConfig() {
         // UIScreen 会直接影响真实界面布局；升级后默认关闭并保留本机屏幕。
         merged[@"configVersion"] = @162;
         merged[@"spoofScreen"] = @NO;
+        [merged writeToFile:p1 atomically:YES];
+    }
+    if (ver < 170) {
+        merged[@"configVersion"] = @170;
+        if (!loaded[@"floatingButtonSide"]) merged[@"floatingButtonSide"] = @"right";
+        if (!loaded[@"floatingButtonYPermille"]) merged[@"floatingButtonYPermille"] = @520;
         [merged writeToFile:p1 atomically:YES];
     }
     g_config = [merged copy];
@@ -1140,8 +1152,12 @@ static void installCHooks(void) {
 #pragma mark - 悬浮配置入口
 
 static const void *BDSButtonKey = &BDSButtonKey;
+static const CGFloat BDSButtonFullSize = 42.0;
+static const CGFloat BDSButtonCollapsedWidth = 18.0;
+static const NSTimeInterval BDSButtonCollapseDelay = 5.0;
 
 @interface BDSUIController : NSObject
+@property (nonatomic, assign) NSUInteger floatingButtonGeneration;
 + (instancetype)shared;
 - (void)attachButton;
 - (void)openPanel;
@@ -1149,6 +1165,7 @@ static const void *BDSButtonKey = &BDSButtonKey;
 - (void)editDeviceName;
 - (void)editIdentifiers;
 - (void)randomizeBasicProfile;
+- (void)randomizeAdvancedProfile;
 - (void)showOptionalSwitches;
 - (void)showOptionalEditors;
 - (void)showAdvancedSwitches;
@@ -1159,6 +1176,9 @@ static const void *BDSButtonKey = &BDSButtonKey;
 - (void)showSelfTest;
 - (void)presentMessage:(NSString *)message title:(NSString *)title;
 - (void)showRestartNotice:(BOOL)saved;
+- (void)scheduleButtonCollapse:(UIButton *)button;
+- (void)expandButton:(UIButton *)button animated:(BOOL)animated;
+- (void)collapseButton:(UIButton *)button;
 @end
 
 static UIWindow *BDSMainWindow(void) {
@@ -1203,14 +1223,12 @@ static NSString *BDSRandomHex32(BOOL uppercase) {
 }
 
 static NSDictionary *BDSRandomIdentityValues(void) {
-    NSString *deviceSuffix = [BDSRandomHex32(YES) substringToIndex:6];
     return @{
         @"idfa": NSUUID.UUID.UUIDString.uppercaseString,
         @"idfv": NSUUID.UUID.UUIDString.uppercaseString,
         @"deviceID": NSUUID.UUID.UUIDString.uppercaseString,
         @"cuid": BDSRandomHex32(YES),
-        @"utdid": BDSRandomHex32(NO),
-        @"deviceName": [@"iPhone-" stringByAppendingString:deviceSuffix]
+        @"utdid": BDSRandomHex32(NO)
     };
 }
 
@@ -1309,7 +1327,9 @@ static NSDictionary *BDSRandomBasicProfileValues(void) {
     NSArray<NSNumber *> *disks = device[@"disks"];
     NSNumber *disk = disks[arc4random_uniform((uint32_t)disks.count)];
 
-    NSMutableDictionary *values = [BDSRandomIdentityValues() mutableCopy];
+    NSMutableDictionary *values = [NSMutableDictionary dictionary];
+    NSString *deviceSuffix = [BDSRandomHex32(YES) substringToIndex:6];
+    NSString *deviceName = [@"iPhone-" stringByAppendingString:deviceSuffix];
     values[@"enabled"] = @YES;
     values[@"spoofAdvertisingIdentifiers"] = @YES;
     values[@"spoofProcessHardware"] = @YES;
@@ -1328,23 +1348,18 @@ static NSDictionary *BDSRandomBasicProfileValues(void) {
     values[@"hwModel"] = device[@"model"];
     values[@"memorySize"] = device[@"memory"];
     values[@"diskSize"] = disk;
-    values[@"kernHostname"] = values[@"deviceName"];
+    values[@"deviceName"] = deviceName;
+    values[@"kernHostname"] = deviceName;
     return values;
 }
 
 static NSString *BDSConfigSummary(void) {
-    NSString *container = NSHomeDirectory().lastPathComponent ?: @"unknown";
-    if (container.length > 12) container = [container substringFromIndex:container.length - 12];
     return [NSString stringWithFormat:
-        @"容器: %@\n状态: %@\n设备配置: %@\niOS: %@ (%@)\n设备名称: %@\nIDFV: %@\nIDFA: %@\n\n保存后重启百度极速版生效",
-        container,
+        @"状态：%@\n设备：%@\n系统：iOS %@ (%@)",
         cfgBool(@"enabled", NO) ? @"已开启" : @"已关闭",
         cfgStr(@"deviceProfileName", @"iPhone 8"),
         cfgStr(@"systemVersion", @"15.7.1"),
-        cfgStr(@"systemBuild", @"19H117"),
-        cfgStr(@"deviceName", @"iPhone"),
-        cfgStr(@"idfv", @"A1B2C3D4-E5F6-7890-ABCD-EF1234567890"),
-        cfgStr(@"idfa", @"FEDCBA98-7654-3210-FEDC-BA9876543210")];
+        cfgStr(@"systemBuild", @"19H117")];
 }
 
 @implementation BDSUIController
@@ -1362,16 +1377,20 @@ static NSString *BDSConfigSummary(void) {
         if (!window) return;
         UIButton *button = objc_getAssociatedObject(window, BDSButtonKey);
         if (!button) {
-            CGFloat size = 42.0;
-            CGFloat x = MAX(4.0, CGRectGetWidth(window.bounds) - size - 4.0);
-            CGFloat y = MAX(100.0, CGRectGetHeight(window.bounds) * 0.52);
+            BOOL leftSide = [cfgStr(@"floatingButtonSide", @"right") isEqualToString:@"left"];
+            CGFloat containerWidth = CGRectGetWidth(window.bounds);
+            CGFloat containerHeight = CGRectGetHeight(window.bounds);
+            CGFloat centerY = containerHeight * ((CGFloat)cfgInt(@"floatingButtonYPermille", 520) / 1000.0);
+            centerY = MIN(MAX(centerY, BDSButtonFullSize / 2.0 + 44.0),
+                          containerHeight - BDSButtonFullSize / 2.0 - 20.0);
+            CGFloat x = leftSide ? 4.0 : containerWidth - BDSButtonFullSize - 4.0;
             button = [UIButton buttonWithType:UIButtonTypeSystem];
-            button.frame = CGRectMake(x, y, size, size);
-            button.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin |
-                                      UIViewAutoresizingFlexibleTopMargin |
-                                      UIViewAutoresizingFlexibleBottomMargin;
+            button.frame = CGRectMake(x, centerY - BDSButtonFullSize / 2.0,
+                                      BDSButtonFullSize, BDSButtonFullSize);
+            button.autoresizingMask = (leftSide ? UIViewAutoresizingFlexibleRightMargin : UIViewAutoresizingFlexibleLeftMargin) |
+                                      UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
             button.backgroundColor = [UIColor colorWithRed:0.05 green:0.48 blue:0.95 alpha:0.90];
-            button.layer.cornerRadius = size / 2.0;
+            button.layer.cornerRadius = BDSButtonFullSize / 2.0;
             button.layer.borderWidth = 1.0;
             button.layer.borderColor = UIColor.whiteColor.CGColor;
             button.accessibilityLabel = @"设备隐私配置";
@@ -1383,20 +1402,74 @@ static NSString *BDSConfigSummary(void) {
             [button addGestureRecognizer:pan];
             [window addSubview:button];
             objc_setAssociatedObject(window, BDSButtonKey, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [self scheduleButtonCollapse:button];
         }
         [window bringSubviewToFront:button];
     });
 }
 
 - (void)buttonTapped:(UIButton *)button {
-    (void)button;
+    self.floatingButtonGeneration++;
     [self openPanel];
+    [self scheduleButtonCollapse:button];
+}
+
+- (void)scheduleButtonCollapse:(UIButton *)button {
+    NSUInteger generation = ++self.floatingButtonGeneration;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(BDSButtonCollapseDelay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (generation != self.floatingButtonGeneration || !button.superview) return;
+        [self collapseButton:button];
+    });
+}
+
+- (void)expandButton:(UIButton *)button animated:(BOOL)animated {
+    UIView *container = button.superview;
+    if (!container) return;
+    self.floatingButtonGeneration++;
+    BOOL leftSide = CGRectGetMidX(button.frame) < CGRectGetWidth(container.bounds) / 2.0;
+    CGFloat centerY = CGRectGetMidY(button.frame);
+    CGRect target = CGRectMake(leftSide ? 4.0 : CGRectGetWidth(container.bounds) - BDSButtonFullSize - 4.0,
+                               centerY - BDSButtonFullSize / 2.0,
+                               BDSButtonFullSize, BDSButtonFullSize);
+    void (^changes)(void) = ^{
+        button.frame = target;
+        button.backgroundColor = [UIColor colorWithRed:0.05 green:0.48 blue:0.95 alpha:0.90];
+        button.layer.cornerRadius = BDSButtonFullSize / 2.0;
+        button.layer.borderWidth = 1.0;
+        [button setTitle:@"隐" forState:UIControlStateNormal];
+        button.titleLabel.font = [UIFont boldSystemFontOfSize:17.0];
+    };
+    if (animated) [UIView animateWithDuration:0.18 animations:changes]; else changes();
+}
+
+- (void)collapseButton:(UIButton *)button {
+    UIView *container = button.superview;
+    if (!container) return;
+    BOOL leftSide = CGRectGetMidX(button.frame) < CGRectGetWidth(container.bounds) / 2.0;
+    CGFloat centerY = CGRectGetMidY(button.frame);
+    CGRect target = CGRectMake(leftSide ? 0.0 : CGRectGetWidth(container.bounds) - BDSButtonCollapsedWidth,
+                               centerY - BDSButtonFullSize / 2.0,
+                               BDSButtonCollapsedWidth, BDSButtonFullSize);
+    [UIView animateWithDuration:0.22 animations:^{
+        button.frame = target;
+        button.backgroundColor = [UIColor colorWithRed:0.05 green:0.48 blue:0.95 alpha:0.35];
+        button.layer.cornerRadius = BDSButtonCollapsedWidth / 2.0;
+        button.layer.borderWidth = 0.0;
+        [button setTitle:(leftSide ? @"›" : @"‹") forState:UIControlStateNormal];
+        button.titleLabel.font = [UIFont boldSystemFontOfSize:16.0];
+    }];
 }
 
 - (void)buttonPanned:(UIPanGestureRecognizer *)gesture {
-    UIView *button = gesture.view;
+    UIButton *button = (UIButton *)gesture.view;
     UIView *container = button.superview;
     if (!button || !container) return;
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        [self expandButton:button animated:YES];
+        [gesture setTranslation:CGPointZero inView:container];
+        return;
+    }
     CGPoint translation = [gesture translationInView:container];
     CGPoint center = CGPointMake(button.center.x + translation.x, button.center.y + translation.y);
     CGFloat half = CGRectGetWidth(button.bounds) / 2.0;
@@ -1404,6 +1477,23 @@ static NSString *BDSConfigSummary(void) {
     center.y = MIN(MAX(center.y, half + 44.0), CGRectGetHeight(container.bounds) - half - 20.0);
     button.center = center;
     [gesture setTranslation:CGPointZero inView:container];
+    if (gesture.state == UIGestureRecognizerStateEnded ||
+        gesture.state == UIGestureRecognizerStateCancelled ||
+        gesture.state == UIGestureRecognizerStateFailed) {
+        BOOL leftSide = button.center.x < CGRectGetWidth(container.bounds) / 2.0;
+        CGFloat targetX = leftSide ? 4.0 : CGRectGetWidth(container.bounds) - BDSButtonFullSize - 4.0;
+        CGRect target = CGRectMake(targetX, button.center.y - BDSButtonFullSize / 2.0,
+                                   BDSButtonFullSize, BDSButtonFullSize);
+        button.autoresizingMask = (leftSide ? UIViewAutoresizingFlexibleRightMargin : UIViewAutoresizingFlexibleLeftMargin) |
+                                  UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
+        NSInteger yPermille = (NSInteger)(((button.center.y / CGRectGetHeight(container.bounds)) * 1000.0) + 0.5);
+        saveConfigValues(@{@"floatingButtonSide": leftSide ? @"left" : @"right",
+                           @"floatingButtonYPermille": @(yPermille)});
+        [UIView animateWithDuration:0.20 animations:^{ button.frame = target; } completion:^(BOOL finished) {
+            (void)finished;
+            [self scheduleButtonCollapse:button];
+        }];
+    }
 }
 
 - (void)presentMessage:(NSString *)message title:(NSString *)title {
@@ -1430,55 +1520,24 @@ static NSString *BDSConfigSummary(void) {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"百度设备隐私"
                                                                    message:BDSConfigSummary()
                                                             preferredStyle:UIAlertControllerStyleAlert];
-    NSString *toggleTitle = cfgBool(@"enabled", NO) ? @"关闭基础功能" : @"开启基础功能";
-    [alert addAction:[UIAlertAction actionWithTitle:toggleTitle style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        (void)action;
-        [self showRestartNotice:saveConfigValues(@{@"enabled": @(!cfgBool(@"enabled", NO))})];
-    }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"一键随机整套基础参数" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         [self randomizeBasicProfile];
     }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"修改系统版本" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [alert addAction:[UIAlertAction actionWithTitle:@"一键随机整套高级参数" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self editSystemVersion];
-        });
+        [self randomizeAdvancedProfile];
     }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"修改设备名称" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        (void)action;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self editDeviceName];
-        });
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"修改 IDFV / IDFA" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        (void)action;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self editIdentifiers];
-        });
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"基础功能开关" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [alert addAction:[UIAlertAction actionWithTitle:@"基础功能设置  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self showOptionalSwitches];
         });
     }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"编辑基础参数" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        (void)action;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self showOptionalEditors];
-        });
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"高级功能开关" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [alert addAction:[UIAlertAction actionWithTitle:@"高级功能设置  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self showAdvancedSwitches];
-        });
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"编辑高级参数" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        (void)action;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self showAdvancedEditors];
         });
     }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"公开 API 自检" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
@@ -1598,29 +1657,43 @@ static NSString *BDSConfigSummary(void) {
         return;
     }
     NSString *message = [NSString stringWithFormat:
-        @"已整套随机并保存；基础功能保持开启，高级功能没有改动。\n"
+        @"已随机并保存基础参数；高级参数没有改动。\n"
          "请彻底关闭 App 后重新打开。\n\n"
          "机型：%@\n系统：%@ (%@)\n"
-         "屏幕：保持本机真实尺寸\n内存：%@ MB\n磁盘：%@ GB\n\n"
-         "IDFA：%@\nIDFV：%@\nCUID：%@\nUTDID：%@\nDeviceID：%@",
+         "内存：%@ MB\n磁盘：%@ GB\n设备名称：%@",
         values[@"deviceProfileName"], values[@"systemVersion"], values[@"systemBuild"],
-        values[@"memorySize"], values[@"diskSize"],
-        values[@"idfa"], values[@"idfv"], values[@"cuid"], values[@"utdid"], values[@"deviceID"]];
+        values[@"memorySize"], values[@"diskSize"], values[@"deviceName"]];
     [self presentMessage:message title:@"基础参数已更换"];
+}
+
+- (void)randomizeAdvancedProfile {
+    NSDictionary *values = BDSRandomIdentityValues();
+    BOOL saved = saveConfigValues(values);
+    if (!saved) {
+        [self presentMessage:@"配置文件写入失败，高级参数没有更换。" title:@"保存失败"];
+        return;
+    }
+    NSString *message = [NSString stringWithFormat:
+        @"已随机并保存高级参数；基础参数没有改动。\n"
+         "请彻底关闭 App 后重新打开。\n\n"
+         "IDFA：%@\nIDFV：%@\nCUID：%@\nUTDID：%@\nDeviceID：%@",
+        values[@"idfa"], values[@"idfv"], values[@"cuid"],
+        values[@"utdid"], values[@"deviceID"]];
+    [self presentMessage:message title:@"高级参数已更换"];
 }
 
 - (void)showOptionalSwitches {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"基础功能开关"
-                                                                   message:@"除屏幕尺寸外默认开启，修改后重启生效。"
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"基础功能设置"
+                                                                   message:@"屏幕始终保持本机真实尺寸，不在这里显示。修改后重启生效。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSDictionary *> *items = @[
+        @{@"key": @"enabled", @"name": @"基础功能总开关"},
         @{@"key": @"spoofAdvertisingIdentifiers", @"name": @"广告标识符"},
         @{@"key": @"spoofProcessHardware", @"name": @"主机名与内存"},
         @{@"key": @"spoofLocale", @"name": @"语言地区"},
         @{@"key": @"spoofCarrier", @"name": @"运营商"},
-        @{@"key": @"spoofScreen", @"name": @"屏幕尺寸"},
         @{@"key": @"spoofStorage", @"name": @"磁盘容量"}
     ];
     for (NSDictionary *item in items) {
@@ -1631,7 +1704,11 @@ static NSString *BDSConfigSummary(void) {
             [self showRestartNotice:saveConfigValues(@{key: @(!cfgBool(key, NO))})];
         }]];
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self openPanel]; });
+    }]];
     if (sheet.popoverPresentationController) {
         sheet.popoverPresentationController.sourceView = presenter.view;
         sheet.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(presenter.view.bounds), CGRectGetMidY(presenter.view.bounds), 1, 1);
@@ -1673,8 +1750,8 @@ static NSString *BDSConfigSummary(void) {
 - (void)showAdvancedSwitches {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"高级功能"
-                                                                   message:@"默认全部开启；随机身份保存后立即用于后续读取。"
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"高级功能设置"
+                                                                   message:@"高级功能默认全部开启，修改后重启生效。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSDictionary *> *items = @[
         @{@"key": @"spoofBaiduSDK", @"name": @"百度 SDK 标识（CUID/UTDID/DeviceID）"},
@@ -1691,27 +1768,20 @@ static NSString *BDSConfigSummary(void) {
             [self showRestartNotice:saveConfigValues(@{key: @(!cfgBool(key, NO))})];
         }]];
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"一键随机更换身份参数"
+    [sheet addAction:[UIAlertAction actionWithTitle:@"编辑高级参数  ›"
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
         (void)action;
-        NSDictionary *values = BDSRandomIdentityValues();
-        BOOL saved = saveConfigValues(values);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            if (!saved) {
-                [self presentMessage:@"配置文件写入失败，身份参数未更换。" title:@"保存失败"];
-                return;
-            }
-            NSString *message = [NSString stringWithFormat:
-                @"已生成并持久保存。后续 API 读取立即使用新值；App 启动时已缓存的值不会被追溯修改。\n\n"
-                 @"设备名称：%@\nIDFA：%@\nIDFV：%@\nCUID：%@\nUTDID：%@\nDeviceID：%@",
-                values[@"deviceName"], values[@"idfa"], values[@"idfv"],
-                values[@"cuid"], values[@"utdid"], values[@"deviceID"]];
-            [self presentMessage:message title:@"身份参数已更换"];
+            [self showAdvancedEditors];
         });
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self openPanel]; });
+    }]];
     if (sheet.popoverPresentationController) {
         sheet.popoverPresentationController.sourceView = presenter.view;
         sheet.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(presenter.view.bounds), CGRectGetMidY(presenter.view.bounds), 1, 1);

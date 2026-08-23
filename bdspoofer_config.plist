@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>configVersion</key>
-	<integer>162</integer>
+	<integer>170</integer>
 	<key>enabled</key>
 	<true/>
 	<key>spoofScreen</key>
@@ -84,5 +84,9 @@
 	<integer>1334</integer>
 	<key>localeIdentifier</key>
 	<string>zh_CN</string>
+	<key>floatingButtonSide</key>
+	<string>right</string>
+	<key>floatingButtonYPermille</key>
+	<integer>520</integer>
 </dict>
 </plist>
