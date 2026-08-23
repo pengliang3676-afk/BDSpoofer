@@ -4,6 +4,9 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  1.7.1：
+//    K. 公开 API 自检增加进程内 hook 命中/透传/修改统计与最近状态
+//    L. 诊断计数使用纯原子操作，C/dyld hook 内不调用 Objective-C
 //  1.7.0：
 //    H. 主面板精简，基础/高级功能改为独立二级页面
 //    I. 基础随机与高级身份随机彻底分离
@@ -72,7 +75,7 @@ static NSDictionary *BDSDefaultConfig(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @170,
+            @"configVersion": @171,
             @"enabled": @YES,
             @"spoofAdvertisingIdentifiers": @YES,
             @"spoofProcessHardware": @YES,
@@ -195,6 +198,11 @@ static void loadConfig() {
         if (!loaded[@"floatingButtonYPermille"]) merged[@"floatingButtonYPermille"] = @520;
         [merged writeToFile:p1 atomically:YES];
     }
+    if (ver < 171) {
+        // 1.7.1 仅增加内存中的诊断计数，不改变用户现有功能和参数。
+        merged[@"configVersion"] = @171;
+        [merged writeToFile:p1 atomically:YES];
+    }
     g_config = [merged copy];
     bds_update_c_cache();
 }
@@ -212,6 +220,74 @@ static BOOL saveConfigValues(NSDictionary *values) {
         BDS_ATOMIC_SET(g_bypassJailbreakC, cfgBool(@"bypassJailbreakDetect", NO) ? 1 : 0);
     }
     return saved;
+}
+
+#pragma mark - 1.7.1 只读诊断计数
+
+typedef NS_ENUM(int, BDSDiagState) {
+    BDSDiagStateNever = 0,
+    BDSDiagStatePassed = 1,
+    BDSDiagStateChanged = 2,
+    BDSDiagStateBlocked = 3
+};
+
+typedef struct {
+    volatile uint64_t hits;
+    volatile uint64_t passed;
+    volatile uint64_t changed;
+    volatile int lastState;
+} BDSDiagCounter;
+
+static BDSDiagCounter g_diagUIDevice;
+static BDSDiagCounter g_diagIDFV;
+static BDSDiagCounter g_diagAdvertising;
+static BDSDiagCounter g_diagProcess;
+static BDSDiagCounter g_diagLocaleCarrier;
+static BDSDiagCounter g_diagScreenStorage;
+static BDSDiagCounter g_diagBaiduSDK;
+static BDSDiagCounter g_diagSysctl;
+static BDSDiagCounter g_diagKeychain;
+static BDSDiagCounter g_diagUserAgent;
+static BDSDiagCounter g_diagDyld;
+static BDSDiagCounter g_diagCFiles;
+static BDSDiagCounter g_diagObjCJailbreak;
+static BDSDiagCounter g_diagBundles;
+
+#define BDS_DIAG_RECORD(counter, state) do { \
+    __atomic_fetch_add(&(counter).hits, 1, __ATOMIC_RELAXED); \
+    if ((state) == BDSDiagStatePassed) { \
+        __atomic_fetch_add(&(counter).passed, 1, __ATOMIC_RELAXED); \
+    } else { \
+        __atomic_fetch_add(&(counter).changed, 1, __ATOMIC_RELAXED); \
+    } \
+    __atomic_store_n(&(counter).lastState, (int)(state), __ATOMIC_RELAXED); \
+} while (0)
+
+static uint64_t bds_diag_load64(volatile uint64_t *value) {
+    return __atomic_load_n(value, __ATOMIC_RELAXED);
+}
+
+static int bds_diag_load_state(volatile int *value) {
+    return __atomic_load_n(value, __ATOMIC_RELAXED);
+}
+
+static void bds_diag_reset_counter(BDSDiagCounter *counter) {
+    __atomic_store_n(&counter->hits, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&counter->passed, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&counter->changed, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&counter->lastState, BDSDiagStateNever, __ATOMIC_RELAXED);
+}
+
+static void bds_diag_reset_all(void) {
+    BDSDiagCounter *counters[] = {
+        &g_diagUIDevice, &g_diagIDFV, &g_diagAdvertising, &g_diagProcess,
+        &g_diagLocaleCarrier, &g_diagScreenStorage, &g_diagBaiduSDK,
+        &g_diagSysctl, &g_diagKeychain, &g_diagUserAgent, &g_diagDyld,
+        &g_diagCFiles, &g_diagObjCJailbreak, &g_diagBundles
+    };
+    for (size_t i = 0; i < sizeof(counters) / sizeof(counters[0]); i++) {
+        bds_diag_reset_counter(counters[i]);
+    }
 }
 
 #pragma mark - Hook 工具
@@ -482,26 +558,31 @@ static int bds_c_is_jailbreak_path(const char *path) {
 
 static IMP orig_systemVersion = NULL;
 static NSString *new_systemVersion(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagUIDevice, BDSDiagStateChanged);
     return cfgStr(@"systemVersion", @"15.7.1");
 }
 
 static IMP orig_model = NULL;
 static NSString *new_model(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagUIDevice, BDSDiagStateChanged);
     return cfgStr(@"deviceModel", @"iPhone");
 }
 
 static IMP orig_localizedModel = NULL;
 static NSString *new_localizedModel(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagUIDevice, BDSDiagStateChanged);
     return cfgStr(@"marketingModel", @"iPhone");
 }
 
 static IMP orig_name = NULL;
 static NSString *new_name(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagUIDevice, BDSDiagStateChanged);
     return cfgStr(@"deviceName", @"iPhone");
 }
 
 static IMP orig_systemName = NULL;
 static NSString *new_systemName(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagUIDevice, BDSDiagStateChanged);
     return @"iOS";
 }
 
@@ -509,7 +590,11 @@ static IMP orig_identifierForVendor = NULL;
 static NSUUID *new_identifierForVendor(id self, SEL _cmd) {
     NSString *uuid = cfgStr(@"idfv", @"A1B2C3D4-E5F6-7890-ABCD-EF1234567890");
     NSUUID *value = [[NSUUID alloc] initWithUUIDString:uuid];
-    if (value) return value;
+    if (value) {
+        BDS_DIAG_RECORD(g_diagIDFV, BDSDiagStateChanged);
+        return value;
+    }
+    BDS_DIAG_RECORD(g_diagIDFV, BDSDiagStatePassed);
     if (orig_identifierForVendor) {
         return ((NSUUID *(*)(id, SEL))orig_identifierForVendor)(self, _cmd);
     }
@@ -522,7 +607,11 @@ static IMP orig_advertisingIdentifier = NULL;
 static NSUUID *new_advertisingIdentifier(id self, SEL _cmd) {
     NSString *uuid = cfgStr(@"idfa", @"FEDCBA98-7654-3210-FEDC-BA9876543210");
     NSUUID *value = [[NSUUID alloc] initWithUUIDString:uuid];
-    if (value) return value;
+    if (value) {
+        BDS_DIAG_RECORD(g_diagAdvertising, BDSDiagStateChanged);
+        return value;
+    }
+    BDS_DIAG_RECORD(g_diagAdvertising, BDSDiagStatePassed);
     if (orig_advertisingIdentifier) {
         return ((NSUUID *(*)(id, SEL))orig_advertisingIdentifier)(self, _cmd);
     }
@@ -531,6 +620,7 @@ static NSUUID *new_advertisingIdentifier(id self, SEL _cmd) {
 
 static IMP orig_isAdvertisingTrackingEnabled = NULL;
 static BOOL new_isAdvertisingTrackingEnabled(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagAdvertising, BDSDiagStateChanged);
     return NO;
 }
 
@@ -538,6 +628,7 @@ static BOOL new_isAdvertisingTrackingEnabled(id self, SEL _cmd) {
 
 static IMP orig_trackingAuthorizationStatus = NULL;
 static NSInteger new_trackingAuthorizationStatus(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagAdvertising, BDSDiagStateChanged);
     return 2; // denied
 }
 
@@ -545,6 +636,7 @@ static NSInteger new_trackingAuthorizationStatus(id self, SEL _cmd) {
 
 static IMP orig_operatingSystemVersionString = NULL;
 static NSString *new_operatingSystemVersionString(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagProcess, BDSDiagStateChanged);
     NSString *v = cfgStr(@"systemVersion", @"15.7.1");
     NSString *b = cfgStr(@"systemBuild", @"19H117");
     return [NSString stringWithFormat:@"Version %@ (Build %@)", v, b];
@@ -552,6 +644,7 @@ static NSString *new_operatingSystemVersionString(id self, SEL _cmd) {
 
 static IMP orig_operatingSystemVersion = NULL;
 static NSOperatingSystemVersion new_operatingSystemVersion(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagProcess, BDSDiagStateChanged);
     NSOperatingSystemVersion v = {15, 7, 1};
     NSString *s = cfgStr(@"systemVersion", @"15.7.1");
     NSArray *p = [s componentsSeparatedByString:@"."];
@@ -563,11 +656,13 @@ static NSOperatingSystemVersion new_operatingSystemVersion(id self, SEL _cmd) {
 
 static IMP orig_hostName = NULL;
 static NSString *new_hostName(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagProcess, BDSDiagStateChanged);
     return cfgStr(@"kernHostname", @"iPhone");
 }
 
 static IMP orig_physicalMemory = NULL;
 static unsigned long long new_physicalMemory(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagProcess, BDSDiagStateChanged);
     return (unsigned long long)cfgInt(@"memorySize", 2048) * 1024 * 1024;
 }
 
@@ -575,6 +670,7 @@ static unsigned long long new_physicalMemory(id self, SEL _cmd) {
 
 static IMP orig_localeIdentifier = NULL;
 static NSString *new_localeIdentifier(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
     return cfgStr(@"localeIdentifier", @"zh_CN");
 }
 
@@ -582,38 +678,45 @@ static NSString *new_localeIdentifier(id self, SEL _cmd) {
 
 static IMP orig_subscriberCellularProvider = NULL;
 static CTCarrier *new_subscriberCellularProvider(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
     CTCarrier *fake = [[CTCarrier alloc] init];
     return fake;
 }
 
 static IMP orig_serviceSubscriberCellularProviders = NULL;
 static NSDictionary *new_serviceSubscriberCellularProviders(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
     CTCarrier *fake = [[CTCarrier alloc] init];
     return @{@"0000000100000001": fake};
 }
 
 static IMP orig_carrierName = NULL;
 static NSString *new_carrierName(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
     return cfgStr(@"carrierName", @"中国移动");
 }
 
 static IMP orig_mobileCountryCode = NULL;
 static NSString *new_mobileCountryCode(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
     return cfgStr(@"mcc", @"460");
 }
 
 static IMP orig_mobileNetworkCode = NULL;
 static NSString *new_mobileNetworkCode(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
     return cfgStr(@"mnc", @"00");
 }
 
 static IMP orig_isoCountryCode = NULL;
 static NSString *new_isoCountryCode(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
     return cfgStr(@"isoCountryCode", @"cn");
 }
 
 static IMP orig_allowsVOIP = NULL;
 static BOOL new_allowsVOIP(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
     return YES;
 }
 
@@ -621,6 +724,7 @@ static BOOL new_allowsVOIP(id self, SEL _cmd) {
 
 static IMP orig_bounds = NULL;
 static CGRect new_bounds(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagScreenStorage, BDSDiagStateChanged);
     CGFloat w = cfgInt(@"screenWidth", 375);
     CGFloat h = cfgInt(@"screenHeight", 667);
     return CGRectMake(0, 0, w, h);
@@ -628,6 +732,7 @@ static CGRect new_bounds(id self, SEL _cmd) {
 
 static IMP orig_nativeBounds = NULL;
 static CGRect new_nativeBounds(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagScreenStorage, BDSDiagStateChanged);
     CGFloat scale = (CGFloat)cfgInt(@"screenScale", 2);
     CGFloat w = (CGFloat)cfgInt(@"nativeScreenWidth",
                                 cfgInt(@"screenWidth", 375) * scale);
@@ -638,6 +743,7 @@ static CGRect new_nativeBounds(id self, SEL _cmd) {
 
 static IMP orig_scale = NULL;
 static CGFloat new_scale(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagScreenStorage, BDSDiagStateChanged);
     return (CGFloat)cfgInt(@"screenScale", 2);
 }
 
@@ -649,7 +755,11 @@ static NSDictionary *new_attributesOfFileSystemForPath(id self, SEL _cmd, id pat
     NSDictionary *orig = orig_attributesOfFileSystemForPath
         ? ((FileSystemAttributesIMP)orig_attributesOfFileSystemForPath)(self, _cmd, path, error)
         : nil;
-    if (!orig) return orig;
+    if (!orig) {
+        BDS_DIAG_RECORD(g_diagScreenStorage, BDSDiagStatePassed);
+        return orig;
+    }
+    BDS_DIAG_RECORD(g_diagScreenStorage, BDSDiagStateChanged);
     NSMutableDictionary *m = [orig mutableCopy];
     long long diskSize = cfgInt(@"diskSize", 64) * 1024LL * 1024LL * 1024LL;
     m[NSFileSystemSize] = @(diskSize);
@@ -693,6 +803,7 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
     [g_baiduLock unlock];
 
     if (!cfgBool(@"spoofBaiduSDK", NO)) {
+        BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStatePassed);
         if (origValue) {
             IMP orig = [origValue pointerValue];
             return ((NSString *(*)(id, SEL))orig)(self, _cmd);
@@ -704,10 +815,13 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
         IMP orig = [origValue pointerValue];
         id result = ((id (*)(id, SEL))orig)(self, _cmd);
         if ([result isKindOfClass:[NSString class]]) {
+            BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStateChanged);
             return bds_fake_value_for_cmd(_cmd);
         }
+        BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStatePassed);
         return result;
     }
+    BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStateChanged);
     return bds_fake_value_for_cmd(_cmd);
 }
 
@@ -809,10 +923,12 @@ static int bds_my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
                                 void *newp, size_t newlen) {
     // 异常参数或写入操作直接透传
     if (!name || (oldp && !oldlenp) || newp) {
+        BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStatePassed);
         return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
     }
 
     if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofSysctlC)) {
+        BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStatePassed);
         return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
     }
 
@@ -828,8 +944,11 @@ static int bds_my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
     }
 
     if (!fake) {
+        BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStatePassed);
         return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
     }
+
+    BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStateChanged);
 
     size_t fakeLen = strlen(fake) + 1;
 
@@ -861,6 +980,7 @@ static BOOL bds_keychainValueContainsBaidu(id value) {
 static OSStatus bds_my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
     if (!g_config || !cfgBool(@"enabled", NO) ||
         !cfgBool(@"spoofKeychain", NO) || !query) {
+        BDS_DIAG_RECORD(g_diagKeychain, BDSDiagStatePassed);
         return orig_SecItemCopyMatching(query, result);
     }
 
@@ -876,12 +996,14 @@ static OSStatus bds_my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *res
         ];
         for (id key in keys) {
             if (bds_keychainValueContainsBaidu(dictionary[key])) {
+                BDS_DIAG_RECORD(g_diagKeychain, BDSDiagStateBlocked);
                 if (result) *result = NULL;
                 return errSecItemNotFound;
             }
         }
     }
 
+    BDS_DIAG_RECORD(g_diagKeychain, BDSDiagStatePassed);
     return orig_SecItemCopyMatching(query, result);
 }
 
@@ -890,6 +1012,7 @@ static OSStatus bds_my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *res
 static IMP orig_wk_customUserAgent = NULL;
 static NSString *new_wk_customUserAgent(id self, SEL _cmd) {
     (void)self; (void)_cmd;
+    BDS_DIAG_RECORD(g_diagUserAgent, BDSDiagStateChanged);
     NSString *custom = cfgStr(@"userAgent", @"");
     if (custom.length > 0) return custom;
     NSString *v = [cfgStr(@"systemVersion", @"15.7.1") stringByReplacingOccurrencesOfString:@"." withString:@"_"];
@@ -899,6 +1022,7 @@ static NSString *new_wk_customUserAgent(id self, SEL _cmd) {
 
 static IMP orig_nsmurl_setValue = NULL;
 static void new_nsmurl_setValue(id self, SEL _cmd, NSString *value, NSString *field) {
+    BOOL changed = NO;
     if (field && value &&
         [field caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame &&
         cfgBool(@"spoofUserAgent", NO)) {
@@ -909,13 +1033,16 @@ static void new_nsmurl_setValue(id self, SEL _cmd, NSString *value, NSString *fi
             value = [NSString stringWithFormat:
                 @"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148", v];
         }
+        changed = YES;
     }
+    BDS_DIAG_RECORD(g_diagUserAgent, changed ? BDSDiagStateChanged : BDSDiagStatePassed);
     typedef void (*SetValueIMP)(id, SEL, NSString *, NSString *);
     if (orig_nsmurl_setValue) ((SetValueIMP)orig_nsmurl_setValue)(self, _cmd, value, field);
 }
 
 static IMP orig_nsmurl_addValue = NULL;
 static void new_nsmurl_addValue(id self, SEL _cmd, NSString *value, NSString *field) {
+    BOOL changed = NO;
     if (field && value &&
         [field caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame &&
         cfgBool(@"spoofUserAgent", NO)) {
@@ -926,7 +1053,9 @@ static void new_nsmurl_addValue(id self, SEL _cmd, NSString *value, NSString *fi
             value = [NSString stringWithFormat:
                 @"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148", v];
         }
+        changed = YES;
     }
+    BDS_DIAG_RECORD(g_diagUserAgent, changed ? BDSDiagStateChanged : BDSDiagStatePassed);
     typedef void (*AddValueIMP)(id, SEL, NSString *, NSString *);
     if (orig_nsmurl_addValue) ((AddValueIMP)orig_nsmurl_addValue)(self, _cmd, value, field);
 }
@@ -964,11 +1093,19 @@ static int bds_c_should_hide_image(const char *name) {
 
 static const char *bds_my_dyld_get_image_name(uint32_t image_index) {
     const char *name = orig_dyld_get_image_name(image_index);
-    if (!name) return name;
-    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_bypassJailbreakC)) return name;
+    if (!name) {
+        BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
+        return name;
+    }
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_bypassJailbreakC)) {
+        BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
+        return name;
+    }
     if (bds_c_should_hide_image(name)) {
+        BDS_DIAG_RECORD(g_diagDyld, BDSDiagStateChanged);
         return bds_fake_image_names[image_index % BDS_FAKE_IMAGE_COUNT];
     }
+    BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
     return name;
 }
 
@@ -985,45 +1122,55 @@ static DIR *(*orig_opendir)(const char *);
 static int bds_my_stat(const char *path, struct stat *buf) {
     if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC) &&
         bds_c_is_jailbreak_path(path)) {
+        BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStateBlocked);
         errno = ENOENT;
         return -1;
     }
+    BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStatePassed);
     return orig_stat(path, buf);
 }
 
 static int bds_my_lstat(const char *path, struct stat *buf) {
     if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC) &&
         bds_c_is_jailbreak_path(path)) {
+        BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStateBlocked);
         errno = ENOENT;
         return -1;
     }
+    BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStatePassed);
     return orig_lstat(path, buf);
 }
 
 static int bds_my_access(const char *path, int mode) {
     if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC) &&
         bds_c_is_jailbreak_path(path)) {
+        BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStateBlocked);
         errno = ENOENT;
         return -1;
     }
+    BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStatePassed);
     return orig_access(path, mode);
 }
 
 static FILE *bds_my_fopen(const char *path, const char *mode) {
     if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC) &&
         bds_c_is_jailbreak_path(path)) {
+        BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStateBlocked);
         errno = ENOENT;
         return NULL;
     }
+    BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStatePassed);
     return orig_fopen(path, mode);
 }
 
 static DIR *bds_my_opendir(const char *path) {
     if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC) &&
         bds_c_is_jailbreak_path(path)) {
+        BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStateBlocked);
         errno = ENOENT;
         return NULL;
     }
+    BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStatePassed);
     return orig_opendir(path);
 }
 
@@ -1058,7 +1205,11 @@ static BOOL bds_isSuspiciousBundlePath(NSString *path) {
 
 static IMP orig_fileExistsAtPath = NULL;
 static BOOL new_fileExistsAtPath(id self, SEL _cmd, NSString *path) {
-    if (cfgBool(@"bypassJailbreakDetect", NO) && bds_isJailbreakPath(path)) return NO;
+    if (cfgBool(@"bypassJailbreakDetect", NO) && bds_isJailbreakPath(path)) {
+        BDS_DIAG_RECORD(g_diagObjCJailbreak, BDSDiagStateBlocked);
+        return NO;
+    }
+    BDS_DIAG_RECORD(g_diagObjCJailbreak, BDSDiagStatePassed);
     typedef BOOL (*ExistsIMP)(id, SEL, NSString *);
     if (orig_fileExistsAtPath) return ((ExistsIMP)orig_fileExistsAtPath)(self, _cmd, path);
     return NO;
@@ -1067,9 +1218,11 @@ static BOOL new_fileExistsAtPath(id self, SEL _cmd, NSString *path) {
 static IMP orig_fileExistsAtPathIsDir = NULL;
 static BOOL new_fileExistsAtPathIsDir(id self, SEL _cmd, NSString *path, BOOL *isDirectory) {
     if (cfgBool(@"bypassJailbreakDetect", NO) && bds_isJailbreakPath(path)) {
+        BDS_DIAG_RECORD(g_diagObjCJailbreak, BDSDiagStateBlocked);
         if (isDirectory) *isDirectory = NO;
         return NO;
     }
+    BDS_DIAG_RECORD(g_diagObjCJailbreak, BDSDiagStatePassed);
     typedef BOOL (*ExistsDirIMP)(id, SEL, NSString *, BOOL *);
     if (orig_fileExistsAtPathIsDir) return ((ExistsDirIMP)orig_fileExistsAtPathIsDir)(self, _cmd, path, isDirectory);
     return NO;
@@ -1079,8 +1232,12 @@ static IMP orig_canOpenURL = NULL;
 static BOOL new_canOpenURL(id self, SEL _cmd, NSURL *url) {
     if (cfgBool(@"bypassJailbreakDetect", NO)) {
         NSString *scheme = url.scheme.lowercaseString;
-        if (scheme && [bds_jailbreakSchemes() containsObject:scheme]) return NO;
+        if (scheme && [bds_jailbreakSchemes() containsObject:scheme]) {
+            BDS_DIAG_RECORD(g_diagObjCJailbreak, BDSDiagStateBlocked);
+            return NO;
+        }
     }
+    BDS_DIAG_RECORD(g_diagObjCJailbreak, BDSDiagStatePassed);
     typedef BOOL (*CanOpenIMP)(id, SEL, NSURL *);
     if (orig_canOpenURL) return ((CanOpenIMP)orig_canOpenURL)(self, _cmd, url);
     return NO;
@@ -1092,7 +1249,10 @@ static IMP orig_allFrameworks = NULL;
 static NSArray *new_allFrameworks(id self, SEL _cmd) {
     typedef NSArray *(*AllFrameworksIMP)(id, SEL);
     NSArray *orig = orig_allFrameworks ? ((AllFrameworksIMP)orig_allFrameworks)(self, _cmd) : @[];
-    if (!cfgBool(@"bypassJailbreakDetect", NO)) return orig;
+    if (!cfgBool(@"bypassJailbreakDetect", NO)) {
+        BDS_DIAG_RECORD(g_diagBundles, BDSDiagStatePassed);
+        return orig;
+    }
     NSMutableArray *filtered = [NSMutableArray array];
     for (NSBundle *bundle in orig) {
         if (![bundle isKindOfClass:[NSBundle class]]) { [filtered addObject:bundle]; continue; }
@@ -1100,6 +1260,7 @@ static NSArray *new_allFrameworks(id self, SEL _cmd) {
             [filtered addObject:bundle];
         }
     }
+    BDS_DIAG_RECORD(g_diagBundles, filtered.count == orig.count ? BDSDiagStatePassed : BDSDiagStateChanged);
     return filtered;
 }
 
@@ -1107,7 +1268,10 @@ static IMP orig_allBundles = NULL;
 static NSArray *new_allBundles(id self, SEL _cmd) {
     typedef NSArray *(*AllBundlesIMP)(id, SEL);
     NSArray *orig = orig_allBundles ? ((AllBundlesIMP)orig_allBundles)(self, _cmd) : @[];
-    if (!cfgBool(@"bypassJailbreakDetect", NO)) return orig;
+    if (!cfgBool(@"bypassJailbreakDetect", NO)) {
+        BDS_DIAG_RECORD(g_diagBundles, BDSDiagStatePassed);
+        return orig;
+    }
     NSMutableArray *filtered = [NSMutableArray array];
     for (NSBundle *bundle in orig) {
         if (![bundle isKindOfClass:[NSBundle class]]) { [filtered addObject:bundle]; continue; }
@@ -1115,6 +1279,7 @@ static NSArray *new_allBundles(id self, SEL _cmd) {
             [filtered addObject:bundle];
         }
     }
+    BDS_DIAG_RECORD(g_diagBundles, filtered.count == orig.count ? BDSDiagStatePassed : BDSDiagStateChanged);
     return filtered;
 }
 
@@ -1122,7 +1287,10 @@ static IMP orig_loadedBundles = NULL;
 static NSArray *new_loadedBundles(id self, SEL _cmd) {
     typedef NSArray *(*LoadedBundlesIMP)(id, SEL);
     NSArray *orig = orig_loadedBundles ? ((LoadedBundlesIMP)orig_loadedBundles)(self, _cmd) : @[];
-    if (!cfgBool(@"bypassJailbreakDetect", NO)) return orig;
+    if (!cfgBool(@"bypassJailbreakDetect", NO)) {
+        BDS_DIAG_RECORD(g_diagBundles, BDSDiagStatePassed);
+        return orig;
+    }
     NSMutableArray *filtered = [NSMutableArray array];
     for (NSBundle *bundle in orig) {
         if (![bundle isKindOfClass:[NSBundle class]]) { [filtered addObject:bundle]; continue; }
@@ -1130,6 +1298,7 @@ static NSArray *new_loadedBundles(id self, SEL _cmd) {
             [filtered addObject:bundle];
         }
     }
+    BDS_DIAG_RECORD(g_diagBundles, filtered.count == orig.count ? BDSDiagStatePassed : BDSDiagStateChanged);
     return filtered;
 }
 
@@ -1214,6 +1383,25 @@ static UIViewController *BDSTopController(void) {
 
 static NSString *BDSOnOff(BOOL value) {
     return value ? @"开" : @"关";
+}
+
+static NSString *BDSDiagStateText(int state) {
+    switch (state) {
+        case BDSDiagStatePassed: return @"透传原值";
+        case BDSDiagStateChanged: return @"返回修改值";
+        case BDSDiagStateBlocked: return @"已拦截";
+        default: return @"未调用";
+    }
+}
+
+static void BDSAppendDiagLine(NSMutableString *text, NSString *name, BDSDiagCounter *counter) {
+    uint64_t hits = bds_diag_load64(&counter->hits);
+    uint64_t passed = bds_diag_load64(&counter->passed);
+    uint64_t changed = bds_diag_load64(&counter->changed);
+    int state = bds_diag_load_state(&counter->lastState);
+    [text appendFormat:@"\n%@：命中 %llu / 透传 %llu / 修改或拦截 %llu / 最近 %@",
+        name, (unsigned long long)hits, (unsigned long long)passed,
+        (unsigned long long)changed, BDSDiagStateText(state)];
 }
 
 static NSString *BDSRandomHex32(BOOL uppercase) {
@@ -2035,6 +2223,27 @@ static NSString *BDSConfigSummary(void) {
 }
 
 - (void)showSelfTest {
+    // 先做快照，再读取公开 API，避免本次自检调用污染当前显示的数据。
+    NSMutableString *diagnostics = [NSMutableString stringWithString:
+        @"\n\n--- 1.7.1 Hook 命中统计 ---\n"
+         "范围：百度极速版当前进程；不代表这些值已经上传到服务器。\n"
+         "统计从 App 启动或上次清零开始。"];
+    BDSAppendDiagLine(diagnostics, @"UIDevice", &g_diagUIDevice);
+    BDSAppendDiagLine(diagnostics, @"IDFV", &g_diagIDFV);
+    BDSAppendDiagLine(diagnostics, @"IDFA / ATT", &g_diagAdvertising);
+    BDSAppendDiagLine(diagnostics, @"NSProcessInfo", &g_diagProcess);
+    BDSAppendDiagLine(diagnostics, @"语言 / 运营商", &g_diagLocaleCarrier);
+    BDSAppendDiagLine(diagnostics, @"屏幕 / 磁盘", &g_diagScreenStorage);
+    BDSAppendDiagLine(diagnostics, @"百度 SDK 标识", &g_diagBaiduSDK);
+    BDSAppendDiagLine(diagnostics, @"sysctlbyname", &g_diagSysctl);
+    BDSAppendDiagLine(diagnostics, @"Keychain", &g_diagKeychain);
+    BDSAppendDiagLine(diagnostics, @"User-Agent", &g_diagUserAgent);
+    BDSAppendDiagLine(diagnostics, @"dyld 镜像名", &g_diagDyld);
+    BDSAppendDiagLine(diagnostics, @"C 文件查询", &g_diagCFiles);
+    BDSAppendDiagLine(diagnostics, @"ObjC 文件 / URL", &g_diagObjCJailbreak);
+    BDSAppendDiagLine(diagnostics, @"NSBundle 遍历", &g_diagBundles);
+    [diagnostics appendString:@"\n说明：本次打开自检产生的读取不会进入上面的当前快照。"];
+
     UIDevice *device = UIDevice.currentDevice;
     NSProcessInfo *process = NSProcessInfo.processInfo;
     UIScreen *screen = UIScreen.mainScreen;
@@ -2143,7 +2352,7 @@ static NSString *BDSConfigSummary(void) {
         [advanced appendFormat:@"\n  NSBundle过滤：%lu 个 framework", (unsigned long)frameworks.count];
     }
 
-    message = [message stringByAppendingString:advanced];
+    message = [[message stringByAppendingString:advanced] stringByAppendingString:diagnostics];
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
@@ -2155,6 +2364,12 @@ static NSString *BDSConfigSummary(void) {
         [alert addAction:[UIAlertAction actionWithTitle:@"复制结果" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
             (void)action;
             UIPasteboard.generalPasteboard.string = message;
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"清零命中统计" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            (void)action;
+            bds_diag_reset_all();
+            [self presentMessage:@"统计已清零。关闭面板后正常操作百度极速版，再重新打开自检查看命中情况。"
+                            title:@"已清零"];
         }]];
         [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleCancel handler:nil]];
         [presenter presentViewController:alert animated:YES completion:nil];
