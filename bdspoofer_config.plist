@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
 	<key>configVersion</key>
-	<integer>161</integer>
+	<integer>162</integer>
 	<key>enabled</key>
 	<true/>
 	<key>spoofScreen</key>
-	<true/>
+	<false/>
 	<key>spoofAdvertisingIdentifiers</key>
 	<true/>
 	<key>spoofProcessHardware</key>

@@ -4,6 +4,8 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  1.6.2：
+//    G. 整套随机保留本机真实屏幕尺寸，避免 UIScreen hook 导致界面缩放
 //  1.6.1：
 //    E. 基础页面增加“一键随机整套设备参数”
 //       （iPhone 8 至 iPhone 13 系列，含 SE2/SE3；iOS 15/16）
@@ -66,13 +68,13 @@ static NSDictionary *BDSDefaultConfig(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @161,
+            @"configVersion": @162,
             @"enabled": @YES,
             @"spoofAdvertisingIdentifiers": @YES,
             @"spoofProcessHardware": @YES,
             @"spoofLocale": @YES,
             @"spoofCarrier": @YES,
-            @"spoofScreen": @YES,
+            @"spoofScreen": @NO,
             @"spoofStorage": @YES,
             @"spoofBaiduSDK": @YES,
             @"spoofSysctl": @YES,
@@ -159,7 +161,7 @@ static void loadConfig() {
             @"spoofProcessHardware": @YES,
             @"spoofLocale": @YES,
             @"spoofCarrier": @YES,
-            @"spoofScreen": @YES,
+            @"spoofScreen": @NO,
             @"spoofStorage": @YES
         }];
         if (!loaded[@"nativeScreenWidth"]) merged[@"nativeScreenWidth"] = @750;
@@ -173,6 +175,12 @@ static void loadConfig() {
                 merged[@"kernOSVersion"] = @"19H117";
             }
         }
+        [merged writeToFile:p1 atomically:YES];
+    }
+    if (ver < 162) {
+        // UIScreen 会直接影响真实界面布局；升级后默认关闭并保留本机屏幕。
+        merged[@"configVersion"] = @162;
+        merged[@"spoofScreen"] = @NO;
         [merged writeToFile:p1 atomically:YES];
     }
     g_config = [merged copy];
@@ -1307,7 +1315,8 @@ static NSDictionary *BDSRandomBasicProfileValues(void) {
     values[@"spoofProcessHardware"] = @YES;
     values[@"spoofLocale"] = @YES;
     values[@"spoofCarrier"] = @YES;
-    values[@"spoofScreen"] = @YES;
+    // 保持本机真实屏幕，避免随机到大屏机型后界面被放大或缩小。
+    values[@"spoofScreen"] = @NO;
     values[@"spoofStorage"] = @YES;
     values[@"deviceProfileName"] = device[@"name"];
     values[@"deviceModel"] = @"iPhone";
@@ -1317,11 +1326,6 @@ static NSDictionary *BDSRandomBasicProfileValues(void) {
     values[@"kernOSVersion"] = system[@"build"];
     values[@"hwMachine"] = device[@"machine"];
     values[@"hwModel"] = device[@"model"];
-    values[@"screenWidth"] = device[@"width"];
-    values[@"screenHeight"] = device[@"height"];
-    values[@"nativeScreenWidth"] = device[@"nativeWidth"];
-    values[@"nativeScreenHeight"] = device[@"nativeHeight"];
-    values[@"screenScale"] = device[@"scale"];
     values[@"memorySize"] = device[@"memory"];
     values[@"diskSize"] = disk;
     values[@"kernHostname"] = values[@"deviceName"];
@@ -1597,10 +1601,9 @@ static NSString *BDSConfigSummary(void) {
         @"已整套随机并保存；基础功能保持开启，高级功能没有改动。\n"
          "请彻底关闭 App 后重新打开。\n\n"
          "机型：%@\n系统：%@ (%@)\n"
-         "屏幕：%@×%@ / %@x\n内存：%@ MB\n磁盘：%@ GB\n\n"
+         "屏幕：保持本机真实尺寸\n内存：%@ MB\n磁盘：%@ GB\n\n"
          "IDFA：%@\nIDFV：%@\nCUID：%@\nUTDID：%@\nDeviceID：%@",
         values[@"deviceProfileName"], values[@"systemVersion"], values[@"systemBuild"],
-        values[@"screenWidth"], values[@"screenHeight"], values[@"screenScale"],
         values[@"memorySize"], values[@"diskSize"],
         values[@"idfa"], values[@"idfv"], values[@"cuid"], values[@"utdid"], values[@"deviceID"]];
     [self presentMessage:message title:@"基础参数已更换"];
@@ -1610,7 +1613,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"基础功能开关"
-                                                                   message:@"默认全部开启，修改后重启生效。"
+                                                                   message:@"除屏幕尺寸外默认开启，修改后重启生效。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSDictionary *> *items = @[
         @{@"key": @"spoofAdvertisingIdentifiers", @"name": @"广告标识符"},
