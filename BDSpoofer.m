@@ -4,6 +4,42 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  1.7.8：
+//    R. 发布版本号升级；功能与 1.7.4 保持一致。
+//  1.7.4：
+//    Q. 反关联增强第二批：
+//       - statfs/statvfs 磁盘剩余空间伪装（C 层兜底）
+//       - dlopen/dlopen_preflight 反检测（越狱库路径返回 NULL）
+//       - iCloud 容器隔离（URLForUbiquityContainerIdentifier 返回 nil）
+//       - 通讯录/日历/照片权限返回拒绝（相机权限不 hook）
+//       - WebKit Cookie 过滤（过滤百度域名设备标识 Cookie，保留登录态）
+//  1.7.3：
+//    P. 反关联增强（独立二级页面）：
+//       - WiFi SSID/BSSID 隐藏（CNCopyCurrentNetworkInfo fishhook）
+//       - 本地 IP 隐藏（getifaddrs fishhook，清空 en0 地址）
+//       - App Group 共享容器隔离（拦截 baidu group identifier）
+//       - 剪贴板保护（UIPasteboard 读取返回空）
+//       - 系统启动时间随机化（kern.boottime sysctl）
+//       - CPU 参数伪装（hw.ncpu/hw.physicalcpu sysctl）
+//       - 定位保护（CLLocationManager 返回拒绝/nil）
+//       - 代理/VPN 检测绕过（CFNetworkCopySystemProxySettings / SCDynamicStoreCopyProxies）
+//  1.7.2：
+//    M. 机型随机增加兼容/扩展两种范围，默认兼容模式
+//    N. IDFA 遵循真实 ATT 授权；UA 默认透传；Keychain 默认关闭
+//    O. API 返回值与 Hook 统计拆分，自检支持复制确认和 TXT 分享
+//  1.7.1：
+//    K. 公开 API 自检增加进程内 hook 命中/透传/修改统计与最近状态
+//    L. 诊断计数使用纯原子操作，C/dyld hook 内不调用 Objective-C
+//  1.7.0：
+//    H. 主面板精简，基础/高级功能改为独立二级页面
+//    I. 基础随机与高级身份随机彻底分离
+//    J. 悬浮按钮自动贴边，静置 5 秒后收成半透明把手
+//  1.6.2：
+//    G. 整套随机保留本机真实屏幕尺寸，避免 UIScreen hook 导致界面缩放
+//  1.6.1：
+//    E. 基础页面增加“一键随机整套设备参数”
+//       （iPhone 8 至 iPhone 13 系列，含 SE2/SE3；iOS 15/16）
+//    F. 基础功能默认开启；随机操作仅在手动点击时执行并持久保存
 //  1.6.0：
 //    A. iPhone 8 默认硬件参数（与 SE2 硬件一致）
 //    B. _dyld_get_image_name 镜像名过滤（fishhook）
@@ -36,6 +72,18 @@
 #import <errno.h>
 #import <stdlib.h>
 #import <mach/mach.h>
+#import <SystemConfiguration/CaptiveNetwork.h>
+#import <SystemConfiguration/SystemConfiguration.h>
+#import <CoreLocation/CoreLocation.h>
+#import <ifaddrs.h>
+#import <net/if_dl.h>
+#import <arpa/inet.h>
+#import <sys/mount.h>
+#import <sys/statvfs.h>
+#import <dlfcn.h>
+#import <Contacts/Contacts.h>
+#import <EventKit/EventKit.h>
+#import <Photos/Photos.h>
 
 #pragma mark - 原子操作
 
@@ -50,31 +98,84 @@ static NSDictionary *g_config = nil;
 static int g_enabledC = 0;
 static int g_spoofSysctlC = 0;
 static int g_bypassJailbreakC = 0;
+static int g_spoofWiFiC = 0;
+static int g_spoofLocalIPC = 0;
+static int g_spoofProxyC = 0;
+static int g_spoofBootTimeC = 0;
+static int g_spoofCPUC = 0;
+static int g_spoofStatfsC = 0;
+static int g_spoofDlopenC = 0;
 
 // C hook 使用的缓存伪造值（constructor 和 saveConfigValues 中更新）
-static char g_hwMachine[32] = "iPhone10,1";
-static char g_hwModel[32] = "D20AP";
-static char g_kernOSVersion[16] = "19H307";
+static char g_hwMachine[32] = "iPhone14,6";
+static char g_hwModel[32] = "D49AP";
+static char g_kernOSVersion[16] = "19E258";
 static char g_kernHostname[65] = "iPhone";
+static char g_wifiSSID[64] = "";
+
+// 伪造的启动时间（constructor 中初始化为当前时间减去随机 1-7 天）
+static struct timeval g_fakeBootTime = {0, 0};
+
+// 当前支持的 A11-A15 设备均为 6 个物理 CPU 核心。
+static int g_fakeNcpu = 6;
+static int g_fakePhysicalCPU = 6;
+static int g_fakeActiveCPU = 6;
+
+// 磁盘大小（字节），C hook 使用，constructor 和 saveConfigValues 中更新
+static long long g_fakeDiskSizeBytes = 64LL * 1024 * 1024 * 1024;
+
+static inline long long bds_disk_size_get(void) {
+    return __atomic_load_n(&g_fakeDiskSizeBytes, __ATOMIC_RELAXED);
+}
+static inline void bds_disk_size_set(long long v) {
+    __atomic_store_n(&g_fakeDiskSizeBytes, v, __ATOMIC_RELAXED);
+}
 
 static NSDictionary *BDSDefaultConfig(void) {
     static NSDictionary *defaults;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @160,
+            @"configVersion": @178,
             @"enabled": @YES,
             @"spoofAdvertisingIdentifiers": @YES,
-            @"spoofProcessHardware": @NO,
-            @"spoofLocale": @NO,
-            @"spoofCarrier": @NO,
+            @"spoofProcessHardware": @YES,
+            @"spoofLocale": @YES,
+            @"spoofCarrier": @YES,
             @"spoofScreen": @NO,
-            @"spoofStorage": @NO,
+            @"spoofStorage": @YES,
             @"spoofBaiduSDK": @YES,
             @"spoofSysctl": @YES,
-            @"spoofKeychain": @YES,
-            @"spoofUserAgent": @YES,
-            @"bypassJailbreakDetect": @YES
+            @"spoofKeychain": @NO,
+            @"spoofUserAgent": @NO,
+            @"bypassJailbreakDetect": @YES,
+            @"spoofWiFi": @YES,
+            @"spoofLocalIP": @YES,
+            @"spoofAppGroup": @YES,
+            @"spoofPasteboard": @YES,
+            @"spoofBootTime": @YES,
+            @"spoofCPU": @YES,
+            @"spoofLocation": @YES,
+            @"spoofProxyDetection": @YES,
+            @"spoofStatfs": @YES,
+            @"spoofDlopen": @YES,
+            @"spoofUbiquity": @YES,
+            @"spoofPrivacyPermissions": @YES,
+            @"spoofWebKitCookie": @YES,
+            @"spoofBattery": @YES,
+            @"wifiSSID": @"",
+            @"bootTimeOffsetSeconds": @0,
+            @"deviceRandomMode": @"compatible",
+            @"deviceProfileName": @"iPhone SE (3rd generation)",
+            @"systemVersion": @"15.4.1",
+            @"systemBuild": @"19E258",
+            @"kernOSVersion": @"19E258",
+            @"hwMachine": @"iPhone14,6",
+            @"hwModel": @"D49AP",
+            @"memorySize": @4096,
+            @"diskSize": @64,
+            @"floatingButtonSide": @"right",
+            @"floatingButtonYPermille": @520
         };
     });
     return defaults;
@@ -100,14 +201,23 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
 
 static void bds_update_c_cache(void) {
     NSString *v;
-    v = cfgStr(@"hwMachine", @"iPhone10,1");
+    v = cfgStr(@"hwMachine", @"iPhone14,6");
     snprintf(g_hwMachine, sizeof(g_hwMachine), "%s", v.UTF8String);
-    v = cfgStr(@"hwModel", @"D20AP");
+    v = cfgStr(@"hwModel", @"D49AP");
     snprintf(g_hwModel, sizeof(g_hwModel), "%s", v.UTF8String);
-    v = cfgStr(@"kernOSVersion", @"19H307");
+    v = cfgStr(@"kernOSVersion", @"19E258");
     snprintf(g_kernOSVersion, sizeof(g_kernOSVersion), "%s", v.UTF8String);
     v = cfgStr(@"kernHostname", @"iPhone");
     snprintf(g_kernHostname, sizeof(g_kernHostname), "%s", v.UTF8String);
+    v = cfgStr(@"wifiSSID", @"");
+    const char *wifiUTF8 = v.UTF8String;
+    size_t wifiLength = wifiUTF8 ? strlen(wifiUTF8) : 0;
+    if (!wifiUTF8 || wifiLength >= sizeof(g_wifiSSID)) {
+        g_wifiSSID[0] = '\0';
+    } else {
+        memcpy(g_wifiSSID, wifiUTF8, wifiLength + 1);
+    }
+    bds_disk_size_set((long long)cfgInt(@"diskSize", 64) * 1024LL * 1024LL * 1024LL);
 }
 
 static void loadConfig() {
@@ -134,16 +244,93 @@ static void loadConfig() {
             @"configVersion": @160,
             @"spoofSysctl": @YES,
             @"systemVersion": @"15.7.1",
-            @"systemBuild": @"19H307",
+            @"systemBuild": @"19H117",
             @"hwMachine": @"iPhone10,1",
             @"hwModel": @"D20AP",
-            @"kernOSVersion": @"19H307",
+            @"kernOSVersion": @"19H117",
             @"screenWidth": @375,
             @"screenHeight": @667,
             @"screenScale": @2,
             @"memorySize": @2048,
             @"diskSize": @64
         }];
+        [merged writeToFile:p1 atomically:YES];
+    }
+    if (ver < 161) {
+        // 1.6.1 只迁移基础功能开关；高级功能保持 1.6.0 的已有状态。
+        [merged addEntriesFromDictionary:@{
+            @"configVersion": @161,
+            @"enabled": @YES,
+            @"spoofAdvertisingIdentifiers": @YES,
+            @"spoofProcessHardware": @YES,
+            @"spoofLocale": @YES,
+            @"spoofCarrier": @YES,
+            @"spoofScreen": @NO,
+            @"spoofStorage": @YES
+        }];
+        if (!loaded[@"nativeScreenWidth"]) merged[@"nativeScreenWidth"] = @750;
+        if (!loaded[@"nativeScreenHeight"]) merged[@"nativeScreenHeight"] = @1334;
+        if (!loaded[@"deviceProfileName"]) merged[@"deviceProfileName"] = @"iPhone 8";
+        // 修正旧默认值中 15.7.1 与 15.7.3 Build 混用的问题，不覆盖用户自定义组合。
+        if ([merged[@"systemVersion"] isEqualToString:@"15.7.1"] &&
+            [merged[@"systemBuild"] isEqualToString:@"19H307"]) {
+            merged[@"systemBuild"] = @"19H117";
+            if ([merged[@"kernOSVersion"] isEqualToString:@"19H307"]) {
+                merged[@"kernOSVersion"] = @"19H117";
+            }
+        }
+        [merged writeToFile:p1 atomically:YES];
+    }
+    if (ver < 162) {
+        // UIScreen 会直接影响真实界面布局；升级后默认关闭并保留本机屏幕。
+        merged[@"configVersion"] = @162;
+        merged[@"spoofScreen"] = @NO;
+        [merged writeToFile:p1 atomically:YES];
+    }
+    if (ver < 170) {
+        merged[@"configVersion"] = @170;
+        if (!loaded[@"floatingButtonSide"]) merged[@"floatingButtonSide"] = @"right";
+        if (!loaded[@"floatingButtonYPermille"]) merged[@"floatingButtonYPermille"] = @520;
+        [merged writeToFile:p1 atomically:YES];
+    }
+    if (ver < 171) {
+        // 1.7.1 仅增加内存中的诊断计数，不改变用户现有功能和参数。
+        merged[@"configVersion"] = @171;
+        [merged writeToFile:p1 atomically:YES];
+    }
+    if (ver < 172) {
+        // 1.7.2 迁移到一致性优先的默认值；保留其他现有参数。
+        merged[@"configVersion"] = @172;
+        merged[@"deviceRandomMode"] = @"compatible";
+        merged[@"spoofKeychain"] = @NO;
+        merged[@"spoofUserAgent"] = @NO;
+        [merged writeToFile:p1 atomically:YES];
+    }
+    if (ver < 173) {
+        // 1.7.3 新功能默认开启；只补齐旧配置缺失的键，
+        // 不覆盖用户已经明确保存的开关选择。
+        merged[@"configVersion"] = @173;
+        NSArray<NSString *> *newSwitches = @[
+            @"spoofWiFi", @"spoofLocalIP", @"spoofAppGroup", @"spoofPasteboard",
+            @"spoofBootTime", @"spoofCPU", @"spoofLocation", @"spoofProxyDetection"
+        ];
+        for (NSString *key in newSwitches) {
+            if (!loaded[key]) merged[key] = @YES;
+        }
+        if (!loaded[@"wifiSSID"]) merged[@"wifiSSID"] = @"";
+        if (!loaded[@"bootTimeOffsetSeconds"]) merged[@"bootTimeOffsetSeconds"] = @0;
+        [merged writeToFile:p1 atomically:YES];
+    }
+    if (ver < 178) {
+        // 1.7.8 版本基线：包含 1.7.4 反关联增强第二批的默认开关
+        merged[@"configVersion"] = @178;
+        NSArray<NSString *> *newSwitches = @[
+            @"spoofStatfs", @"spoofDlopen", @"spoofUbiquity",
+            @"spoofPrivacyPermissions", @"spoofWebKitCookie", @"spoofBattery"
+        ];
+        for (NSString *key in newSwitches) {
+            if (!loaded[key]) merged[key] = @YES;
+        }
         [merged writeToFile:p1 atomically:YES];
     }
     g_config = [merged copy];
@@ -161,8 +348,106 @@ static BOOL saveConfigValues(NSDictionary *values) {
         BDS_ATOMIC_SET(g_enabledC, cfgBool(@"enabled", NO) ? 1 : 0);
         BDS_ATOMIC_SET(g_spoofSysctlC, cfgBool(@"spoofSysctl", NO) ? 1 : 0);
         BDS_ATOMIC_SET(g_bypassJailbreakC, cfgBool(@"bypassJailbreakDetect", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofWiFiC, cfgBool(@"spoofWiFi", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofLocalIPC, cfgBool(@"spoofLocalIP", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofProxyC, cfgBool(@"spoofProxyDetection", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofBootTimeC, cfgBool(@"spoofBootTime", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofCPUC, cfgBool(@"spoofCPU", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofStatfsC, cfgBool(@"spoofStatfs", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofDlopenC, cfgBool(@"spoofDlopen", YES) ? 1 : 0);
     }
     return saved;
+}
+
+#pragma mark - 1.7.1 只读诊断计数
+
+typedef NS_ENUM(int, BDSDiagState) {
+    BDSDiagStateNever = 0,
+    BDSDiagStatePassed = 1,
+    BDSDiagStateChanged = 2,
+    BDSDiagStateBlocked = 3
+};
+
+typedef struct {
+    volatile uint64_t hits;
+    volatile uint64_t passed;
+    volatile uint64_t changed;
+    volatile uint64_t blocked;
+    volatile int lastState;
+} BDSDiagCounter;
+
+static BDSDiagCounter g_diagUIDevice;
+static BDSDiagCounter g_diagIDFV;
+static BDSDiagCounter g_diagAdvertising;
+static BDSDiagCounter g_diagProcess;
+static BDSDiagCounter g_diagLocaleCarrier;
+static BDSDiagCounter g_diagScreenStorage;
+static BDSDiagCounter g_diagBaiduSDK;
+static BDSDiagCounter g_diagSysctl;
+static BDSDiagCounter g_diagKeychain;
+static BDSDiagCounter g_diagUserAgent;
+static BDSDiagCounter g_diagDyld;
+static BDSDiagCounter g_diagCFiles;
+static BDSDiagCounter g_diagObjCJailbreak;
+static BDSDiagCounter g_diagBundles;
+static BDSDiagCounter g_diagWiFi;
+static BDSDiagCounter g_diagLocalIP;
+static BDSDiagCounter g_diagAppGroup;
+static BDSDiagCounter g_diagPasteboard;
+static BDSDiagCounter g_diagBootTime;
+static BDSDiagCounter g_diagCPU;
+static BDSDiagCounter g_diagLocation;
+static BDSDiagCounter g_diagProxy;
+static BDSDiagCounter g_diagStatfs;
+static BDSDiagCounter g_diagDlopen;
+static BDSDiagCounter g_diagUbiquity;
+static BDSDiagCounter g_diagPrivacy;
+static BDSDiagCounter g_diagWebKitCookie;
+static BDSDiagCounter g_diagBattery;
+
+#define BDS_DIAG_RECORD(counter, state) do { \
+    __atomic_fetch_add(&(counter).hits, 1, __ATOMIC_RELAXED); \
+    if ((state) == BDSDiagStatePassed) { \
+        __atomic_fetch_add(&(counter).passed, 1, __ATOMIC_RELAXED); \
+    } else if ((state) == BDSDiagStateBlocked) { \
+        __atomic_fetch_add(&(counter).blocked, 1, __ATOMIC_RELAXED); \
+    } else { \
+        __atomic_fetch_add(&(counter).changed, 1, __ATOMIC_RELAXED); \
+    } \
+    __atomic_store_n(&(counter).lastState, (int)(state), __ATOMIC_RELAXED); \
+} while (0)
+
+static uint64_t bds_diag_load64(volatile uint64_t *value) {
+    return __atomic_load_n(value, __ATOMIC_RELAXED);
+}
+
+static int bds_diag_load_state(volatile int *value) {
+    return __atomic_load_n(value, __ATOMIC_RELAXED);
+}
+
+static void bds_diag_reset_counter(BDSDiagCounter *counter) {
+    __atomic_store_n(&counter->hits, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&counter->passed, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&counter->changed, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&counter->blocked, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&counter->lastState, BDSDiagStateNever, __ATOMIC_RELAXED);
+}
+
+static void bds_diag_reset_all(void) {
+    BDSDiagCounter *counters[] = {
+        &g_diagUIDevice, &g_diagIDFV, &g_diagAdvertising, &g_diagProcess,
+        &g_diagLocaleCarrier, &g_diagScreenStorage, &g_diagBaiduSDK,
+        &g_diagSysctl, &g_diagKeychain, &g_diagUserAgent, &g_diagDyld,
+        &g_diagCFiles, &g_diagObjCJailbreak, &g_diagBundles,
+        &g_diagWiFi, &g_diagLocalIP, &g_diagAppGroup, &g_diagPasteboard,
+        &g_diagBootTime, &g_diagCPU, &g_diagLocation, &g_diagProxy,
+        &g_diagStatfs, &g_diagDlopen, &g_diagUbiquity, &g_diagPrivacy,
+        &g_diagWebKitCookie,
+        &g_diagBattery
+    };
+    for (size_t i = 0; i < sizeof(counters) / sizeof(counters[0]); i++) {
+        bds_diag_reset_counter(counters[i]);
+    }
 }
 
 #pragma mark - Hook 工具
@@ -433,34 +718,72 @@ static int bds_c_is_jailbreak_path(const char *path) {
 
 static IMP orig_systemVersion = NULL;
 static NSString *new_systemVersion(id self, SEL _cmd) {
-    return cfgStr(@"systemVersion", @"15.7.1");
+    BDS_DIAG_RECORD(g_diagUIDevice, BDSDiagStateChanged);
+    return cfgStr(@"systemVersion", @"15.4.1");
 }
 
 static IMP orig_model = NULL;
 static NSString *new_model(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagUIDevice, BDSDiagStateChanged);
     return cfgStr(@"deviceModel", @"iPhone");
 }
 
 static IMP orig_localizedModel = NULL;
 static NSString *new_localizedModel(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagUIDevice, BDSDiagStateChanged);
     return cfgStr(@"marketingModel", @"iPhone");
 }
 
 static IMP orig_name = NULL;
 static NSString *new_name(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagUIDevice, BDSDiagStateChanged);
     return cfgStr(@"deviceName", @"iPhone");
 }
 
 static IMP orig_systemName = NULL;
 static NSString *new_systemName(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagUIDevice, BDSDiagStateChanged);
     return @"iOS";
+}
+
+#pragma mark - 电池电量伪装
+
+static volatile float g_fakeBatteryLevel = -1.0f;
+static dispatch_once_t g_batteryOnce;
+static IMP orig_batteryLevel = NULL;
+static float new_batteryLevel(id self, SEL _cmd) {
+    if (!cfgBool(@"spoofBattery", YES)) {
+        typedef float (*BatteryLevelIMP)(id, SEL);
+        if (orig_batteryLevel) return ((BatteryLevelIMP)orig_batteryLevel)(self, _cmd);
+        return -1.0f;
+    }
+    BDS_DIAG_RECORD(g_diagBattery, BDSDiagStateChanged);
+    dispatch_once(&g_batteryOnce, ^{
+        g_fakeBatteryLevel = 0.30f + (float)(arc4random_uniform(56)) / 100.0f;
+    });
+    return g_fakeBatteryLevel;
+}
+
+static IMP orig_batteryState = NULL;
+static NSInteger new_batteryState(id self, SEL _cmd) {
+    if (!cfgBool(@"spoofBattery", YES)) {
+        typedef NSInteger (*BatteryStateIMP)(id, SEL);
+        if (orig_batteryState) return ((BatteryStateIMP)orig_batteryState)(self, _cmd);
+        return 0;
+    }
+    BDS_DIAG_RECORD(g_diagBattery, BDSDiagStateChanged);
+    return 1; // UIDeviceBatteryStateUnplugged
 }
 
 static IMP orig_identifierForVendor = NULL;
 static NSUUID *new_identifierForVendor(id self, SEL _cmd) {
     NSString *uuid = cfgStr(@"idfv", @"A1B2C3D4-E5F6-7890-ABCD-EF1234567890");
     NSUUID *value = [[NSUUID alloc] initWithUUIDString:uuid];
-    if (value) return value;
+    if (value) {
+        BDS_DIAG_RECORD(g_diagIDFV, BDSDiagStateChanged);
+        return value;
+    }
+    BDS_DIAG_RECORD(g_diagIDFV, BDSDiagStatePassed);
     if (orig_identifierForVendor) {
         return ((NSUUID *(*)(id, SEL))orig_identifierForVendor)(self, _cmd);
     }
@@ -470,41 +793,57 @@ static NSUUID *new_identifierForVendor(id self, SEL _cmd) {
 #pragma mark - ASIdentifierManager Hook
 
 static IMP orig_advertisingIdentifier = NULL;
+
+static NSInteger bds_realTrackingAuthorizationStatus(void) {
+    Class cls = objc_getClass("ATTrackingManager");
+    SEL sel = NSSelectorFromString(@"trackingAuthorizationStatus");
+    Method method = cls ? class_getClassMethod(cls, sel) : NULL;
+    if (!method) return -1;
+    IMP imp = method_getImplementation(method);
+    return imp ? ((NSInteger (*)(id, SEL))imp)(cls, sel) : -1;
+}
+
+static BOOL bds_realAdvertisingTrackingEnabled(id manager) {
+    NSInteger status = bds_realTrackingAuthorizationStatus();
+    if (status >= 0) return status == 3; // ATTrackingManagerAuthorizationStatusAuthorized
+    SEL sel = @selector(isAdvertisingTrackingEnabled);
+    Method method = class_getInstanceMethod([manager class], sel);
+    IMP imp = method ? method_getImplementation(method) : NULL;
+    return imp ? ((BOOL (*)(id, SEL))imp)(manager, sel) : NO;
+}
+
 static NSUUID *new_advertisingIdentifier(id self, SEL _cmd) {
-    NSString *uuid = cfgStr(@"idfa", @"FEDCBA98-7654-3210-FEDC-BA9876543210");
-    NSUUID *value = [[NSUUID alloc] initWithUUIDString:uuid];
-    if (value) return value;
-    if (orig_advertisingIdentifier) {
-        return ((NSUUID *(*)(id, SEL))orig_advertisingIdentifier)(self, _cmd);
+    NSUUID *original = orig_advertisingIdentifier
+        ? ((NSUUID *(*)(id, SEL))orig_advertisingIdentifier)(self, _cmd) : nil;
+    NSUUID *value = nil;
+    if (bds_realAdvertisingTrackingEnabled(self)) {
+        NSString *uuid = cfgStr(@"idfa", @"FEDCBA98-7654-3210-FEDC-BA9876543210");
+        value = [[NSUUID alloc] initWithUUIDString:uuid] ?: original;
+    } else {
+        value = [[NSUUID alloc] initWithUUIDString:@"00000000-0000-0000-0000-000000000000"];
     }
-    return nil;
+    BOOL changed = original ? ![value isEqual:original] : value != nil;
+    BDS_DIAG_RECORD(g_diagAdvertising, changed ? BDSDiagStateChanged : BDSDiagStatePassed);
+    return value;
 }
 
-static IMP orig_isAdvertisingTrackingEnabled = NULL;
-static BOOL new_isAdvertisingTrackingEnabled(id self, SEL _cmd) {
-    return NO;
-}
-
-#pragma mark - ATTrackingManager Hook (iOS 14+)
-
-static IMP orig_trackingAuthorizationStatus = NULL;
-static NSInteger new_trackingAuthorizationStatus(id self, SEL _cmd) {
-    return 2; // denied
-}
+// ATT 和“广告跟踪已开启”保持系统真实状态，不再 hook。
 
 #pragma mark - NSProcessInfo Hook
 
 static IMP orig_operatingSystemVersionString = NULL;
 static NSString *new_operatingSystemVersionString(id self, SEL _cmd) {
-    NSString *v = cfgStr(@"systemVersion", @"15.7.1");
-    NSString *b = cfgStr(@"systemBuild", @"19H307");
+    BDS_DIAG_RECORD(g_diagProcess, BDSDiagStateChanged);
+    NSString *v = cfgStr(@"systemVersion", @"15.4.1");
+    NSString *b = cfgStr(@"systemBuild", @"19E258");
     return [NSString stringWithFormat:@"Version %@ (Build %@)", v, b];
 }
 
 static IMP orig_operatingSystemVersion = NULL;
 static NSOperatingSystemVersion new_operatingSystemVersion(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagProcess, BDSDiagStateChanged);
     NSOperatingSystemVersion v = {15, 7, 1};
-    NSString *s = cfgStr(@"systemVersion", @"15.7.1");
+    NSString *s = cfgStr(@"systemVersion", @"15.4.1");
     NSArray *p = [s componentsSeparatedByString:@"."];
     if (p.count >= 1) v.majorVersion = [p[0] integerValue];
     if (p.count >= 2) v.minorVersion = [p[1] integerValue];
@@ -514,18 +853,21 @@ static NSOperatingSystemVersion new_operatingSystemVersion(id self, SEL _cmd) {
 
 static IMP orig_hostName = NULL;
 static NSString *new_hostName(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagProcess, BDSDiagStateChanged);
     return cfgStr(@"kernHostname", @"iPhone");
 }
 
 static IMP orig_physicalMemory = NULL;
 static unsigned long long new_physicalMemory(id self, SEL _cmd) {
-    return (unsigned long long)cfgInt(@"memorySize", 2048) * 1024 * 1024;
+    BDS_DIAG_RECORD(g_diagProcess, BDSDiagStateChanged);
+    return (unsigned long long)cfgInt(@"memorySize", 4096) * 1024 * 1024;
 }
 
 #pragma mark - NSLocale Hook
 
 static IMP orig_localeIdentifier = NULL;
 static NSString *new_localeIdentifier(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
     return cfgStr(@"localeIdentifier", @"zh_CN");
 }
 
@@ -533,38 +875,45 @@ static NSString *new_localeIdentifier(id self, SEL _cmd) {
 
 static IMP orig_subscriberCellularProvider = NULL;
 static CTCarrier *new_subscriberCellularProvider(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
     CTCarrier *fake = [[CTCarrier alloc] init];
     return fake;
 }
 
 static IMP orig_serviceSubscriberCellularProviders = NULL;
 static NSDictionary *new_serviceSubscriberCellularProviders(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
     CTCarrier *fake = [[CTCarrier alloc] init];
     return @{@"0000000100000001": fake};
 }
 
 static IMP orig_carrierName = NULL;
 static NSString *new_carrierName(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
     return cfgStr(@"carrierName", @"中国移动");
 }
 
 static IMP orig_mobileCountryCode = NULL;
 static NSString *new_mobileCountryCode(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
     return cfgStr(@"mcc", @"460");
 }
 
 static IMP orig_mobileNetworkCode = NULL;
 static NSString *new_mobileNetworkCode(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
     return cfgStr(@"mnc", @"00");
 }
 
 static IMP orig_isoCountryCode = NULL;
 static NSString *new_isoCountryCode(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
     return cfgStr(@"isoCountryCode", @"cn");
 }
 
 static IMP orig_allowsVOIP = NULL;
 static BOOL new_allowsVOIP(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
     return YES;
 }
 
@@ -572,6 +921,7 @@ static BOOL new_allowsVOIP(id self, SEL _cmd) {
 
 static IMP orig_bounds = NULL;
 static CGRect new_bounds(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagScreenStorage, BDSDiagStateChanged);
     CGFloat w = cfgInt(@"screenWidth", 375);
     CGFloat h = cfgInt(@"screenHeight", 667);
     return CGRectMake(0, 0, w, h);
@@ -579,14 +929,18 @@ static CGRect new_bounds(id self, SEL _cmd) {
 
 static IMP orig_nativeBounds = NULL;
 static CGRect new_nativeBounds(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagScreenStorage, BDSDiagStateChanged);
     CGFloat scale = (CGFloat)cfgInt(@"screenScale", 2);
-    CGFloat w = cfgInt(@"screenWidth", 375) * scale;
-    CGFloat h = cfgInt(@"screenHeight", 667) * scale;
+    CGFloat w = (CGFloat)cfgInt(@"nativeScreenWidth",
+                                cfgInt(@"screenWidth", 375) * scale);
+    CGFloat h = (CGFloat)cfgInt(@"nativeScreenHeight",
+                                cfgInt(@"screenHeight", 667) * scale);
     return CGRectMake(0, 0, w, h);
 }
 
 static IMP orig_scale = NULL;
 static CGFloat new_scale(id self, SEL _cmd) {
+    BDS_DIAG_RECORD(g_diagScreenStorage, BDSDiagStateChanged);
     return (CGFloat)cfgInt(@"screenScale", 2);
 }
 
@@ -598,7 +952,11 @@ static NSDictionary *new_attributesOfFileSystemForPath(id self, SEL _cmd, id pat
     NSDictionary *orig = orig_attributesOfFileSystemForPath
         ? ((FileSystemAttributesIMP)orig_attributesOfFileSystemForPath)(self, _cmd, path, error)
         : nil;
-    if (!orig) return orig;
+    if (!orig) {
+        BDS_DIAG_RECORD(g_diagScreenStorage, BDSDiagStatePassed);
+        return orig;
+    }
+    BDS_DIAG_RECORD(g_diagScreenStorage, BDSDiagStateChanged);
     NSMutableDictionary *m = [orig mutableCopy];
     long long diskSize = cfgInt(@"diskSize", 64) * 1024LL * 1024LL * 1024LL;
     m[NSFileSystemSize] = @(diskSize);
@@ -642,6 +1000,7 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
     [g_baiduLock unlock];
 
     if (!cfgBool(@"spoofBaiduSDK", NO)) {
+        BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStatePassed);
         if (origValue) {
             IMP orig = [origValue pointerValue];
             return ((NSString *(*)(id, SEL))orig)(self, _cmd);
@@ -653,10 +1012,13 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
         IMP orig = [origValue pointerValue];
         id result = ((id (*)(id, SEL))orig)(self, _cmd);
         if ([result isKindOfClass:[NSString class]]) {
+            BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStateChanged);
             return bds_fake_value_for_cmd(_cmd);
         }
+        BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStatePassed);
         return result;
     }
+    BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStateChanged);
     return bds_fake_value_for_cmd(_cmd);
 }
 
@@ -758,43 +1120,95 @@ static int bds_my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
                                 void *newp, size_t newlen) {
     // 异常参数或写入操作直接透传
     if (!name || (oldp && !oldlenp) || newp) {
+        BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStatePassed);
         return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
     }
 
-    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofSysctlC)) {
+    if (!BDS_ATOMIC_GET(g_enabledC)) {
+        BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStatePassed);
         return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
     }
 
-    const char *fake = NULL;
-    if (strcmp(name, "hw.machine") == 0) {
-        fake = g_hwMachine;
-    } else if (strcmp(name, "hw.model") == 0) {
-        fake = g_hwModel;
-    } else if (strcmp(name, "kern.osversion") == 0) {
-        fake = g_kernOSVersion;
-    } else if (strcmp(name, "kern.hostname") == 0) {
-        fake = g_kernHostname;
+    // 原有 sysctl 字符串伪装受 spoofSysctl 控制；启动时间和 CPU 使用各自独立开关。
+    const char *fakeStr = NULL;
+    if (BDS_ATOMIC_GET(g_spoofSysctlC)) {
+        if (strcmp(name, "hw.machine") == 0) {
+            fakeStr = g_hwMachine;
+        } else if (strcmp(name, "hw.model") == 0) {
+            fakeStr = g_hwModel;
+        } else if (strcmp(name, "kern.osversion") == 0) {
+            fakeStr = g_kernOSVersion;
+        } else if (strcmp(name, "kern.hostname") == 0) {
+            fakeStr = g_kernHostname;
+        }
     }
 
-    if (!fake) {
-        return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
-    }
-
-    size_t fakeLen = strlen(fake) + 1;
-
-    if (oldp == NULL) {
-        if (oldlenp) *oldlenp = fakeLen;
+    if (fakeStr) {
+        BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStateChanged);
+        size_t fakeLen = strlen(fakeStr) + 1;
+        if (oldp == NULL) {
+            if (oldlenp) *oldlenp = fakeLen;
+            return 0;
+        }
+        if (*oldlenp < fakeLen) {
+            *oldlenp = fakeLen;
+            errno = ENOMEM;
+            return -1;
+        }
+        memcpy(oldp, fakeStr, fakeLen);
+        *oldlenp = fakeLen;
         return 0;
     }
 
-    if (*oldlenp < fakeLen) {
+    // kern.boottime（struct timeval，16 字节）
+    if (BDS_ATOMIC_GET(g_spoofBootTimeC) && strcmp(name, "kern.boottime") == 0) {
+        BDS_DIAG_RECORD(g_diagBootTime, BDSDiagStateChanged);
+        size_t fakeLen = sizeof(struct timeval);
+        if (oldp == NULL) {
+            if (oldlenp) *oldlenp = fakeLen;
+            return 0;
+        }
+        if (*oldlenp < fakeLen) {
+            *oldlenp = fakeLen;
+            errno = ENOMEM;
+            return -1;
+        }
+        *(struct timeval *)oldp = g_fakeBootTime;
         *oldlenp = fakeLen;
-        return ENOMEM;
+        return 0;
     }
 
-    memcpy(oldp, fake, fakeLen);
-    *oldlenp = fakeLen;
-    return 0;
+    // CPU 参数（int，4 字节）
+    if (BDS_ATOMIC_GET(g_spoofCPUC)) {
+        int fakeInt = 0;
+        int isCPUKey = 0;
+        if (strcmp(name, "hw.ncpu") == 0) {
+            fakeInt = g_fakeNcpu; isCPUKey = 1;
+        } else if (strcmp(name, "hw.activecpu") == 0) {
+            fakeInt = g_fakeActiveCPU; isCPUKey = 1;
+        } else if (strcmp(name, "hw.physicalcpu") == 0) {
+            fakeInt = g_fakePhysicalCPU; isCPUKey = 1;
+        }
+        if (isCPUKey) {
+            BDS_DIAG_RECORD(g_diagCPU, BDSDiagStateChanged);
+            size_t fakeLen = sizeof(int);
+            if (oldp == NULL) {
+                if (oldlenp) *oldlenp = fakeLen;
+                return 0;
+            }
+            if (*oldlenp < fakeLen) {
+                *oldlenp = fakeLen;
+                errno = ENOMEM;
+                return -1;
+            }
+            *(int *)oldp = fakeInt;
+            *oldlenp = fakeLen;
+            return 0;
+        }
+    }
+
+    BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStatePassed);
+    return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
 }
 
 #pragma mark - Keychain Hook（fishhook）
@@ -810,6 +1224,7 @@ static BOOL bds_keychainValueContainsBaidu(id value) {
 static OSStatus bds_my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
     if (!g_config || !cfgBool(@"enabled", NO) ||
         !cfgBool(@"spoofKeychain", NO) || !query) {
+        BDS_DIAG_RECORD(g_diagKeychain, BDSDiagStatePassed);
         return orig_SecItemCopyMatching(query, result);
     }
 
@@ -825,12 +1240,14 @@ static OSStatus bds_my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *res
         ];
         for (id key in keys) {
             if (bds_keychainValueContainsBaidu(dictionary[key])) {
+                BDS_DIAG_RECORD(g_diagKeychain, BDSDiagStateBlocked);
                 if (result) *result = NULL;
                 return errSecItemNotFound;
             }
         }
     }
 
+    BDS_DIAG_RECORD(g_diagKeychain, BDSDiagStatePassed);
     return orig_SecItemCopyMatching(query, result);
 }
 
@@ -838,44 +1255,48 @@ static OSStatus bds_my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *res
 
 static IMP orig_wk_customUserAgent = NULL;
 static NSString *new_wk_customUserAgent(id self, SEL _cmd) {
-    (void)self; (void)_cmd;
+    typedef NSString *(*UserAgentGetterIMP)(id, SEL);
+    NSString *original = orig_wk_customUserAgent
+        ? ((UserAgentGetterIMP)orig_wk_customUserAgent)(self, _cmd) : nil;
     NSString *custom = cfgStr(@"userAgent", @"");
-    if (custom.length > 0) return custom;
-    NSString *v = [cfgStr(@"systemVersion", @"15.7.1") stringByReplacingOccurrencesOfString:@"." withString:@"_"];
-    return [NSString stringWithFormat:
-        @"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148", v];
+    if (custom.length > 0) {
+        BDS_DIAG_RECORD(g_diagUserAgent, BDSDiagStateChanged);
+        return custom;
+    }
+    BDS_DIAG_RECORD(g_diagUserAgent, BDSDiagStatePassed);
+    return original;
 }
 
 static IMP orig_nsmurl_setValue = NULL;
 static void new_nsmurl_setValue(id self, SEL _cmd, NSString *value, NSString *field) {
+    BOOL changed = NO;
     if (field && value &&
         [field caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame &&
         cfgBool(@"spoofUserAgent", NO)) {
         NSString *custom = cfgStr(@"userAgent", @"");
-        value = custom.length > 0 ? custom : nil;
-        if (!value) {
-            NSString *v = [cfgStr(@"systemVersion", @"15.7.1") stringByReplacingOccurrencesOfString:@"." withString:@"_"];
-            value = [NSString stringWithFormat:
-                @"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148", v];
+        if (custom.length > 0) {
+            value = custom;
+            changed = YES;
         }
     }
+    BDS_DIAG_RECORD(g_diagUserAgent, changed ? BDSDiagStateChanged : BDSDiagStatePassed);
     typedef void (*SetValueIMP)(id, SEL, NSString *, NSString *);
     if (orig_nsmurl_setValue) ((SetValueIMP)orig_nsmurl_setValue)(self, _cmd, value, field);
 }
 
 static IMP orig_nsmurl_addValue = NULL;
 static void new_nsmurl_addValue(id self, SEL _cmd, NSString *value, NSString *field) {
+    BOOL changed = NO;
     if (field && value &&
         [field caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame &&
         cfgBool(@"spoofUserAgent", NO)) {
         NSString *custom = cfgStr(@"userAgent", @"");
-        value = custom.length > 0 ? custom : nil;
-        if (!value) {
-            NSString *v = [cfgStr(@"systemVersion", @"15.7.1") stringByReplacingOccurrencesOfString:@"." withString:@"_"];
-            value = [NSString stringWithFormat:
-                @"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148", v];
+        if (custom.length > 0) {
+            value = custom;
+            changed = YES;
         }
     }
+    BDS_DIAG_RECORD(g_diagUserAgent, changed ? BDSDiagStateChanged : BDSDiagStatePassed);
     typedef void (*AddValueIMP)(id, SEL, NSString *, NSString *);
     if (orig_nsmurl_addValue) ((AddValueIMP)orig_nsmurl_addValue)(self, _cmd, value, field);
 }
@@ -913,11 +1334,19 @@ static int bds_c_should_hide_image(const char *name) {
 
 static const char *bds_my_dyld_get_image_name(uint32_t image_index) {
     const char *name = orig_dyld_get_image_name(image_index);
-    if (!name) return name;
-    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_bypassJailbreakC)) return name;
+    if (!name) {
+        BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
+        return name;
+    }
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_bypassJailbreakC)) {
+        BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
+        return name;
+    }
     if (bds_c_should_hide_image(name)) {
+        BDS_DIAG_RECORD(g_diagDyld, BDSDiagStateChanged);
         return bds_fake_image_names[image_index % BDS_FAKE_IMAGE_COUNT];
     }
+    BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
     return name;
 }
 
@@ -934,45 +1363,55 @@ static DIR *(*orig_opendir)(const char *);
 static int bds_my_stat(const char *path, struct stat *buf) {
     if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC) &&
         bds_c_is_jailbreak_path(path)) {
+        BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStateBlocked);
         errno = ENOENT;
         return -1;
     }
+    BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStatePassed);
     return orig_stat(path, buf);
 }
 
 static int bds_my_lstat(const char *path, struct stat *buf) {
     if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC) &&
         bds_c_is_jailbreak_path(path)) {
+        BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStateBlocked);
         errno = ENOENT;
         return -1;
     }
+    BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStatePassed);
     return orig_lstat(path, buf);
 }
 
 static int bds_my_access(const char *path, int mode) {
     if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC) &&
         bds_c_is_jailbreak_path(path)) {
+        BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStateBlocked);
         errno = ENOENT;
         return -1;
     }
+    BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStatePassed);
     return orig_access(path, mode);
 }
 
 static FILE *bds_my_fopen(const char *path, const char *mode) {
     if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC) &&
         bds_c_is_jailbreak_path(path)) {
+        BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStateBlocked);
         errno = ENOENT;
         return NULL;
     }
+    BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStatePassed);
     return orig_fopen(path, mode);
 }
 
 static DIR *bds_my_opendir(const char *path) {
     if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC) &&
         bds_c_is_jailbreak_path(path)) {
+        BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStateBlocked);
         errno = ENOENT;
         return NULL;
     }
+    BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStatePassed);
     return orig_opendir(path);
 }
 
@@ -1007,7 +1446,11 @@ static BOOL bds_isSuspiciousBundlePath(NSString *path) {
 
 static IMP orig_fileExistsAtPath = NULL;
 static BOOL new_fileExistsAtPath(id self, SEL _cmd, NSString *path) {
-    if (cfgBool(@"bypassJailbreakDetect", NO) && bds_isJailbreakPath(path)) return NO;
+    if (cfgBool(@"bypassJailbreakDetect", NO) && bds_isJailbreakPath(path)) {
+        BDS_DIAG_RECORD(g_diagObjCJailbreak, BDSDiagStateBlocked);
+        return NO;
+    }
+    BDS_DIAG_RECORD(g_diagObjCJailbreak, BDSDiagStatePassed);
     typedef BOOL (*ExistsIMP)(id, SEL, NSString *);
     if (orig_fileExistsAtPath) return ((ExistsIMP)orig_fileExistsAtPath)(self, _cmd, path);
     return NO;
@@ -1016,9 +1459,11 @@ static BOOL new_fileExistsAtPath(id self, SEL _cmd, NSString *path) {
 static IMP orig_fileExistsAtPathIsDir = NULL;
 static BOOL new_fileExistsAtPathIsDir(id self, SEL _cmd, NSString *path, BOOL *isDirectory) {
     if (cfgBool(@"bypassJailbreakDetect", NO) && bds_isJailbreakPath(path)) {
+        BDS_DIAG_RECORD(g_diagObjCJailbreak, BDSDiagStateBlocked);
         if (isDirectory) *isDirectory = NO;
         return NO;
     }
+    BDS_DIAG_RECORD(g_diagObjCJailbreak, BDSDiagStatePassed);
     typedef BOOL (*ExistsDirIMP)(id, SEL, NSString *, BOOL *);
     if (orig_fileExistsAtPathIsDir) return ((ExistsDirIMP)orig_fileExistsAtPathIsDir)(self, _cmd, path, isDirectory);
     return NO;
@@ -1028,8 +1473,12 @@ static IMP orig_canOpenURL = NULL;
 static BOOL new_canOpenURL(id self, SEL _cmd, NSURL *url) {
     if (cfgBool(@"bypassJailbreakDetect", NO)) {
         NSString *scheme = url.scheme.lowercaseString;
-        if (scheme && [bds_jailbreakSchemes() containsObject:scheme]) return NO;
+        if (scheme && [bds_jailbreakSchemes() containsObject:scheme]) {
+            BDS_DIAG_RECORD(g_diagObjCJailbreak, BDSDiagStateBlocked);
+            return NO;
+        }
     }
+    BDS_DIAG_RECORD(g_diagObjCJailbreak, BDSDiagStatePassed);
     typedef BOOL (*CanOpenIMP)(id, SEL, NSURL *);
     if (orig_canOpenURL) return ((CanOpenIMP)orig_canOpenURL)(self, _cmd, url);
     return NO;
@@ -1041,7 +1490,10 @@ static IMP orig_allFrameworks = NULL;
 static NSArray *new_allFrameworks(id self, SEL _cmd) {
     typedef NSArray *(*AllFrameworksIMP)(id, SEL);
     NSArray *orig = orig_allFrameworks ? ((AllFrameworksIMP)orig_allFrameworks)(self, _cmd) : @[];
-    if (!cfgBool(@"bypassJailbreakDetect", NO)) return orig;
+    if (!cfgBool(@"bypassJailbreakDetect", NO)) {
+        BDS_DIAG_RECORD(g_diagBundles, BDSDiagStatePassed);
+        return orig;
+    }
     NSMutableArray *filtered = [NSMutableArray array];
     for (NSBundle *bundle in orig) {
         if (![bundle isKindOfClass:[NSBundle class]]) { [filtered addObject:bundle]; continue; }
@@ -1049,6 +1501,7 @@ static NSArray *new_allFrameworks(id self, SEL _cmd) {
             [filtered addObject:bundle];
         }
     }
+    BDS_DIAG_RECORD(g_diagBundles, filtered.count == orig.count ? BDSDiagStatePassed : BDSDiagStateChanged);
     return filtered;
 }
 
@@ -1056,7 +1509,10 @@ static IMP orig_allBundles = NULL;
 static NSArray *new_allBundles(id self, SEL _cmd) {
     typedef NSArray *(*AllBundlesIMP)(id, SEL);
     NSArray *orig = orig_allBundles ? ((AllBundlesIMP)orig_allBundles)(self, _cmd) : @[];
-    if (!cfgBool(@"bypassJailbreakDetect", NO)) return orig;
+    if (!cfgBool(@"bypassJailbreakDetect", NO)) {
+        BDS_DIAG_RECORD(g_diagBundles, BDSDiagStatePassed);
+        return orig;
+    }
     NSMutableArray *filtered = [NSMutableArray array];
     for (NSBundle *bundle in orig) {
         if (![bundle isKindOfClass:[NSBundle class]]) { [filtered addObject:bundle]; continue; }
@@ -1064,6 +1520,7 @@ static NSArray *new_allBundles(id self, SEL _cmd) {
             [filtered addObject:bundle];
         }
     }
+    BDS_DIAG_RECORD(g_diagBundles, filtered.count == orig.count ? BDSDiagStatePassed : BDSDiagStateChanged);
     return filtered;
 }
 
@@ -1071,7 +1528,10 @@ static IMP orig_loadedBundles = NULL;
 static NSArray *new_loadedBundles(id self, SEL _cmd) {
     typedef NSArray *(*LoadedBundlesIMP)(id, SEL);
     NSArray *orig = orig_loadedBundles ? ((LoadedBundlesIMP)orig_loadedBundles)(self, _cmd) : @[];
-    if (!cfgBool(@"bypassJailbreakDetect", NO)) return orig;
+    if (!cfgBool(@"bypassJailbreakDetect", NO)) {
+        BDS_DIAG_RECORD(g_diagBundles, BDSDiagStatePassed);
+        return orig;
+    }
     NSMutableArray *filtered = [NSMutableArray array];
     for (NSBundle *bundle in orig) {
         if (![bundle isKindOfClass:[NSBundle class]]) { [filtered addObject:bundle]; continue; }
@@ -1079,7 +1539,575 @@ static NSArray *new_loadedBundles(id self, SEL _cmd) {
             [filtered addObject:bundle];
         }
     }
+    BDS_DIAG_RECORD(g_diagBundles, filtered.count == orig.count ? BDSDiagStatePassed : BDSDiagStateChanged);
     return filtered;
+}
+
+#pragma mark - P3: App Group 共享容器隔离
+
+static IMP orig_containerURL = NULL;
+static NSURL *new_containerURL(id self, SEL _cmd, NSString *groupIdentifier) {
+    if (cfgBool(@"spoofAppGroup", YES) && groupIdentifier &&
+        [groupIdentifier rangeOfString:@"baidu" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+        BDS_DIAG_RECORD(g_diagAppGroup, BDSDiagStateBlocked);
+        return nil;
+    }
+    BDS_DIAG_RECORD(g_diagAppGroup, BDSDiagStatePassed);
+    typedef NSURL *(*ContainerURLIMP)(id, SEL, NSString *);
+    if (orig_containerURL) return ((ContainerURLIMP)orig_containerURL)(self, _cmd, groupIdentifier);
+    return nil;
+}
+
+#pragma mark - P4: 剪贴板保护
+
+static BOOL bds_shouldBlockPasteboardRead(id pasteboard) {
+    if (!cfgBool(@"spoofPasteboard", YES)) return NO;
+    UIPasteboard *general = [UIPasteboard generalPasteboard];
+    if (pasteboard != general) return NO;
+    // 前台读取通常来自用户主动粘贴；只阻止 App 非活动状态下读取通用剪贴板。
+    return UIApplication.sharedApplication.applicationState != UIApplicationStateActive;
+}
+
+static IMP orig_pb_string = NULL;
+static NSString *new_pb_string(id self, SEL _cmd) {
+    if (bds_shouldBlockPasteboardRead(self)) {
+        BDS_DIAG_RECORD(g_diagPasteboard, BDSDiagStateBlocked);
+        return @"";
+    }
+    BDS_DIAG_RECORD(g_diagPasteboard, BDSDiagStatePassed);
+    typedef NSString *(*PBStringIMP)(id, SEL);
+    if (orig_pb_string) return ((PBStringIMP)orig_pb_string)(self, _cmd);
+    return @"";
+}
+
+static IMP orig_pb_strings = NULL;
+static NSArray *new_pb_strings(id self, SEL _cmd) {
+    if (bds_shouldBlockPasteboardRead(self)) {
+        BDS_DIAG_RECORD(g_diagPasteboard, BDSDiagStateBlocked);
+        return @[];
+    }
+    BDS_DIAG_RECORD(g_diagPasteboard, BDSDiagStatePassed);
+    typedef NSArray *(*PBStringsIMP)(id, SEL);
+    if (orig_pb_strings) return ((PBStringsIMP)orig_pb_strings)(self, _cmd);
+    return @[];
+}
+
+static IMP orig_pb_URL = NULL;
+static NSURL *new_pb_URL(id self, SEL _cmd) {
+    if (bds_shouldBlockPasteboardRead(self)) {
+        BDS_DIAG_RECORD(g_diagPasteboard, BDSDiagStateBlocked);
+        return nil;
+    }
+    BDS_DIAG_RECORD(g_diagPasteboard, BDSDiagStatePassed);
+    typedef NSURL *(*PBURLIMP)(id, SEL);
+    if (orig_pb_URL) return ((PBURLIMP)orig_pb_URL)(self, _cmd);
+    return nil;
+}
+
+static IMP orig_pb_items = NULL;
+static NSArray *new_pb_items(id self, SEL _cmd) {
+    if (bds_shouldBlockPasteboardRead(self)) {
+        BDS_DIAG_RECORD(g_diagPasteboard, BDSDiagStateBlocked);
+        return @[];
+    }
+    BDS_DIAG_RECORD(g_diagPasteboard, BDSDiagStatePassed);
+    typedef NSArray *(*PBItemsIMP)(id, SEL);
+    if (orig_pb_items) return ((PBItemsIMP)orig_pb_items)(self, _cmd);
+    return @[];
+}
+
+#pragma mark - P7: 定位保护
+
+static IMP orig_clm_locationServicesEnabled_class = NULL;
+static BOOL new_clm_locationServicesEnabled_class(id self, SEL _cmd) {
+    if (cfgBool(@"spoofLocation", YES)) {
+        BDS_DIAG_RECORD(g_diagLocation, BDSDiagStateChanged);
+        return NO;
+    }
+    BDS_DIAG_RECORD(g_diagLocation, BDSDiagStatePassed);
+    typedef BOOL (*CLMBoolIMP)(id, SEL);
+    if (orig_clm_locationServicesEnabled_class) return ((CLMBoolIMP)orig_clm_locationServicesEnabled_class)(self, _cmd);
+    return NO;
+}
+
+static IMP orig_clm_authorizationStatus_class = NULL;
+static NSInteger new_clm_authorizationStatus_class(id self, SEL _cmd) {
+    if (cfgBool(@"spoofLocation", YES)) {
+        BDS_DIAG_RECORD(g_diagLocation, BDSDiagStateChanged);
+        return kCLAuthorizationStatusDenied;
+    }
+    BDS_DIAG_RECORD(g_diagLocation, BDSDiagStatePassed);
+    typedef NSInteger (*CLMIntIMP)(id, SEL);
+    if (orig_clm_authorizationStatus_class) return ((CLMIntIMP)orig_clm_authorizationStatus_class)(self, _cmd);
+    return kCLAuthorizationStatusNotDetermined;
+}
+
+static IMP orig_clm_authorizationStatus_instance = NULL;
+static NSInteger new_clm_authorizationStatus_instance(id self, SEL _cmd) {
+    if (cfgBool(@"spoofLocation", YES)) {
+        BDS_DIAG_RECORD(g_diagLocation, BDSDiagStateChanged);
+        return kCLAuthorizationStatusDenied;
+    }
+    BDS_DIAG_RECORD(g_diagLocation, BDSDiagStatePassed);
+    typedef NSInteger (*CLMIntIMP)(id, SEL);
+    if (orig_clm_authorizationStatus_instance) {
+        return ((CLMIntIMP)orig_clm_authorizationStatus_instance)(self, _cmd);
+    }
+    return kCLAuthorizationStatusNotDetermined;
+}
+
+static IMP orig_clm_location = NULL;
+static CLLocation *new_clm_location(id self, SEL _cmd) {
+    if (cfgBool(@"spoofLocation", YES)) {
+        BDS_DIAG_RECORD(g_diagLocation, BDSDiagStateChanged);
+        return nil;
+    }
+    BDS_DIAG_RECORD(g_diagLocation, BDSDiagStatePassed);
+    typedef CLLocation *(*CLMLocIMP)(id, SEL);
+    if (orig_clm_location) return ((CLMLocIMP)orig_clm_location)(self, _cmd);
+    return nil;
+}
+
+#pragma mark - Q3: iCloud 容器隔离
+
+static IMP orig_ubiquityContainerURL = NULL;
+static NSURL *new_ubiquityContainerURL(id self, SEL _cmd, NSString *containerID) {
+    if (cfgBool(@"spoofUbiquity", YES)) {
+        // 只拦截默认容器（nil）和百度相关 containerID，不影响系统其他 iCloud 功能
+        BOOL shouldBlock = (containerID == nil) ||
+            ([containerID rangeOfString:@"baidu" options:NSCaseInsensitiveSearch].location != NSNotFound);
+        if (shouldBlock) {
+            BDS_DIAG_RECORD(g_diagUbiquity, BDSDiagStateBlocked);
+            return nil;
+        }
+    }
+    BDS_DIAG_RECORD(g_diagUbiquity, BDSDiagStatePassed);
+    typedef NSURL *(*UbiquityIMP)(id, SEL, NSString *);
+    if (orig_ubiquityContainerURL) return ((UbiquityIMP)orig_ubiquityContainerURL)(self, _cmd, containerID);
+    return nil;
+}
+
+#pragma mark - Q4: 通讯录/日历/照片权限返回拒绝
+
+static IMP orig_cn_authorizationStatus = NULL;
+static NSInteger new_cn_authorizationStatus(id self, SEL _cmd, NSInteger entityType) {
+    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateChanged);
+        return 2; // CNAuthorizationStatusDenied
+    }
+    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
+    typedef NSInteger (*CNAuthIMP)(id, SEL, NSInteger);
+    if (orig_cn_authorizationStatus) return ((CNAuthIMP)orig_cn_authorizationStatus)(self, _cmd, entityType);
+    return 2;
+}
+
+static IMP orig_ek_authorizationStatus = NULL;
+static NSInteger new_ek_authorizationStatus(id self, SEL _cmd, NSInteger entityType) {
+    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateChanged);
+        return 2; // EKAuthorizationStatusDenied
+    }
+    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
+    typedef NSInteger (*EKAuthIMP)(id, SEL, NSInteger);
+    if (orig_ek_authorizationStatus) return ((EKAuthIMP)orig_ek_authorizationStatus)(self, _cmd, entityType);
+    return 2;
+}
+
+static IMP orig_ph_authorizationStatus = NULL;
+static NSInteger new_ph_authorizationStatus(id self, SEL _cmd) {
+    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateChanged);
+        return 2; // PHAuthorizationStatusDenied
+    }
+    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
+    typedef NSInteger (*PHAuthIMP)(id, SEL);
+    if (orig_ph_authorizationStatus) return ((PHAuthIMP)orig_ph_authorizationStatus)(self, _cmd);
+    return 2;
+}
+
+static IMP orig_ph_authorizationStatusForAccessLevel = NULL;
+static NSInteger new_ph_authorizationStatusForAccessLevel(id self, SEL _cmd, NSInteger accessLevel) {
+    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateChanged);
+        return 2; // PHAuthorizationStatusDenied
+    }
+    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
+    typedef NSInteger (*PHAuthLevelIMP)(id, SEL, NSInteger);
+    if (orig_ph_authorizationStatusForAccessLevel) return ((PHAuthLevelIMP)orig_ph_authorizationStatusForAccessLevel)(self, _cmd, accessLevel);
+    return 2;
+}
+
+static IMP orig_cn_requestAccess = NULL;
+static void new_cn_requestAccess(id self, SEL _cmd, NSInteger entityType, void (^completionHandler)(BOOL, NSError *)) {
+    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateBlocked);
+        // 异步回调，与系统原始行为一致
+        if (completionHandler) {
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                completionHandler(NO, nil);
+            });
+        }
+        return;
+    }
+    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
+    typedef void (*CNRequestIMP)(id, SEL, NSInteger, void (^)(BOOL, NSError *));
+    if (orig_cn_requestAccess) ((CNRequestIMP)orig_cn_requestAccess)(self, _cmd, entityType, completionHandler);
+}
+
+static IMP orig_ek_requestAccess = NULL;
+static void new_ek_requestAccess(id self, SEL _cmd, NSInteger entityType, void (^completionHandler)(BOOL, NSError *)) {
+    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateBlocked);
+        if (completionHandler) {
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                completionHandler(NO, nil);
+            });
+        }
+        return;
+    }
+    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
+    typedef void (*EKRequestIMP)(id, SEL, NSInteger, void (^)(BOOL, NSError *));
+    if (orig_ek_requestAccess) ((EKRequestIMP)orig_ek_requestAccess)(self, _cmd, entityType, completionHandler);
+}
+
+static IMP orig_ph_requestAuthorization = NULL;
+static void new_ph_requestAuthorization(id self, SEL _cmd, NSInteger accessLevel, void (^handler)(NSInteger)) {
+    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateBlocked);
+        if (handler) {
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                handler(2); // PHAuthorizationStatusDenied
+            });
+        }
+        return;
+    }
+    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
+    typedef void (*PHRequestIMP)(id, SEL, NSInteger, void (^)(NSInteger));
+    if (orig_ph_requestAuthorization) ((PHRequestIMP)orig_ph_requestAuthorization)(self, _cmd, accessLevel, handler);
+}
+
+// 旧版照片授权 API（iOS 8-13）：+[PHPhotoLibrary requestAuthorization:]
+static IMP orig_ph_requestAuthorizationOld = NULL;
+static void new_ph_requestAuthorizationOld(id self, SEL _cmd, void (^handler)(NSInteger)) {
+    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateBlocked);
+        if (handler) {
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                handler(2);
+            });
+        }
+        return;
+    }
+    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
+    typedef void (*PHRequestOldIMP)(id, SEL, void (^)(NSInteger));
+    if (orig_ph_requestAuthorizationOld) ((PHRequestOldIMP)orig_ph_requestAuthorizationOld)(self, _cmd, handler);
+}
+
+#pragma mark - Q5: WebKit Cookie 过滤
+// 覆盖范围说明：
+// getAllCookies: — 拦截 App 主动读取 Cookie
+// requestHeaderFieldsWithCookies: — 拦截 NSURLSession/NSURLRequest 生成 Cookie 头
+// cookiesWithResponseHeaderFields:forURL: — 拦截响应中的 Set-Cookie 写入
+// 注意：WebKit 网络进程内部的 Cookie 管理可能不完全经过上述公开 API，
+// 此 Hook 不能保证 100% 阻断所有网络层 Cookie 传输。
+
+static IMP orig_wk_getAllCookies = NULL;
+static IMP orig_cookieRequestHeaders = NULL;
+static IMP orig_cookieSetCookies = NULL;
+
+static BOOL bds_shouldBlockCookie(NSHTTPCookie *cookie) {
+    if (!cookie) return NO;
+    NSString *domain = cookie.domain.lowercaseString ?: @"";
+    // 精确匹配百度域名后缀，避免 containsString 误拦截
+    BOOL isBaidu = NO;
+    NSArray *baiduSuffixes = @[
+        @".baidu.com", @".bdstatic.com", @".bdimg.com",
+        @".hao123.com", @".nuomi.com", @".baidubcs.com",
+        @".baidupcs.com", @".mbd.baidu.com"
+    ];
+    for (NSString *suffix in baiduSuffixes) {
+        if ([domain hasSuffix:suffix] || [domain isEqualToString:[suffix substringFromIndex:1]]) {
+            isBaidu = YES;
+            break;
+        }
+    }
+    if (!isBaidu) return NO;
+    NSString *name = cookie.name ?: @"";
+    if ([name caseInsensitiveCompare:@"BDUSS"] == NSOrderedSame ||
+        [name caseInsensitiveCompare:@"STOKEN"] == NSOrderedSame) {
+        return NO;
+    }
+    static NSSet<NSString *> *blockedNames = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        blockedNames = [NSSet setWithArray:@[
+            @"BAIDUID", @"BAIDUID_BFESS", @"cuid", @"cuid_galaxy2",
+            @"BAIDU_DEVICE_ID", @"device_id", @"utdid", @"UTDID",
+            @"bd_deviceid", @"BD_DEVICEID", @"__yjs_duid", @"__yjsv5_",
+            @"PSTM", @"BDSVRTM"
+        ]];
+    });
+    for (NSString *blockedName in blockedNames) {
+        if ([name caseInsensitiveCompare:blockedName] == NSOrderedSame ||
+            [name rangeOfString:blockedName options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static void new_wk_getAllCookies(id self, SEL _cmd, void (^completionHandler)(NSArray<NSHTTPCookie *> *)) {
+    typedef void (*WKGetAllCookiesIMP)(id, SEL, void (^)(NSArray<NSHTTPCookie *> *));
+    if (!cfgBool(@"spoofWebKitCookie", YES)) {
+        BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStatePassed);
+        if (orig_wk_getAllCookies) {
+            ((WKGetAllCookiesIMP)orig_wk_getAllCookies)(self, _cmd, completionHandler);
+        } else if (completionHandler) {
+            completionHandler(@[]);
+        }
+        return;
+    }
+    void (^wrappedHandler)(NSArray<NSHTTPCookie *> *) = ^(NSArray<NSHTTPCookie *> *cookies) {
+        NSMutableArray<NSHTTPCookie *> *filtered = [NSMutableArray array];
+        for (NSHTTPCookie *cookie in cookies) {
+            if (!bds_shouldBlockCookie(cookie)) [filtered addObject:cookie];
+        }
+        if (filtered.count != cookies.count) {
+            BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStateChanged);
+        } else {
+            BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStatePassed);
+        }
+        if (completionHandler) completionHandler(filtered);
+    };
+    if (orig_wk_getAllCookies) {
+        ((WKGetAllCookiesIMP)orig_wk_getAllCookies)(self, _cmd, wrappedHandler);
+    } else if (completionHandler) {
+        completionHandler(@[]);
+    }
+}
+
+static NSDictionary *new_cookieRequestHeaders(id self, SEL _cmd, NSArray<NSHTTPCookie *> *cookies) {
+    typedef NSDictionary *(*CookieHeadersIMP)(id, SEL, NSArray *);
+    if (!cfgBool(@"spoofWebKitCookie", YES)) {
+        BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStatePassed);
+        if (orig_cookieRequestHeaders) return ((CookieHeadersIMP)orig_cookieRequestHeaders)(self, _cmd, cookies);
+        return @{};
+    }
+    NSMutableArray<NSHTTPCookie *> *filtered = [NSMutableArray array];
+    for (NSHTTPCookie *cookie in cookies) {
+        if (!bds_shouldBlockCookie(cookie)) [filtered addObject:cookie];
+    }
+    if (filtered.count != cookies.count) {
+        BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStateChanged);
+    } else {
+        BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStatePassed);
+    }
+    if (orig_cookieRequestHeaders) return ((CookieHeadersIMP)orig_cookieRequestHeaders)(self, _cmd, filtered);
+    return @{};
+}
+
+static NSArray<NSHTTPCookie *> *new_cookieSetCookies(id self, SEL _cmd, NSDictionary *headerFields, NSURL *URL) {
+    typedef NSArray *(*CookieSetIMP)(id, SEL, NSDictionary *, NSURL *);
+    NSArray<NSHTTPCookie *> *original = orig_cookieSetCookies
+        ? ((CookieSetIMP)orig_cookieSetCookies)(self, _cmd, headerFields, URL)
+        : @[];
+    if (!cfgBool(@"spoofWebKitCookie", YES)) {
+        BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStatePassed);
+        return original;
+    }
+    NSMutableArray<NSHTTPCookie *> *filtered = [NSMutableArray array];
+    for (NSHTTPCookie *cookie in original) {
+        if (!bds_shouldBlockCookie(cookie)) [filtered addObject:cookie];
+    }
+    if (filtered.count != original.count) {
+        BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStateChanged);
+    } else {
+        BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStatePassed);
+    }
+    return filtered;
+}
+
+#pragma mark - P1: WiFi SSID/BSSID Hook（fishhook）
+
+static CFDictionaryRef (*orig_CNCopyCurrentNetworkInfo)(CFStringRef);
+
+static CFDictionaryRef bds_my_CNCopyCurrentNetworkInfo(CFStringRef interfaceName) {
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofWiFiC)) {
+        BDS_DIAG_RECORD(g_diagWiFi, BDSDiagStatePassed);
+        return orig_CNCopyCurrentNetworkInfo(interfaceName);
+    }
+    if (g_wifiSSID[0] != '\0') {
+        // 返回伪造的 SSID
+        NSString *ssid = [[NSString alloc] initWithBytes:g_wifiSSID
+                                                  length:strlen(g_wifiSSID)
+                                                encoding:NSUTF8StringEncoding];
+        if (!ssid) {
+            BDS_DIAG_RECORD(g_diagWiFi, BDSDiagStateBlocked);
+            return NULL;
+        }
+        NSData *ssidData = [ssid dataUsingEncoding:NSUTF8StringEncoding];
+        NSDictionary *fake = @{
+            (__bridge NSString *)kCNNetworkInfoKeySSID: ssid,
+            (__bridge NSString *)kCNNetworkInfoKeyBSSID: @"00:00:00:00:00:00",
+            (__bridge NSString *)kCNNetworkInfoKeySSIDData: ssidData
+        };
+        BDS_DIAG_RECORD(g_diagWiFi, BDSDiagStateChanged);
+        return CFRetain((__bridge CFDictionaryRef)fake);
+    }
+    // 返回 NULL 表示无法获取 WiFi 信息（相当于没有连接 WiFi 或无权限）
+    BDS_DIAG_RECORD(g_diagWiFi, BDSDiagStateBlocked);
+    return NULL;
+}
+
+#pragma mark - P2: 本地 IP Hook（fishhook）
+
+static int (*orig_getifaddrs)(struct ifaddrs **);
+
+static int bds_my_getifaddrs(struct ifaddrs **ifap) {
+    int result = orig_getifaddrs(ifap);
+    if (result != 0 || !ifap || !*ifap) {
+        BDS_DIAG_RECORD(g_diagLocalIP, BDSDiagStatePassed);
+        return result;
+    }
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofLocalIPC)) {
+        BDS_DIAG_RECORD(g_diagLocalIP, BDSDiagStatePassed);
+        return result;
+    }
+    // 不返回 0.0.0.0/零掩码这种互相矛盾的数据；把 en0 的 IP 地址项标记为未指定。
+    // 调用方仍可按原约定 freeifaddrs() 释放完整链表。
+    int modified = 0;
+    for (struct ifaddrs *ifa = *ifap; ifa; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_name || !ifa->ifa_addr) continue;
+        if (strcmp(ifa->ifa_name, "en0") != 0) continue;
+        sa_family_t family = ifa->ifa_addr->sa_family;
+        if (family == AF_INET || family == AF_INET6) {
+            modified = 1;
+            ifa->ifa_addr->sa_family = AF_UNSPEC;
+            if (ifa->ifa_netmask) ifa->ifa_netmask->sa_family = AF_UNSPEC;
+            if (ifa->ifa_dstaddr) ifa->ifa_dstaddr->sa_family = AF_UNSPEC;
+        }
+    }
+    BDS_DIAG_RECORD(g_diagLocalIP, modified ? BDSDiagStateChanged : BDSDiagStatePassed);
+    return result;
+}
+
+#pragma mark - P8: 代理/VPN 检测绕过（fishhook）
+
+static CFDictionaryRef (*orig_CFNetworkCopySystemProxySettings)(void);
+static CFDictionaryRef (*orig_SCDynamicStoreCopyProxies)(SCDynamicStoreRef);
+
+static CFDictionaryRef bds_my_CFNetworkCopySystemProxySettings(void) {
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofProxyC)) {
+        BDS_DIAG_RECORD(g_diagProxy, BDSDiagStatePassed);
+        return orig_CFNetworkCopySystemProxySettings();
+    }
+    BDS_DIAG_RECORD(g_diagProxy, BDSDiagStateChanged);
+    // 返回空字典，表示没有代理
+    return CFDictionaryCreate(NULL, NULL, NULL, 0,
+                              &kCFTypeDictionaryKeyCallBacks,
+                              &kCFTypeDictionaryValueCallBacks);
+}
+
+static CFDictionaryRef bds_my_SCDynamicStoreCopyProxies(SCDynamicStoreRef store) {
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofProxyC)) {
+        BDS_DIAG_RECORD(g_diagProxy, BDSDiagStatePassed);
+        return orig_SCDynamicStoreCopyProxies(store);
+    }
+    BDS_DIAG_RECORD(g_diagProxy, BDSDiagStateChanged);
+    return CFDictionaryCreate(NULL, NULL, NULL, 0,
+                              &kCFTypeDictionaryKeyCallBacks,
+                              &kCFTypeDictionaryValueCallBacks);
+}
+
+#pragma mark - Q1: statfs/statvfs 磁盘剩余空间 Hook（fishhook）
+
+static int (*orig_statfs)(const char *, struct statfs *);
+static int (*orig_statvfs)(const char *, struct statvfs *);
+
+static int bds_my_statfs(const char *path, struct statfs *buf) {
+    int result = orig_statfs(path, buf);
+    if (result != 0 || !buf) {
+        BDS_DIAG_RECORD(g_diagStatfs, BDSDiagStatePassed);
+        return result;
+    }
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofStatfsC)) {
+        BDS_DIAG_RECORD(g_diagStatfs, BDSDiagStatePassed);
+        return result;
+    }
+    BDS_DIAG_RECORD(g_diagStatfs, BDSDiagStateChanged);
+    long long diskSize = bds_disk_size_get();
+    long long fakeFree = diskSize / 2;
+    if (buf->f_bsize > 0) {
+        buf->f_blocks = (uint64_t)(diskSize / buf->f_bsize);
+        buf->f_bfree = (uint64_t)(fakeFree / buf->f_bsize);
+        buf->f_bavail = (uint64_t)(fakeFree / buf->f_bsize);
+    }
+    return result;
+}
+
+static int bds_my_statvfs(const char *path, struct statvfs *buf) {
+    int result = orig_statvfs(path, buf);
+    if (result != 0 || !buf) {
+        BDS_DIAG_RECORD(g_diagStatfs, BDSDiagStatePassed);
+        return result;
+    }
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofStatfsC)) {
+        BDS_DIAG_RECORD(g_diagStatfs, BDSDiagStatePassed);
+        return result;
+    }
+    BDS_DIAG_RECORD(g_diagStatfs, BDSDiagStateChanged);
+    unsigned long long diskSize = (unsigned long long)bds_disk_size_get();
+    unsigned long long fakeFree = diskSize / 2;
+    unsigned long frsize = buf->f_frsize > 0 ? buf->f_frsize : buf->f_bsize;
+    if (frsize > 0) {
+        buf->f_blocks = (fsblkcnt_t)(diskSize / frsize);
+        buf->f_bfree = (fsblkcnt_t)(fakeFree / frsize);
+        buf->f_bavail = (fsblkcnt_t)(fakeFree / frsize);
+    }
+    return result;
+}
+
+#pragma mark - Q2: dlopen 反检测（fishhook）
+
+static void *(*orig_dlopen)(const char *, int);
+static int (*orig_dlopen_preflight)(const char *);
+
+static BOOL bds_is_suspicious_dlopen_path(const char *path) {
+    if (!path) return NO;
+    static const char *badPaths[] = {
+        "/var/jb", "/Library/MobileSubstrate", "/bootstrap",
+        "/usr/lib/TweakInject", "/.jailbreak", "/.cydia",
+        "/jb/", "/electra", "/chimera", "/odyssey",
+        "/var/containers/Bundle/trollstore", "/TrollFools",
+        NULL
+    };
+    for (int i = 0; badPaths[i]; i++) {
+        if (strstr(path, badPaths[i])) return YES;
+    }
+    return NO;
+}
+
+static void *bds_my_dlopen(const char *path, int mode) {
+    if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_spoofDlopenC) &&
+        bds_is_suspicious_dlopen_path(path)) {
+        BDS_DIAG_RECORD(g_diagDlopen, BDSDiagStateBlocked);
+        // 让系统加载一个不存在的路径，自然设置 dlerror 并返回 NULL
+        return orig_dlopen("/.bds_blocked_nonexistent", mode);
+    }
+    BDS_DIAG_RECORD(g_diagDlopen, BDSDiagStatePassed);
+    return orig_dlopen(path, mode);
+}
+
+static int bds_my_dlopen_preflight(const char *path) {
+    if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_spoofDlopenC) &&
+        bds_is_suspicious_dlopen_path(path)) {
+        BDS_DIAG_RECORD(g_diagDlopen, BDSDiagStateBlocked);
+        if (orig_dlopen_preflight) return orig_dlopen_preflight("/.bds_blocked_nonexistent");
+        return 0;
+    }
+    BDS_DIAG_RECORD(g_diagDlopen, BDSDiagStatePassed);
+    if (orig_dlopen_preflight) return orig_dlopen_preflight(path);
+    return 0;
 }
 
 #pragma mark - C 函数 hook 安装（fishhook）
@@ -1094,6 +2122,14 @@ static void installCHooks(void) {
         {"access", (void *)bds_my_access, (void **)&orig_access},
         {"fopen", (void *)bds_my_fopen, (void **)&orig_fopen},
         {"opendir", (void *)bds_my_opendir, (void **)&orig_opendir},
+        {"CNCopyCurrentNetworkInfo", (void *)bds_my_CNCopyCurrentNetworkInfo, (void **)&orig_CNCopyCurrentNetworkInfo},
+        {"getifaddrs", (void *)bds_my_getifaddrs, (void **)&orig_getifaddrs},
+        {"CFNetworkCopySystemProxySettings", (void *)bds_my_CFNetworkCopySystemProxySettings, (void **)&orig_CFNetworkCopySystemProxySettings},
+        {"SCDynamicStoreCopyProxies", (void *)bds_my_SCDynamicStoreCopyProxies, (void **)&orig_SCDynamicStoreCopyProxies},
+        {"statfs", (void *)bds_my_statfs, (void **)&orig_statfs},
+        {"statvfs", (void *)bds_my_statvfs, (void **)&orig_statvfs},
+        {"dlopen", (void *)bds_my_dlopen, (void **)&orig_dlopen},
+        {"dlopen_preflight", (void *)bds_my_dlopen_preflight, (void **)&orig_dlopen_preflight},
     };
     bds_rebind_symbols(rebindings, sizeof(rebindings) / sizeof(rebindings[0]));
 }
@@ -1101,24 +2137,39 @@ static void installCHooks(void) {
 #pragma mark - 悬浮配置入口
 
 static const void *BDSButtonKey = &BDSButtonKey;
+static const CGFloat BDSButtonFullSize = 42.0;
+static const CGFloat BDSButtonCollapsedWidth = 18.0;
+static const NSTimeInterval BDSButtonCollapseDelay = 5.0;
 
 @interface BDSUIController : NSObject
+@property (nonatomic, assign) NSUInteger floatingButtonGeneration;
 + (instancetype)shared;
 - (void)attachButton;
 - (void)openPanel;
 - (void)editSystemVersion;
 - (void)editDeviceName;
 - (void)editIdentifiers;
+- (void)randomizeBasicProfile;
+- (void)randomizeAdvancedProfile;
 - (void)showOptionalSwitches;
 - (void)showOptionalEditors;
 - (void)showAdvancedSwitches;
 - (void)showAdvancedEditors;
+- (void)showAntiAssociation;
+- (void)editWiFiSSID;
 - (void)editProcessHardware;
 - (void)editLocaleCarrier;
 - (void)editScreenStorage;
 - (void)showSelfTest;
+- (void)showPublicAPITest;
+- (void)showHookDiagnostics;
+- (void)copyDiagnosticText:(NSString *)text;
+- (void)shareDiagnosticText:(NSString *)text;
 - (void)presentMessage:(NSString *)message title:(NSString *)title;
 - (void)showRestartNotice:(BOOL)saved;
+- (void)scheduleButtonCollapse:(UIButton *)button;
+- (void)expandButton:(UIButton *)button animated:(BOOL)animated;
+- (void)collapseButton:(UIButton *)button;
 @end
 
 static UIWindow *BDSMainWindow(void) {
@@ -1156,6 +2207,26 @@ static NSString *BDSOnOff(BOOL value) {
     return value ? @"开" : @"关";
 }
 
+static NSString *BDSDiagStateText(int state) {
+    switch (state) {
+        case BDSDiagStatePassed: return @"透传原值";
+        case BDSDiagStateChanged: return @"返回修改值";
+        case BDSDiagStateBlocked: return @"已拦截";
+        default: return @"未调用";
+    }
+}
+
+static void BDSAppendDiagLine(NSMutableString *text, NSString *name, BDSDiagCounter *counter) {
+    uint64_t hits = bds_diag_load64(&counter->hits);
+    uint64_t passed = bds_diag_load64(&counter->passed);
+    uint64_t changed = bds_diag_load64(&counter->changed);
+    uint64_t blocked = bds_diag_load64(&counter->blocked);
+    int state = bds_diag_load_state(&counter->lastState);
+    [text appendFormat:@"\n%@：读取 %llu 次 / 返回原值 %llu 次 / 返回修改值 %llu 次 / 拦截 %llu 次 / 最近：%@",
+        name, (unsigned long long)hits, (unsigned long long)passed,
+        (unsigned long long)changed, (unsigned long long)blocked, BDSDiagStateText(state)];
+}
+
 static NSString *BDSRandomHex32(BOOL uppercase) {
     NSString *value = [[NSUUID.UUID.UUIDString
         stringByReplacingOccurrencesOfString:@"-" withString:@""] substringToIndex:32];
@@ -1163,29 +2234,221 @@ static NSString *BDSRandomHex32(BOOL uppercase) {
 }
 
 static NSDictionary *BDSRandomIdentityValues(void) {
-    NSString *deviceSuffix = [BDSRandomHex32(YES) substringToIndex:6];
     return @{
         @"idfa": NSUUID.UUID.UUIDString.uppercaseString,
         @"idfv": NSUUID.UUID.UUIDString.uppercaseString,
         @"deviceID": NSUUID.UUID.UUIDString.uppercaseString,
         @"cuid": BDSRandomHex32(YES),
-        @"utdid": BDSRandomHex32(NO),
-        @"deviceName": [@"iPhone-" stringByAppendingString:deviceSuffix]
+        @"utdid": BDSRandomHex32(NO)
     };
 }
 
+static NSArray<NSDictionary *> *BDSDeviceProfiles(void) {
+    static NSArray<NSDictionary *> *profiles;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        profiles = @[
+            @{@"name": @"iPhone 8", @"machine": @"iPhone10,1", @"model": @"D20AP",
+              @"width": @375, @"height": @667, @"nativeWidth": @750, @"nativeHeight": @1334,
+              @"scale": @2, @"memory": @2048, @"disks": @[@64, @256]},
+            @{@"name": @"iPhone 8 Plus", @"machine": @"iPhone10,2", @"model": @"D21AP",
+              @"width": @414, @"height": @736, @"nativeWidth": @1080, @"nativeHeight": @1920,
+              @"scale": @3, @"memory": @3072, @"disks": @[@64, @256]},
+            @{@"name": @"iPhone X", @"machine": @"iPhone10,3", @"model": @"D22AP",
+              @"width": @375, @"height": @812, @"nativeWidth": @1125, @"nativeHeight": @2436,
+              @"scale": @3, @"memory": @3072, @"disks": @[@64, @256]},
+            @{@"name": @"iPhone XR", @"machine": @"iPhone11,8", @"model": @"N841AP",
+              @"width": @414, @"height": @896, @"nativeWidth": @828, @"nativeHeight": @1792,
+              @"scale": @2, @"memory": @3072, @"disks": @[@64, @128, @256]},
+            @{@"name": @"iPhone XS", @"machine": @"iPhone11,2", @"model": @"D321AP",
+              @"width": @375, @"height": @812, @"nativeWidth": @1125, @"nativeHeight": @2436,
+              @"scale": @3, @"memory": @4096, @"disks": @[@64, @256, @512]},
+            @{@"name": @"iPhone XS Max", @"machine": @"iPhone11,6", @"model": @"D331pAP",
+              @"width": @414, @"height": @896, @"nativeWidth": @1242, @"nativeHeight": @2688,
+              @"scale": @3, @"memory": @4096, @"disks": @[@64, @256, @512]},
+            @{@"name": @"iPhone 11", @"machine": @"iPhone12,1", @"model": @"N104AP",
+              @"width": @414, @"height": @896, @"nativeWidth": @828, @"nativeHeight": @1792,
+              @"scale": @2, @"memory": @4096, @"disks": @[@64, @128, @256]},
+            @{@"name": @"iPhone 11 Pro", @"machine": @"iPhone12,3", @"model": @"D421AP",
+              @"width": @375, @"height": @812, @"nativeWidth": @1125, @"nativeHeight": @2436,
+              @"scale": @3, @"memory": @4096, @"disks": @[@64, @256, @512]},
+            @{@"name": @"iPhone 11 Pro Max", @"machine": @"iPhone12,5", @"model": @"D431AP",
+              @"width": @414, @"height": @896, @"nativeWidth": @1242, @"nativeHeight": @2688,
+              @"scale": @3, @"memory": @4096, @"disks": @[@64, @256, @512]},
+            @{@"name": @"iPhone SE (2nd generation)", @"machine": @"iPhone12,8", @"model": @"D79AP",
+              @"width": @375, @"height": @667, @"nativeWidth": @750, @"nativeHeight": @1334,
+              @"scale": @2, @"memory": @3072, @"disks": @[@64, @128, @256]},
+            @{@"name": @"iPhone 12 mini", @"machine": @"iPhone13,1", @"model": @"D52gAP",
+              @"width": @375, @"height": @812, @"nativeWidth": @1080, @"nativeHeight": @2340,
+              @"scale": @3, @"memory": @4096, @"disks": @[@64, @128, @256]},
+            @{@"name": @"iPhone 12", @"machine": @"iPhone13,2", @"model": @"D53gAP",
+              @"width": @390, @"height": @844, @"nativeWidth": @1170, @"nativeHeight": @2532,
+              @"scale": @3, @"memory": @4096, @"disks": @[@64, @128, @256]},
+            @{@"name": @"iPhone 12 Pro", @"machine": @"iPhone13,3", @"model": @"D53pAP",
+              @"width": @390, @"height": @844, @"nativeWidth": @1170, @"nativeHeight": @2532,
+              @"scale": @3, @"memory": @6144, @"disks": @[@128, @256, @512]},
+            @{@"name": @"iPhone 12 Pro Max", @"machine": @"iPhone13,4", @"model": @"D54pAP",
+              @"width": @428, @"height": @926, @"nativeWidth": @1284, @"nativeHeight": @2778,
+              @"scale": @3, @"memory": @6144, @"disks": @[@128, @256, @512]},
+            @{@"name": @"iPhone 13 mini", @"machine": @"iPhone14,4", @"model": @"D16AP",
+              @"width": @375, @"height": @812, @"nativeWidth": @1080, @"nativeHeight": @2340,
+              @"scale": @3, @"memory": @4096, @"disks": @[@128, @256, @512]},
+            @{@"name": @"iPhone 13", @"machine": @"iPhone14,5", @"model": @"D17AP",
+              @"width": @390, @"height": @844, @"nativeWidth": @1170, @"nativeHeight": @2532,
+              @"scale": @3, @"memory": @4096, @"disks": @[@128, @256, @512]},
+            @{@"name": @"iPhone 13 Pro", @"machine": @"iPhone14,2", @"model": @"D63AP",
+              @"width": @390, @"height": @844, @"nativeWidth": @1170, @"nativeHeight": @2532,
+              @"scale": @3, @"memory": @6144, @"disks": @[@128, @256, @512, @1024]},
+            @{@"name": @"iPhone 13 Pro Max", @"machine": @"iPhone14,3", @"model": @"D64AP",
+              @"width": @428, @"height": @926, @"nativeWidth": @1284, @"nativeHeight": @2778,
+              @"scale": @3, @"memory": @6144, @"disks": @[@128, @256, @512, @1024]},
+            @{@"name": @"iPhone SE (3rd generation)", @"machine": @"iPhone14,6", @"model": @"D49AP",
+              @"width": @375, @"height": @667, @"nativeWidth": @750, @"nativeHeight": @1334,
+              @"scale": @2, @"memory": @4096, @"disks": @[@64, @128, @256]}
+        ];
+    });
+    return profiles;
+}
+
+static BOOL BDSUsesExtendedDeviceRange(void) {
+    return [cfgStr(@"deviceRandomMode", @"compatible") isEqualToString:@"extended"];
+}
+
+static NSString *BDSDeviceRangeName(void) {
+    return BDSUsesExtendedDeviceRange() ? @"扩展模式（8款）" : @"兼容模式（3款）";
+}
+
+static NSArray<NSDictionary *> *BDSDeviceProfilesForCurrentMode(void) {
+    NSSet<NSString *> *machines = BDSUsesExtendedDeviceRange()
+        ? [NSSet setWithArray:@[
+            @"iPhone10,1", // iPhone 8
+            @"iPhone10,3", // iPhone X
+            @"iPhone11,2", // iPhone XS
+            @"iPhone12,3", // iPhone 11 Pro
+            @"iPhone13,1", // iPhone 12 mini
+            @"iPhone14,4", // iPhone 13 mini
+            @"iPhone12,8", // iPhone SE2
+            @"iPhone14,6"  // iPhone SE3
+        ]]
+        : [NSSet setWithArray:@[@"iPhone10,1", @"iPhone12,8", @"iPhone14,6"]];
+    NSMutableArray<NSDictionary *> *filtered = [NSMutableArray array];
+    for (NSDictionary *profile in BDSDeviceProfiles()) {
+        if ([machines containsObject:profile[@"machine"]]) [filtered addObject:profile];
+    }
+    return filtered;
+}
+
+static NSArray<NSDictionary *> *BDSSystemProfiles(void) {
+    static NSArray<NSDictionary *> *profiles;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        profiles = @[
+            @{@"version": @"15.4.1", @"build": @"19E258"},
+            @{@"version": @"15.5", @"build": @"19F77"},
+            @{@"version": @"15.6", @"build": @"19G71"},
+            @{@"version": @"15.6.1", @"build": @"19G82"},
+            @{@"version": @"15.7", @"build": @"19H12"},
+            @{@"version": @"16.0", @"build": @"20A362"},
+            @{@"version": @"16.1.2", @"build": @"20B110"},
+            @{@"version": @"16.3.1", @"build": @"20D67"},
+            @{@"version": @"16.5.1", @"build": @"20F75"},
+            @{@"version": @"16.7", @"build": @"20H19"},
+            @{@"version": @"17.0", @"build": @"21A329"},
+            @{@"version": @"17.2.1", @"build": @"21C66"},
+            @{@"version": @"17.3.1", @"build": @"21D61"},
+            @{@"version": @"17.4.1", @"build": @"21E236"},
+            @{@"version": @"17.5", @"build": @"21F79"},
+            @{@"version": @"18.0", @"build": @"22A3354"},
+            @{@"version": @"18.1.1", @"build": @"22B91"},
+            @{@"version": @"18.2.1", @"build": @"22C161"},
+            @{@"version": @"18.3.1", @"build": @"22D72"},
+            @{@"version": @"18.5", @"build": @"22F76"}
+        ];
+    });
+    return profiles;
+}
+
+static NSInteger BDSMaxRandomOSMajorForMachine(NSString *machine) {
+    // iPhone 8 / 8 Plus / X (iPhone10,*) officially stop at iOS 16.
+    // Every other model currently present in BDSDeviceProfiles supports iOS 18.
+    return [machine hasPrefix:@"iPhone10,"] ? 16 : 18;
+}
+
+static NSArray<NSDictionary *> *BDSSystemProfilesForDevice(NSDictionary *device) {
+    NSString *machine = [device[@"machine"] isKindOfClass:[NSString class]] ? device[@"machine"] : @"";
+    NSInteger maxMajor = BDSMaxRandomOSMajorForMachine(machine);
+    NSMutableArray<NSDictionary *> *compatible = [NSMutableArray array];
+    for (NSDictionary *profile in BDSSystemProfiles()) {
+        NSString *version = [profile[@"version"] isKindOfClass:[NSString class]] ? profile[@"version"] : @"";
+        if (version.integerValue <= maxMajor) [compatible addObject:profile];
+    }
+    // Defensive fallback: a malformed/unknown profile must not make randomization crash.
+    return compatible.count ? compatible : BDSSystemProfiles();
+}
+
+static NSDictionary *BDSRandomSystemProfileForDevice(NSDictionary *device) {
+    NSArray<NSDictionary *> *compatible = BDSSystemProfilesForDevice(device);
+    NSMutableDictionary<NSNumber *, NSMutableArray<NSDictionary *> *> *byMajor = [NSMutableDictionary dictionary];
+    for (NSDictionary *profile in compatible) {
+        NSString *version = [profile[@"version"] isKindOfClass:[NSString class]] ? profile[@"version"] : @"";
+        NSNumber *major = @(version.integerValue);
+        if (!byMajor[major]) byMajor[major] = [NSMutableArray array];
+        [byMajor[major] addObject:profile];
+    }
+    NSArray<NSNumber *> *majors = [[byMajor allKeys] sortedArrayUsingSelector:@selector(compare:)];
+    if (!majors.count) return BDSSystemProfiles().firstObject;
+    NSNumber *major = majors[arc4random_uniform((uint32_t)majors.count)];
+    NSArray<NSDictionary *> *versions = byMajor[major];
+    return versions[arc4random_uniform((uint32_t)versions.count)];
+}
+
+static NSDictionary *BDSRandomBasicProfileValues(void) {
+    NSArray<NSDictionary *> *allDevices = BDSDeviceProfilesForCurrentMode();
+    NSString *currentMachine = cfgStr(@"hwMachine", @"");
+    NSMutableArray<NSDictionary *> *candidates = [NSMutableArray array];
+    for (NSDictionary *profile in allDevices) {
+        if (![profile[@"machine"] isEqualToString:currentMachine]) [candidates addObject:profile];
+    }
+    if (!candidates.count) [candidates addObjectsFromArray:allDevices];
+    NSDictionary *device = candidates[arc4random_uniform((uint32_t)candidates.count)];
+    NSDictionary *system = BDSRandomSystemProfileForDevice(device);
+    NSArray<NSNumber *> *disks = device[@"disks"];
+    NSNumber *disk = disks[arc4random_uniform((uint32_t)disks.count)];
+
+    NSMutableDictionary *values = [NSMutableDictionary dictionary];
+    NSString *deviceSuffix = [BDSRandomHex32(YES) substringToIndex:6];
+    NSString *deviceName = [@"iPhone-" stringByAppendingString:deviceSuffix];
+    values[@"enabled"] = @YES;
+    values[@"spoofAdvertisingIdentifiers"] = @YES;
+    values[@"spoofProcessHardware"] = @YES;
+    values[@"spoofLocale"] = @YES;
+    values[@"spoofCarrier"] = @YES;
+    // 保持本机真实屏幕，避免随机到大屏机型后界面被放大或缩小。
+    values[@"spoofScreen"] = @NO;
+    values[@"spoofStorage"] = @YES;
+    values[@"deviceProfileName"] = device[@"name"];
+    values[@"deviceModel"] = @"iPhone";
+    values[@"marketingModel"] = @"iPhone";
+    values[@"systemVersion"] = system[@"version"];
+    values[@"systemBuild"] = system[@"build"];
+    values[@"kernOSVersion"] = system[@"build"];
+    values[@"hwMachine"] = device[@"machine"];
+    values[@"hwModel"] = device[@"model"];
+    values[@"memorySize"] = device[@"memory"];
+    values[@"diskSize"] = disk;
+    values[@"deviceName"] = deviceName;
+    values[@"kernHostname"] = deviceName;
+    return values;
+}
+
 static NSString *BDSConfigSummary(void) {
-    NSString *container = NSHomeDirectory().lastPathComponent ?: @"unknown";
-    if (container.length > 12) container = [container substringFromIndex:container.length - 12];
     return [NSString stringWithFormat:
-        @"容器: %@\n状态: %@\niOS: %@ (%@)\n设备名称: %@\nIDFV: %@\nIDFA: %@\n\n保存后重启百度极速版生效",
-        container,
+        @"状态：%@\n设备：%@\n系统：iOS %@ (%@)\n随机范围：%@",
         cfgBool(@"enabled", NO) ? @"已开启" : @"已关闭",
-        cfgStr(@"systemVersion", @"15.7.1"),
-        cfgStr(@"systemBuild", @"19H307"),
-        cfgStr(@"deviceName", @"iPhone"),
-        cfgStr(@"idfv", @"A1B2C3D4-E5F6-7890-ABCD-EF1234567890"),
-        cfgStr(@"idfa", @"FEDCBA98-7654-3210-FEDC-BA9876543210")];
+        cfgStr(@"deviceProfileName", @"iPhone SE (3rd generation)"),
+        cfgStr(@"systemVersion", @"15.4.1"),
+        cfgStr(@"systemBuild", @"19E258"),
+        BDSDeviceRangeName()];
 }
 
 @implementation BDSUIController
@@ -1203,16 +2466,20 @@ static NSString *BDSConfigSummary(void) {
         if (!window) return;
         UIButton *button = objc_getAssociatedObject(window, BDSButtonKey);
         if (!button) {
-            CGFloat size = 42.0;
-            CGFloat x = MAX(4.0, CGRectGetWidth(window.bounds) - size - 4.0);
-            CGFloat y = MAX(100.0, CGRectGetHeight(window.bounds) * 0.52);
+            BOOL leftSide = [cfgStr(@"floatingButtonSide", @"right") isEqualToString:@"left"];
+            CGFloat containerWidth = CGRectGetWidth(window.bounds);
+            CGFloat containerHeight = CGRectGetHeight(window.bounds);
+            CGFloat centerY = containerHeight * ((CGFloat)cfgInt(@"floatingButtonYPermille", 520) / 1000.0);
+            centerY = MIN(MAX(centerY, BDSButtonFullSize / 2.0 + 44.0),
+                          containerHeight - BDSButtonFullSize / 2.0 - 20.0);
+            CGFloat x = leftSide ? 4.0 : containerWidth - BDSButtonFullSize - 4.0;
             button = [UIButton buttonWithType:UIButtonTypeSystem];
-            button.frame = CGRectMake(x, y, size, size);
-            button.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin |
-                                      UIViewAutoresizingFlexibleTopMargin |
-                                      UIViewAutoresizingFlexibleBottomMargin;
+            button.frame = CGRectMake(x, centerY - BDSButtonFullSize / 2.0,
+                                      BDSButtonFullSize, BDSButtonFullSize);
+            button.autoresizingMask = (leftSide ? UIViewAutoresizingFlexibleRightMargin : UIViewAutoresizingFlexibleLeftMargin) |
+                                      UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
             button.backgroundColor = [UIColor colorWithRed:0.05 green:0.48 blue:0.95 alpha:0.90];
-            button.layer.cornerRadius = size / 2.0;
+            button.layer.cornerRadius = BDSButtonFullSize / 2.0;
             button.layer.borderWidth = 1.0;
             button.layer.borderColor = UIColor.whiteColor.CGColor;
             button.accessibilityLabel = @"设备隐私配置";
@@ -1224,20 +2491,74 @@ static NSString *BDSConfigSummary(void) {
             [button addGestureRecognizer:pan];
             [window addSubview:button];
             objc_setAssociatedObject(window, BDSButtonKey, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [self scheduleButtonCollapse:button];
         }
         [window bringSubviewToFront:button];
     });
 }
 
 - (void)buttonTapped:(UIButton *)button {
-    (void)button;
+    self.floatingButtonGeneration++;
     [self openPanel];
+    [self scheduleButtonCollapse:button];
+}
+
+- (void)scheduleButtonCollapse:(UIButton *)button {
+    NSUInteger generation = ++self.floatingButtonGeneration;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(BDSButtonCollapseDelay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (generation != self.floatingButtonGeneration || !button.superview) return;
+        [self collapseButton:button];
+    });
+}
+
+- (void)expandButton:(UIButton *)button animated:(BOOL)animated {
+    UIView *container = button.superview;
+    if (!container) return;
+    self.floatingButtonGeneration++;
+    BOOL leftSide = CGRectGetMidX(button.frame) < CGRectGetWidth(container.bounds) / 2.0;
+    CGFloat centerY = CGRectGetMidY(button.frame);
+    CGRect target = CGRectMake(leftSide ? 4.0 : CGRectGetWidth(container.bounds) - BDSButtonFullSize - 4.0,
+                               centerY - BDSButtonFullSize / 2.0,
+                               BDSButtonFullSize, BDSButtonFullSize);
+    void (^changes)(void) = ^{
+        button.frame = target;
+        button.backgroundColor = [UIColor colorWithRed:0.05 green:0.48 blue:0.95 alpha:0.90];
+        button.layer.cornerRadius = BDSButtonFullSize / 2.0;
+        button.layer.borderWidth = 1.0;
+        [button setTitle:@"隐" forState:UIControlStateNormal];
+        button.titleLabel.font = [UIFont boldSystemFontOfSize:17.0];
+    };
+    if (animated) [UIView animateWithDuration:0.18 animations:changes]; else changes();
+}
+
+- (void)collapseButton:(UIButton *)button {
+    UIView *container = button.superview;
+    if (!container) return;
+    BOOL leftSide = CGRectGetMidX(button.frame) < CGRectGetWidth(container.bounds) / 2.0;
+    CGFloat centerY = CGRectGetMidY(button.frame);
+    CGRect target = CGRectMake(leftSide ? 0.0 : CGRectGetWidth(container.bounds) - BDSButtonCollapsedWidth,
+                               centerY - BDSButtonFullSize / 2.0,
+                               BDSButtonCollapsedWidth, BDSButtonFullSize);
+    [UIView animateWithDuration:0.22 animations:^{
+        button.frame = target;
+        button.backgroundColor = [UIColor colorWithRed:0.05 green:0.48 blue:0.95 alpha:0.35];
+        button.layer.cornerRadius = BDSButtonCollapsedWidth / 2.0;
+        button.layer.borderWidth = 0.0;
+        [button setTitle:(leftSide ? @"›" : @"‹") forState:UIControlStateNormal];
+        button.titleLabel.font = [UIFont boldSystemFontOfSize:16.0];
+    }];
 }
 
 - (void)buttonPanned:(UIPanGestureRecognizer *)gesture {
-    UIView *button = gesture.view;
+    UIButton *button = (UIButton *)gesture.view;
     UIView *container = button.superview;
     if (!button || !container) return;
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        [self expandButton:button animated:YES];
+        [gesture setTranslation:CGPointZero inView:container];
+        return;
+    }
     CGPoint translation = [gesture translationInView:container];
     CGPoint center = CGPointMake(button.center.x + translation.x, button.center.y + translation.y);
     CGFloat half = CGRectGetWidth(button.bounds) / 2.0;
@@ -1245,6 +2566,23 @@ static NSString *BDSConfigSummary(void) {
     center.y = MIN(MAX(center.y, half + 44.0), CGRectGetHeight(container.bounds) - half - 20.0);
     button.center = center;
     [gesture setTranslation:CGPointZero inView:container];
+    if (gesture.state == UIGestureRecognizerStateEnded ||
+        gesture.state == UIGestureRecognizerStateCancelled ||
+        gesture.state == UIGestureRecognizerStateFailed) {
+        BOOL leftSide = button.center.x < CGRectGetWidth(container.bounds) / 2.0;
+        CGFloat targetX = leftSide ? 4.0 : CGRectGetWidth(container.bounds) - BDSButtonFullSize - 4.0;
+        CGRect target = CGRectMake(targetX, button.center.y - BDSButtonFullSize / 2.0,
+                                   BDSButtonFullSize, BDSButtonFullSize);
+        button.autoresizingMask = (leftSide ? UIViewAutoresizingFlexibleRightMargin : UIViewAutoresizingFlexibleLeftMargin) |
+                                  UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
+        NSInteger yPermille = (NSInteger)(((button.center.y / CGRectGetHeight(container.bounds)) * 1000.0) + 0.5);
+        saveConfigValues(@{@"floatingButtonSide": leftSide ? @"left" : @"right",
+                           @"floatingButtonYPermille": @(yPermille)});
+        [UIView animateWithDuration:0.20 animations:^{ button.frame = target; } completion:^(BOOL finished) {
+            (void)finished;
+            [self scheduleButtonCollapse:button];
+        }];
+    }
 }
 
 - (void)presentMessage:(NSString *)message title:(NSString *)title {
@@ -1271,54 +2609,33 @@ static NSString *BDSConfigSummary(void) {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"百度设备隐私"
                                                                    message:BDSConfigSummary()
                                                             preferredStyle:UIAlertControllerStyleAlert];
-    NSString *toggleTitle = cfgBool(@"enabled", NO) ? @"关闭基础功能" : @"开启基础功能";
-    [alert addAction:[UIAlertAction actionWithTitle:toggleTitle style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [alert addAction:[UIAlertAction actionWithTitle:@"一键随机整套基础参数" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
-        [self showRestartNotice:saveConfigValues(@{@"enabled": @(!cfgBool(@"enabled", NO))})];
+        [self randomizeBasicProfile];
     }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"修改系统版本" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [alert addAction:[UIAlertAction actionWithTitle:@"一键随机整套高级参数" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self editSystemVersion];
-        });
+        [self randomizeAdvancedProfile];
     }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"修改设备名称" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        (void)action;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self editDeviceName];
-        });
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"修改 IDFV / IDFA" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        (void)action;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self editIdentifiers];
-        });
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"可选功能开关" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [alert addAction:[UIAlertAction actionWithTitle:@"基础功能设置  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self showOptionalSwitches];
         });
     }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"编辑可选参数" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        (void)action;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self showOptionalEditors];
-        });
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"高级功能开关" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [alert addAction:[UIAlertAction actionWithTitle:@"高级功能设置  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self showAdvancedSwitches];
         });
     }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"编辑高级参数" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [alert addAction:[UIAlertAction actionWithTitle:@"反关联增强  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self showAdvancedEditors];
+            [self showAntiAssociation];
         });
     }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"公开 API 自检" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [alert addAction:[UIAlertAction actionWithTitle:@"诊断与自检  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         [self showSelfTest];
     }]];
@@ -1335,7 +2652,21 @@ static NSString *BDSConfigSummary(void) {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @NO,
             @"spoofUserAgent": @NO,
-            @"bypassJailbreakDetect": @NO
+            @"bypassJailbreakDetect": @NO,
+            @"spoofWiFi": @NO,
+            @"spoofLocalIP": @NO,
+            @"spoofAppGroup": @NO,
+            @"spoofPasteboard": @NO,
+            @"spoofBootTime": @NO,
+            @"spoofCPU": @NO,
+            @"spoofLocation": @NO,
+            @"spoofProxyDetection": @NO,
+            @"spoofStatfs": @NO,
+            @"spoofDlopen": @NO,
+            @"spoofUbiquity": @NO,
+            @"spoofPrivacyPermissions": @NO,
+            @"spoofWebKitCookie": @NO,
+            @"spoofBattery": @NO
         };
         [self showRestartNotice:saveConfigValues(safe)];
     }]];
@@ -1351,12 +2682,12 @@ static NSString *BDSConfigSummary(void) {
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
         field.placeholder = @"例如 15.7.1";
-        field.text = cfgStr(@"systemVersion", @"15.7.1");
+        field.text = cfgStr(@"systemVersion", @"15.4.1");
         field.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
     }];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"例如 19H307";
-        field.text = cfgStr(@"systemBuild", @"19H307");
+        field.placeholder = @"例如 19H117";
+        field.text = cfgStr(@"systemBuild", @"19E258");
         field.autocapitalizationType = UITextAutocapitalizationTypeAllCharacters;
     }];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
@@ -1366,7 +2697,7 @@ static NSString *BDSConfigSummary(void) {
         NSString *build = [alert.textFields[1].text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].uppercaseString;
         NSRange match = [version rangeOfString:@"^[0-9]+\\.[0-9]+(\\.[0-9]+)?$" options:NSRegularExpressionSearch];
         if (match.location == NSNotFound || !build.length || build.length > 16) {
-            [self presentMessage:@"请输入有效版本号和 Build，例如 15.7.1 / 19H307。" title:@"格式错误"];
+            [self presentMessage:@"请输入有效版本号和 Build，例如 15.7.1 / 19H117。" title:@"格式错误"];
             return;
         }
         [self showRestartNotice:saveConfigValues(@{@"systemVersion": version, @"systemBuild": build})];
@@ -1427,18 +2758,80 @@ static NSString *BDSConfigSummary(void) {
     [presenter presentViewController:alert animated:YES completion:nil];
 }
 
+- (void)randomizeBasicProfile {
+    NSDictionary *values = BDSRandomBasicProfileValues();
+    BOOL saved = saveConfigValues(values);
+    if (!saved) {
+        [self presentMessage:@"配置文件写入失败，基础参数没有更换。" title:@"保存失败"];
+        return;
+    }
+    NSString *message = [NSString stringWithFormat:
+        @"已随机并保存基础参数；高级参数没有改动。\n"
+         "请彻底关闭 App 后重新打开。\n\n"
+         "随机范围：%@\n机型：%@\n系统：%@ (%@)\n"
+         "内存：%@ MB\n磁盘：%@ GB\n设备名称：%@",
+        BDSDeviceRangeName(), values[@"deviceProfileName"], values[@"systemVersion"], values[@"systemBuild"],
+        values[@"memorySize"], values[@"diskSize"], values[@"deviceName"]];
+    [self presentMessage:message title:@"基础参数已更换"];
+}
+
+- (void)randomizeAdvancedProfile {
+    NSDictionary *values = BDSRandomIdentityValues();
+    BOOL saved = saveConfigValues(values);
+    if (!saved) {
+        [self presentMessage:@"配置文件写入失败，高级参数没有更换。" title:@"保存失败"];
+        return;
+    }
+    BOOL idfaHit = bds_diag_load64(&g_diagAdvertising.hits) > 0;
+    BOOL idfvHit = bds_diag_load64(&g_diagIDFV.hits) > 0;
+    BOOL baiduHit = bds_diag_load64(&g_diagBaiduSDK.hits) > 0;
+    NSInteger attStatus = bds_realTrackingAuthorizationStatus();
+    NSString *attText = attStatus == 3 ? @"已授权" :
+                        attStatus == 2 ? @"已拒绝" :
+                        attStatus == 1 ? @"受限制" :
+                        attStatus == 0 ? @"未决定" : @"不可用";
+    NSString *message = [NSString stringWithFormat:
+        @"已随机并保存高级参数；基础参数没有改动。\n"
+         "请彻底关闭 App 后重新打开，再通过诊断确认新值被读取。\n\n"
+         "ATT：%@\n"
+         "IDFA：已保存；运行时%@（未授权时固定返回全零）\n"
+         "IDFV：已保存；运行时%@\n"
+         "CUID/UTDID/DeviceID：已保存；百度SDK运行时%@\n\n"
+         "本进程命中只表示接口被调用过，不代表本次新值已上传。",
+        attText, idfaHit ? @"已命中" : @"未命中",
+        idfvHit ? @"已命中" : @"未命中",
+        baiduHit ? @"已命中" : @"未命中"];
+    [self presentMessage:message title:@"高级参数已更换"];
+}
+
 - (void)showOptionalSwitches {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"可选功能"
-                                                                   message:@"这些功能默认关闭，修改后重启生效。"
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"基础功能设置"
+                                                                   message:@"屏幕始终保持本机真实尺寸，不在这里显示。修改后重启生效。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:
+        [NSString stringWithFormat:@"机型随机范围：%@", BDSDeviceRangeName()]
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        (void)action;
+        NSString *nextMode = BDSUsesExtendedDeviceRange() ? @"compatible" : @"extended";
+        BOOL saved = saveConfigValues(@{@"deviceRandomMode": nextMode});
+        NSString *name = [nextMode isEqualToString:@"extended"] ? @"扩展模式（8款）" : @"兼容模式（3款）";
+        NSString *detail = [nextMode isEqualToString:@"extended"]
+            ? @"扩展模式包含 X、XS、11 Pro 和 mini 系列；屏幕仍保持 SE2 真实尺寸，机型与屏幕可能不完全一致。"
+            : @"兼容模式只使用 iPhone 8、SE2、SE3，屏幕参数与本机一致。";
+        [self presentMessage:(saved
+            ? [NSString stringWithFormat:@"已切换为%@，下次点击基础随机时使用。无需重启。\n\n%@", name, detail]
+            : @"随机范围保存失败。")
+                        title:(saved ? @"设置成功" : @"保存失败")];
+    }]];
     NSArray<NSDictionary *> *items = @[
+        @{@"key": @"enabled", @"name": @"基础功能总开关"},
         @{@"key": @"spoofAdvertisingIdentifiers", @"name": @"广告标识符"},
         @{@"key": @"spoofProcessHardware", @"name": @"主机名与内存"},
         @{@"key": @"spoofLocale", @"name": @"语言地区"},
         @{@"key": @"spoofCarrier", @"name": @"运营商"},
-        @{@"key": @"spoofScreen", @"name": @"屏幕尺寸"},
         @{@"key": @"spoofStorage", @"name": @"磁盘容量"}
     ];
     for (NSDictionary *item in items) {
@@ -1449,7 +2842,11 @@ static NSString *BDSConfigSummary(void) {
             [self showRestartNotice:saveConfigValues(@{key: @(!cfgBool(key, NO))})];
         }]];
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self openPanel]; });
+    }]];
     if (sheet.popoverPresentationController) {
         sheet.popoverPresentationController.sourceView = presenter.view;
         sheet.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(presenter.view.bounds), CGRectGetMidY(presenter.view.bounds), 1, 1);
@@ -1460,7 +2857,7 @@ static NSString *BDSConfigSummary(void) {
 - (void)showOptionalEditors {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"编辑可选参数"
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"编辑基础参数"
                                                                    message:@"这里只修改本机公开 API 的测试值；对应开关开启并重启后生效。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSDictionary *> *items = @[
@@ -1491,14 +2888,14 @@ static NSString *BDSConfigSummary(void) {
 - (void)showAdvancedSwitches {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"高级功能"
-                                                                   message:@"默认全部开启；随机身份保存后立即用于后续读取。"
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"高级功能设置"
+                                                                   message:@"Keychain 和 User-Agent 默认关闭；其余保持原设置。修改后重启生效。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSDictionary *> *items = @[
         @{@"key": @"spoofBaiduSDK", @"name": @"百度 SDK 标识（CUID/UTDID/DeviceID）"},
         @{@"key": @"spoofSysctl", @"name": @"sysctlbyname（hw.machine 等）"},
-        @{@"key": @"spoofKeychain", @"name": @"Keychain 拦截"},
-        @{@"key": @"spoofUserAgent", @"name": @"User-Agent 替换"},
+        @{@"key": @"spoofKeychain", @"name": @"Keychain 拦截（默认关）"},
+        @{@"key": @"spoofUserAgent", @"name": @"User-Agent 自定义（空值透传）"},
         @{@"key": @"bypassJailbreakDetect", @"name": @"越狱检测绕过（含镜像名/C函数/NSBundle）"}
     ];
     for (NSDictionary *item in items) {
@@ -1509,27 +2906,20 @@ static NSString *BDSConfigSummary(void) {
             [self showRestartNotice:saveConfigValues(@{key: @(!cfgBool(key, NO))})];
         }]];
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"一键随机更换身份参数"
+    [sheet addAction:[UIAlertAction actionWithTitle:@"编辑高级参数  ›"
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
         (void)action;
-        NSDictionary *values = BDSRandomIdentityValues();
-        BOOL saved = saveConfigValues(values);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            if (!saved) {
-                [self presentMessage:@"配置文件写入失败，身份参数未更换。" title:@"保存失败"];
-                return;
-            }
-            NSString *message = [NSString stringWithFormat:
-                @"已生成并持久保存。后续 API 读取立即使用新值；App 启动时已缓存的值不会被追溯修改。\n\n"
-                 @"设备名称：%@\nIDFA：%@\nIDFV：%@\nCUID：%@\nUTDID：%@\nDeviceID：%@",
-                values[@"deviceName"], values[@"idfa"], values[@"idfv"],
-                values[@"cuid"], values[@"utdid"], values[@"deviceID"]];
-            [self presentMessage:message title:@"身份参数已更换"];
+            [self showAdvancedEditors];
         });
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self openPanel]; });
+    }]];
     if (sheet.popoverPresentationController) {
         sheet.popoverPresentationController.sourceView = presenter.view;
         sheet.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(presenter.view.bounds), CGRectGetMidY(presenter.view.bounds), 1, 1);
@@ -1613,9 +3003,9 @@ static NSString *BDSConfigSummary(void) {
                                                                    message:@"这些值必须与设备型号匹配，否则容易被识别。"
                                                             preferredStyle:UIAlertControllerStyleAlert];
     NSArray<NSDictionary *> *fields = @[
-        @{@"key": @"hwMachine", @"default": @"iPhone10,1", @"placeholder": @"hw.machine，例如 iPhone10,1"},
-        @{@"key": @"hwModel", @"default": @"D20AP", @"placeholder": @"hw.model，例如 D20AP"},
-        @{@"key": @"kernOSVersion", @"default": @"19H307", @"placeholder": @"kern.osversion，例如 19H307"}
+        @{@"key": @"hwMachine", @"default": @"iPhone14,6", @"placeholder": @"hw.machine，例如 iPhone14,6"},
+        @{@"key": @"hwModel", @"default": @"D49AP", @"placeholder": @"hw.model，例如 D49AP"},
+        @{@"key": @"kernOSVersion", @"default": @"19E258", @"placeholder": @"kern.osversion，例如 19E258"}
     ];
     for (NSDictionary *info in fields) {
         [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
@@ -1643,11 +3033,11 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"自定义 User-Agent"
-                                                                   message:@"留空则根据系统版本自动生成。"
+                                                                   message:@"留空时完整透传百度原始 User-Agent；只有明确填写时才替换。"
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
         field.text = cfgStr(@"userAgent", @"");
-        field.placeholder = @"留空自动生成";
+        field.placeholder = @"留空透传原始值";
         field.autocapitalizationType = UITextAutocapitalizationTypeNone;
     }];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
@@ -1655,6 +3045,81 @@ static NSString *BDSConfigSummary(void) {
         (void)action;
         NSString *ua = [alert.textFields[0].text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         [self showRestartNotice:saveConfigValues(@{@"userAgent": ua ?: @""})];
+    }]];
+    [presenter presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)showAntiAssociation {
+    UIViewController *presenter = BDSTopController();
+    if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"反关联增强"
+                                                                   message:@"以下功能默认开启；已保留兼容处理。App Group 等项目仍可能影响 App 功能，可单独关闭。修改后重启生效。"
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray<NSDictionary *> *items = @[
+        @{@"key": @"spoofWiFi", @"name": @"WiFi SSID/BSSID 隐藏"},
+        @{@"key": @"spoofLocalIP", @"name": @"本地 IP 隐藏（实验）"},
+        @{@"key": @"spoofAppGroup", @"name": @"App Group 隔离（可能影响登录）"},
+        @{@"key": @"spoofPasteboard", @"name": @"剪贴板保护"},
+        @{@"key": @"spoofBootTime", @"name": @"系统启动时间随机化"},
+        @{@"key": @"spoofCPU", @"name": @"CPU 参数伪装"},
+        @{@"key": @"spoofLocation", @"name": @"定位保护"},
+        @{@"key": @"spoofProxyDetection", @"name": @"代理设置隐藏（可能影响网络）"},
+        @{@"key": @"spoofStatfs", @"name": @"磁盘剩余空间伪装（C层）"},
+        @{@"key": @"spoofDlopen", @"name": @"dlopen 反检测"},
+        @{@"key": @"spoofUbiquity", @"name": @"iCloud 容器隔离"},
+        @{@"key": @"spoofPrivacyPermissions", @"name": @"通讯录/日历/照片权限拒绝"},
+        @{@"key": @"spoofWebKitCookie", @"name": @"WebKit Cookie 过滤"},
+        @{@"key": @"spoofBattery", @"name": @"电池电量伪装"}
+    ];
+    for (NSDictionary *item in items) {
+        NSString *key = item[@"key"];
+        NSString *title = [NSString stringWithFormat:@"%@：%@", item[@"name"], BDSOnOff(cfgBool(key, YES))];
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            (void)action;
+            [self showRestartNotice:saveConfigValues(@{key: @(!cfgBool(key, YES))})];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"编辑伪造 WiFi SSID"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self editWiFiSSID]; });
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self openPanel]; });
+    }]];
+    if (sheet.popoverPresentationController) {
+        sheet.popoverPresentationController.sourceView = presenter.view;
+        sheet.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(presenter.view.bounds), CGRectGetMidY(presenter.view.bounds), 1, 1);
+    }
+    [presenter presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)editWiFiSSID {
+    UIViewController *presenter = BDSTopController();
+    if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"伪造 WiFi SSID"
+                                                                   message:@"留空时返回 NULL（相当于获取不到 WiFi 信息）；填写后返回伪造的 SSID 和全零 BSSID。"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.text = cfgStr(@"wifiSSID", @"");
+        field.placeholder = @"留空 = 隐藏 WiFi 信息";
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        NSString *ssid = [alert.textFields[0].text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSUInteger byteLength = [ssid lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
+        if (byteLength > 32) {
+            [self presentMessage:@"WiFi SSID 最多 32 个 UTF-8 字节；中文和 emoji 通常会占多个字节。"
+                            title:@"SSID 过长"];
+            return;
+        }
+        [self showRestartNotice:saveConfigValues(@{@"wifiSSID": ssid ?: @""})];
     }]];
     [presenter presentViewController:alert animated:YES completion:nil];
 }
@@ -1671,7 +3136,7 @@ static NSString *BDSConfigSummary(void) {
         field.autocapitalizationType = UITextAutocapitalizationTypeNone;
     }];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.text = [NSString stringWithFormat:@"%ld", (long)cfgInt(@"memorySize", 2048)];
+        field.text = [NSString stringWithFormat:@"%ld", (long)cfgInt(@"memorySize", 4096)];
         field.placeholder = @"内存 MB（512 到 16384）";
         field.keyboardType = UIKeyboardTypeNumberPad;
     }];
@@ -1774,13 +3239,136 @@ static NSString *BDSConfigSummary(void) {
         }
         [self showRestartNotice:saveConfigValues(@{
             @"screenWidth": @(width), @"screenHeight": @(height),
+            @"nativeScreenWidth": @(width * scale),
+            @"nativeScreenHeight": @(height * scale),
             @"screenScale": @(scale), @"diskSize": @(disk)
         })];
     }]];
     [presenter presentViewController:alert animated:YES completion:nil];
 }
 
+- (void)copyDiagnosticText:(NSString *)text {
+    UIPasteboard.generalPasteboard.string = text ?: @"";
+    [self presentMessage:@"结果已经写入系统剪贴板。" title:@"复制成功"];
+}
+
+- (void)shareDiagnosticText:(NSString *)text {
+    NSString *fileName = [NSString stringWithFormat:@"BDSpoofer_diagnostics_%lld.txt",
+        (long long)NSDate.date.timeIntervalSince1970];
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:fileName];
+    NSError *error = nil;
+    BOOL saved = [text writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:&error];
+    if (!saved) {
+        [self presentMessage:(error.localizedDescription ?: @"TXT 文件生成失败。") title:@"导出失败"];
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.30 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIViewController *presenter = BDSTopController();
+        if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
+        UIActivityViewController *share = [[UIActivityViewController alloc]
+            initWithActivityItems:@[[NSURL fileURLWithPath:path]] applicationActivities:nil];
+        if (share.popoverPresentationController) {
+            share.popoverPresentationController.sourceView = presenter.view;
+            share.popoverPresentationController.sourceRect = CGRectMake(
+                CGRectGetMidX(presenter.view.bounds), CGRectGetMidY(presenter.view.bounds), 1, 1);
+        }
+        [presenter presentViewController:share animated:YES completion:nil];
+    });
+}
+
 - (void)showSelfTest {
+    UIViewController *presenter = BDSTopController();
+    if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"诊断与自检"
+                                                                   message:@"API 返回值与 Hook 命中统计已分开显示。"
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"公开 API 返回值  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self showPublicAPITest]; });
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Hook 命中统计  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self showHookDiagnostics]; });
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"开始新诊断（清零统计）" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        bds_diag_reset_all();
+        [self presentMessage:@"统计已清零。现在正常操作百度极速版；出现问题后再打开“Hook 命中统计”。"
+                        title:@"诊断已开始"];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self openPanel]; });
+    }]];
+    if (sheet.popoverPresentationController) {
+        sheet.popoverPresentationController.sourceView = presenter.view;
+        sheet.popoverPresentationController.sourceRect = CGRectMake(
+            CGRectGetMidX(presenter.view.bounds), CGRectGetMidY(presenter.view.bounds), 1, 1);
+    }
+    [presenter presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)showHookDiagnostics {
+    NSMutableString *message = [NSMutableString stringWithString:
+        @"范围：百度极速版当前进程；不代表这些值已经上传到服务器。\n"
+         "读取表示 App 调用了对应 API；返回状态表示插件交给 App 的结果类型。\n"
+         "统计从 App 启动或上次清零开始。"];
+    BDSAppendDiagLine(message, @"UIDevice", &g_diagUIDevice);
+    BDSAppendDiagLine(message, @"IDFV", &g_diagIDFV);
+    BDSAppendDiagLine(message, @"IDFA", &g_diagAdvertising);
+    BDSAppendDiagLine(message, @"NSProcessInfo", &g_diagProcess);
+    BDSAppendDiagLine(message, @"语言 / 运营商", &g_diagLocaleCarrier);
+    BDSAppendDiagLine(message, @"屏幕 / 磁盘", &g_diagScreenStorage);
+    BDSAppendDiagLine(message, @"百度 SDK 标识", &g_diagBaiduSDK);
+    BDSAppendDiagLine(message, @"sysctlbyname", &g_diagSysctl);
+    BDSAppendDiagLine(message, @"Keychain", &g_diagKeychain);
+    BDSAppendDiagLine(message, @"User-Agent", &g_diagUserAgent);
+    BDSAppendDiagLine(message, @"dyld 镜像名", &g_diagDyld);
+    BDSAppendDiagLine(message, @"C 文件查询", &g_diagCFiles);
+    BDSAppendDiagLine(message, @"ObjC 文件 / URL", &g_diagObjCJailbreak);
+    BDSAppendDiagLine(message, @"NSBundle 遍历", &g_diagBundles);
+    [message appendString:@"\n\n--- 反关联增强统计 ---"];
+    BDSAppendDiagLine(message, @"WiFi SSID/BSSID", &g_diagWiFi);
+    BDSAppendDiagLine(message, @"本地 IP", &g_diagLocalIP);
+    BDSAppendDiagLine(message, @"App Group", &g_diagAppGroup);
+    BDSAppendDiagLine(message, @"剪贴板", &g_diagPasteboard);
+    BDSAppendDiagLine(message, @"启动时间", &g_diagBootTime);
+    BDSAppendDiagLine(message, @"CPU 参数", &g_diagCPU);
+    BDSAppendDiagLine(message, @"定位", &g_diagLocation);
+    BDSAppendDiagLine(message, @"代理设置", &g_diagProxy);
+    BDSAppendDiagLine(message, @"磁盘剩余空间", &g_diagStatfs);
+    BDSAppendDiagLine(message, @"dlopen 反检测", &g_diagDlopen);
+    BDSAppendDiagLine(message, @"iCloud 容器", &g_diagUbiquity);
+    BDSAppendDiagLine(message, @"隐私权限", &g_diagPrivacy);
+    BDSAppendDiagLine(message, @"WebKit Cookie", &g_diagWebKitCookie);
+    BDSAppendDiagLine(message, @"电池电量", &g_diagBattery);
+
+    UIViewController *presenter = BDSTopController();
+    if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Hook 命中统计"
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"复制结果" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        [self copyDiagnosticText:message];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"分享 TXT" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        [self shareDiagnosticText:message];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self showSelfTest]; });
+    }]];
+    [presenter presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)showPublicAPITest {
     UIDevice *device = UIDevice.currentDevice;
     NSProcessInfo *process = NSProcessInfo.processInfo;
     UIScreen *screen = UIScreen.mainScreen;
@@ -1800,6 +3388,17 @@ static NSString *BDSConfigSummary(void) {
     NSUUID *realUUID = orig_identifierForVendor
         ? ((UUIDGetterIMP)orig_identifierForVendor)(device, @selector(identifierForVendor)) : device.identifierForVendor;
     NSString *realIDFV = realUUID.UUIDString ?: @"nil";
+    ASIdentifierManager *adManager = ASIdentifierManager.sharedManager;
+    NSString *currentIDFA = adManager.advertisingIdentifier.UUIDString ?: @"nil";
+    NSUUID *realAdUUID = orig_advertisingIdentifier
+        ? ((UUIDGetterIMP)orig_advertisingIdentifier)(adManager, @selector(advertisingIdentifier))
+        : adManager.advertisingIdentifier;
+    NSString *realIDFA = realAdUUID.UUIDString ?: @"nil";
+    NSInteger attStatus = bds_realTrackingAuthorizationStatus();
+    NSString *attText = attStatus == 3 ? @"已授权" :
+                        attStatus == 2 ? @"已拒绝" :
+                        attStatus == 1 ? @"受限制" :
+                        attStatus == 0 ? @"未决定" : @"不可用";
     NSString *currentProcess = process.operatingSystemVersionString ?: @"nil";
     NSString *realProcess = orig_operatingSystemVersionString
         ? ((StringGetterIMP)orig_operatingSystemVersionString)(process, @selector(operatingSystemVersionString)) : currentProcess;
@@ -1816,15 +3415,17 @@ static NSString *BDSConfigSummary(void) {
          @"iOS\n原始 %@\n配置 %@ (%@)\n当前 %@\n\n"
          @"设备名称\n原始 %@\n配置 %@\n当前 %@\n\n"
          @"IDFV\n原始 %@\n配置 %@\n当前 %@\n\n"
+         @"IDFA / ATT\n原始 %@\n配置 %@\n当前 %@\nATT %@\n\n"
          @"NSProcessInfo\n原始 %@\n当前 %@\n\n"
          @"内存(MB)\n原始 %llu\n配置 %ld\n当前 %llu\n\n"
          @"屏幕(points / scale)\n原始 %.0fx%.0f / %.2f\n配置 %ldx%ld / %ld\n当前 %.0fx%.0f / %.2f",
         cfgBool(@"enabled", NO) ? @"基础功能已开启" : @"基础功能已关闭",
-        realVersion, cfgStr(@"systemVersion", @"15.7.1"), cfgStr(@"systemBuild", @"19H307"), currentVersion,
+        realVersion, cfgStr(@"systemVersion", @"15.4.1"), cfgStr(@"systemBuild", @"19E258"), currentVersion,
         realName, cfgStr(@"deviceName", @"iPhone"), currentName,
         realIDFV, cfgStr(@"idfv", @"A1B2C3D4-E5F6-7890-ABCD-EF1234567890"), currentIDFV,
+        realIDFA, cfgStr(@"idfa", @"FEDCBA98-7654-3210-FEDC-BA9876543210"), currentIDFA, attText,
         realProcess, currentProcess,
-        realMemory, (long)cfgInt(@"memorySize", 2048), currentMemory,
+        realMemory, (long)cfgInt(@"memorySize", 4096), currentMemory,
         CGRectGetWidth(realBounds), CGRectGetHeight(realBounds), realScale,
         (long)cfgInt(@"screenWidth", 375), (long)cfgInt(@"screenHeight", 667), (long)cfgInt(@"screenScale", 2),
         CGRectGetWidth(currentBounds), CGRectGetHeight(currentBounds), currentScale];
@@ -1889,20 +3490,71 @@ static NSString *BDSConfigSummary(void) {
         [advanced appendFormat:@"\n  NSBundle过滤：%lu 个 framework", (unsigned long)frameworks.count];
     }
 
+    [advanced appendFormat:@"\n--- 反关联增强 ---"];
+    [advanced appendFormat:@"\nWiFi 隐藏：%@", cfgBool(@"spoofWiFi", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n本地 IP：%@", cfgBool(@"spoofLocalIP", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\nApp Group：%@", cfgBool(@"spoofAppGroup", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n剪贴板：%@", cfgBool(@"spoofPasteboard", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n启动时间：%@", cfgBool(@"spoofBootTime", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\nCPU 参数：%@", cfgBool(@"spoofCPU", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n定位保护：%@", cfgBool(@"spoofLocation", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n代理设置隐藏：%@", cfgBool(@"spoofProxyDetection", YES) ? @"开" : @"关"];
+    if (cfgBool(@"spoofBootTime", YES)) {
+        struct timeval bt;
+        size_t btLen = sizeof(bt);
+        if (sysctlbyname("kern.boottime", &bt, &btLen, NULL, 0) == 0) {
+            NSDate *bootDate = [NSDate dateWithTimeIntervalSince1970:bt.tv_sec];
+            NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+            fmt.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+            [advanced appendFormat:@"\n  伪造启动时间：%@", [fmt stringFromDate:bootDate]];
+        }
+    }
+    if (cfgBool(@"spoofCPU", YES)) {
+        int ncpu = 0; size_t ncpuLen = sizeof(ncpu);
+        int physcpu = 0; size_t physLen = sizeof(physcpu);
+        sysctlbyname("hw.ncpu", &ncpu, &ncpuLen, NULL, 0);
+        sysctlbyname("hw.physicalcpu", &physcpu, &physLen, NULL, 0);
+        [advanced appendFormat:@"\n  CPU：%d 核 / %d 物理核", ncpu, physcpu];
+    }
+    [advanced appendFormat:@"\n磁盘剩余空间：%@", cfgBool(@"spoofStatfs", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\ndlopen 反检测：%@", cfgBool(@"spoofDlopen", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\niCloud 容器：%@", cfgBool(@"spoofUbiquity", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n隐私权限拒绝：%@", cfgBool(@"spoofPrivacyPermissions", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\nWebKit Cookie：%@", cfgBool(@"spoofWebKitCookie", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n电池电量：%@", cfgBool(@"spoofBattery", YES) ? @"开" : @"关"];
+    if (cfgBool(@"spoofBattery", YES)) {
+        // 用 dispatch_once 保证读取在初始化写入之后
+        dispatch_once(&g_batteryOnce, ^{
+            g_fakeBatteryLevel = 0.30f + (float)(arc4random_uniform(56)) / 100.0f;
+        });
+        float level = g_fakeBatteryLevel;
+        if (level >= 0) {
+            [advanced appendFormat:@"\n  当前返回：%.0f%%", level * 100];
+        }
+    }
+
     message = [message stringByAppendingString:advanced];
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         UIViewController *presenter = BDSTopController();
         if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"公开 API 对照自检"
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"公开 API 返回值"
                                                                        message:message
                                                                 preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"复制结果" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
             (void)action;
-            UIPasteboard.generalPasteboard.string = message;
+            [self copyDiagnosticText:message];
         }]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleCancel handler:nil]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"分享 TXT" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            (void)action;
+            [self shareDiagnosticText:message];
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+            (void)action;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ [self showSelfTest]; });
+        }]];
         [presenter presentViewController:alert animated:YES completion:nil];
     });
 }
@@ -1953,6 +3605,31 @@ static void bds_initialize() {
         BDS_ATOMIC_SET(g_enabledC, 1);
         BDS_ATOMIC_SET(g_spoofSysctlC, cfgBool(@"spoofSysctl", NO) ? 1 : 0);
         BDS_ATOMIC_SET(g_bypassJailbreakC, cfgBool(@"bypassJailbreakDetect", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofWiFiC, cfgBool(@"spoofWiFi", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofLocalIPC, cfgBool(@"spoofLocalIP", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofProxyC, cfgBool(@"spoofProxyDetection", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofBootTimeC, cfgBool(@"spoofBootTime", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofCPUC, cfgBool(@"spoofCPU", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofStatfsC, cfgBool(@"spoofStatfs", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofDlopenC, cfgBool(@"spoofDlopen", YES) ? 1 : 0);
+
+        // 使用持久化偏移量和真实 boot time 生成稳定值：同一次系统启动期间，
+        // App 重启不会重新跳到另一个随机日期；设备真实重启后会随之更新。
+        if (BDS_ATOMIC_GET(g_spoofBootTimeC) && g_fakeBootTime.tv_sec == 0) {
+            NSInteger offsetSeconds = cfgInt(@"bootTimeOffsetSeconds", 0);
+            if (offsetSeconds < 86400 || offsetSeconds >= 8 * 86400) {
+                offsetSeconds = 86400 + (NSInteger)arc4random_uniform(7 * 86400);
+                saveConfigValues(@{@"bootTimeOffsetSeconds": @(offsetSeconds)});
+            }
+            struct timeval realBootTime = {0, 0};
+            size_t realBootTimeLength = sizeof(realBootTime);
+            if (!orig_sysctlbyname ||
+                orig_sysctlbyname("kern.boottime", &realBootTime, &realBootTimeLength, NULL, 0) != 0) {
+                gettimeofday(&realBootTime, NULL);
+            }
+            g_fakeBootTime = realBootTime;
+            g_fakeBootTime.tv_sec -= offsetSeconds;
+        }
 
         // UIDevice
         Class cls = objc_getClass("UIDevice");
@@ -1963,15 +3640,14 @@ static void bds_initialize() {
         hookInst(cls, @selector(systemName), (IMP)new_systemName, &orig_systemName);
         hookInst(cls, @selector(identifierForVendor), (IMP)new_identifierForVendor, &orig_identifierForVendor);
 
+        if (cfgBool(@"spoofBattery", YES)) {
+            hookInst(cls, @selector(batteryLevel), (IMP)new_batteryLevel, &orig_batteryLevel);
+            hookInst(cls, @selector(batteryState), (IMP)new_batteryState, &orig_batteryState);
+        }
+
         if (cfgBool(@"spoofAdvertisingIdentifiers", YES)) {
             cls = objc_getClass("ASIdentifierManager");
             hookInst(cls, @selector(advertisingIdentifier), (IMP)new_advertisingIdentifier, &orig_advertisingIdentifier);
-            hookInst(cls, @selector(isAdvertisingTrackingEnabled), (IMP)new_isAdvertisingTrackingEnabled, &orig_isAdvertisingTrackingEnabled);
-
-            cls = objc_getClass("ATTrackingManager");
-            if (cls) {
-                hookClass(cls, @selector(trackingAuthorizationStatus), (IMP)new_trackingAuthorizationStatus, &orig_trackingAuthorizationStatus);
-            }
         }
 
         // NSProcessInfo
@@ -2047,6 +3723,114 @@ static void bds_initialize() {
             Method m = class_getClassMethod(cls, @selector(loadedBundles));
             if (m) {
                 hookClass(cls, @selector(loadedBundles), (IMP)new_loadedBundles, &orig_loadedBundles);
+            }
+        }
+
+        // P3: App Group 共享容器隔离
+        if (cfgBool(@"spoofAppGroup", YES)) {
+            cls = objc_getClass("NSFileManager");
+            hookInst(cls, @selector(containerURLForSecurityApplicationGroupIdentifier:),
+                     (IMP)new_containerURL, &orig_containerURL);
+        }
+
+        // P4: 剪贴板保护
+        if (cfgBool(@"spoofPasteboard", YES)) {
+            cls = objc_getClass("UIPasteboard");
+            hookInst(cls, @selector(string), (IMP)new_pb_string, &orig_pb_string);
+            hookInst(cls, @selector(strings), (IMP)new_pb_strings, &orig_pb_strings);
+            hookInst(cls, @selector(URL), (IMP)new_pb_URL, &orig_pb_URL);
+            hookInst(cls, @selector(items), (IMP)new_pb_items, &orig_pb_items);
+        }
+
+        // P7: 定位保护
+        if (cfgBool(@"spoofLocation", YES)) {
+            cls = objc_getClass("CLLocationManager");
+            if (cls) {
+                hookClass(cls, @selector(locationServicesEnabled),
+                          (IMP)new_clm_locationServicesEnabled_class,
+                          &orig_clm_locationServicesEnabled_class);
+                Method authMethod = class_getClassMethod(cls, @selector(authorizationStatus));
+                if (authMethod) {
+                    hookClass(cls, @selector(authorizationStatus),
+                              (IMP)new_clm_authorizationStatus_class,
+                              &orig_clm_authorizationStatus_class);
+                }
+                hookInst(cls, @selector(authorizationStatus),
+                         (IMP)new_clm_authorizationStatus_instance,
+                         &orig_clm_authorizationStatus_instance);
+                hookInst(cls, @selector(location), (IMP)new_clm_location, &orig_clm_location);
+            }
+        }
+
+        // Q3: iCloud 容器隔离
+        if (cfgBool(@"spoofUbiquity", YES)) {
+            cls = objc_getClass("NSFileManager");
+            hookInst(cls, @selector(URLForUbiquityContainerIdentifier:),
+                     (IMP)new_ubiquityContainerURL, &orig_ubiquityContainerURL);
+        }
+
+        // Q4: 通讯录/日历/照片权限返回拒绝
+        if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+            cls = objc_getClass("CNContactStore");
+            if (cls) {
+                hookClass(cls, @selector(authorizationStatusForEntityType:),
+                          (IMP)new_cn_authorizationStatus, &orig_cn_authorizationStatus);
+                hookInst(cls, @selector(requestAccessForEntityType:completionHandler:),
+                         (IMP)new_cn_requestAccess, &orig_cn_requestAccess);
+            }
+            cls = objc_getClass("EKEventStore");
+            if (cls) {
+                hookClass(cls, @selector(authorizationStatusForEntityType:),
+                          (IMP)new_ek_authorizationStatus, &orig_ek_authorizationStatus);
+                hookInst(cls, @selector(requestAccessForEntityType:completionHandler:),
+                         (IMP)new_ek_requestAccess, &orig_ek_requestAccess);
+            }
+            cls = objc_getClass("PHPhotoLibrary");
+            if (cls) {
+                Method phAuth = class_getClassMethod(cls, @selector(authorizationStatus));
+                if (phAuth) {
+                    hookClass(cls, @selector(authorizationStatus),
+                              (IMP)new_ph_authorizationStatus, &orig_ph_authorizationStatus);
+                }
+                Method phAuthLevel = class_getClassMethod(cls, @selector(authorizationStatusForAccessLevel:));
+                if (phAuthLevel) {
+                    hookClass(cls, @selector(authorizationStatusForAccessLevel:),
+                              (IMP)new_ph_authorizationStatusForAccessLevel,
+                              &orig_ph_authorizationStatusForAccessLevel);
+                }
+                Method phRequest = class_getClassMethod(cls, @selector(requestAuthorizationForAccessLevel:handler:));
+                if (phRequest) {
+                    hookClass(cls, @selector(requestAuthorizationForAccessLevel:handler:),
+                              (IMP)new_ph_requestAuthorization, &orig_ph_requestAuthorization);
+                }
+                // 旧版 API：+[PHPhotoLibrary requestAuthorization:]
+                Method phRequestOld = class_getClassMethod(cls, @selector(requestAuthorization:));
+                if (phRequestOld) {
+                    hookClass(cls, @selector(requestAuthorization:),
+                              (IMP)new_ph_requestAuthorizationOld, &orig_ph_requestAuthorizationOld);
+                }
+            }
+        }
+
+        // Q5: WebKit Cookie 过滤
+        if (cfgBool(@"spoofWebKitCookie", YES)) {
+            cls = objc_getClass("WKHTTPCookieStore");
+            if (cls) {
+                hookInst(cls, @selector(getAllCookies:),
+                         (IMP)new_wk_getAllCookies, &orig_wk_getAllCookies);
+            }
+            cls = objc_getClass("NSHTTPCookie");
+            if (cls) {
+                Method m1 = class_getClassMethod(cls, @selector(requestHeaderFieldsWithCookies:));
+                if (m1) {
+                    hookClass(cls, @selector(requestHeaderFieldsWithCookies:),
+                              (IMP)new_cookieRequestHeaders, &orig_cookieRequestHeaders);
+                }
+                Method m2 = class_getClassMethod(cls, @selector(cookiesWithResponseHeaderFields:forURL:));
+                if (m2) {
+                    hookClass(cls, @selector(cookiesWithResponseHeaderFields:forURL:),
+                              (IMP)new_cookieSetCookies, &orig_cookieSetCookies);
+                }
             }
         }
     }
