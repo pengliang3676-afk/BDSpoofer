@@ -4,6 +4,8 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  1.7.8：
+//    R. 发布版本号升级；功能与 1.7.4 保持一致。
 //  1.7.4：
 //    Q. 反关联增强第二批：
 //       - statfs/statvfs 磁盘剩余空间伪装（C 层兜底）
@@ -134,7 +136,7 @@ static NSDictionary *BDSDefaultConfig(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @174,
+            @"configVersion": @178,
             @"enabled": @YES,
             @"spoofAdvertisingIdentifiers": @YES,
             @"spoofProcessHardware": @YES,
@@ -311,9 +313,9 @@ static void loadConfig() {
         if (!loaded[@"bootTimeOffsetSeconds"]) merged[@"bootTimeOffsetSeconds"] = @0;
         [merged writeToFile:p1 atomically:YES];
     }
-    if (ver < 174) {
-        // 1.7.4 反关联增强第二批：新开关默认开启
-        merged[@"configVersion"] = @174;
+    if (ver < 178) {
+        // 1.7.8 版本基线：包含 1.7.4 反关联增强第二批的默认开关
+        merged[@"configVersion"] = @178;
         NSArray<NSString *> *newSwitches = @[
             @"spoofStatfs", @"spoofDlopen", @"spoofUbiquity",
             @"spoofPrivacyPermissions", @"spoofWebKitCookie", @"spoofBattery"
