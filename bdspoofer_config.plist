@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>configVersion</key>
-	<integer>173</integer>
+	<integer>174</integer>
 	<key>enabled</key>
 	<true/>
 	<key>spoofScreen</key>
@@ -43,6 +43,18 @@
 	<key>spoofLocation</key>
 	<true/>
 	<key>spoofProxyDetection</key>
+	<true/>
+	<key>spoofStatfs</key>
+	<true/>
+	<key>spoofDlopen</key>
+	<true/>
+	<key>spoofUbiquity</key>
+	<true/>
+	<key>spoofPrivacyPermissions</key>
+	<true/>
+	<key>spoofWebKitCookie</key>
+	<true/>
+	<key>spoofBattery</key>
 	<true/>
 	<key>wifiSSID</key>
 	<string></string>

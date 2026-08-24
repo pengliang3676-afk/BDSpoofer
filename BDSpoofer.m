@@ -4,6 +4,13 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  1.7.4：
+//    Q. 反关联增强第二批：
+//       - statfs/statvfs 磁盘剩余空间伪装（C 层兜底）
+//       - dlopen/dlopen_preflight 反检测（越狱库路径返回 NULL）
+//       - iCloud 容器隔离（URLForUbiquityContainerIdentifier 返回 nil）
+//       - 通讯录/日历/照片权限返回拒绝（相机权限不 hook）
+//       - WebKit Cookie 过滤（过滤百度域名设备标识 Cookie，保留登录态）
 //  1.7.3：
 //    P. 反关联增强（独立二级页面）：
 //       - WiFi SSID/BSSID 隐藏（CNCopyCurrentNetworkInfo fishhook）
@@ -69,6 +76,12 @@
 #import <ifaddrs.h>
 #import <net/if_dl.h>
 #import <arpa/inet.h>
+#import <sys/mount.h>
+#import <sys/statvfs.h>
+#import <dlfcn.h>
+#import <Contacts/Contacts.h>
+#import <EventKit/EventKit.h>
+#import <Photos/Photos.h>
 
 #pragma mark - 原子操作
 
@@ -88,6 +101,8 @@ static int g_spoofLocalIPC = 0;
 static int g_spoofProxyC = 0;
 static int g_spoofBootTimeC = 0;
 static int g_spoofCPUC = 0;
+static int g_spoofStatfsC = 0;
+static int g_spoofDlopenC = 0;
 
 // C hook 使用的缓存伪造值（constructor 和 saveConfigValues 中更新）
 static char g_hwMachine[32] = "iPhone10,1";
@@ -104,12 +119,22 @@ static int g_fakeNcpu = 6;
 static int g_fakePhysicalCPU = 6;
 static int g_fakeActiveCPU = 6;
 
+// 磁盘大小（字节），C hook 使用，constructor 和 saveConfigValues 中更新
+static long long g_fakeDiskSizeBytes = 64LL * 1024 * 1024 * 1024;
+
+static inline long long bds_disk_size_get(void) {
+    return __atomic_load_n(&g_fakeDiskSizeBytes, __ATOMIC_RELAXED);
+}
+static inline void bds_disk_size_set(long long v) {
+    __atomic_store_n(&g_fakeDiskSizeBytes, v, __ATOMIC_RELAXED);
+}
+
 static NSDictionary *BDSDefaultConfig(void) {
     static NSDictionary *defaults;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @173,
+            @"configVersion": @174,
             @"enabled": @YES,
             @"spoofAdvertisingIdentifiers": @YES,
             @"spoofProcessHardware": @YES,
@@ -130,6 +155,12 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"spoofCPU": @YES,
             @"spoofLocation": @YES,
             @"spoofProxyDetection": @YES,
+            @"spoofStatfs": @YES,
+            @"spoofDlopen": @YES,
+            @"spoofUbiquity": @YES,
+            @"spoofPrivacyPermissions": @YES,
+            @"spoofWebKitCookie": @YES,
+            @"spoofBattery": @YES,
             @"wifiSSID": @"",
             @"bootTimeOffsetSeconds": @0,
             @"deviceRandomMode": @"compatible",
@@ -176,6 +207,7 @@ static void bds_update_c_cache(void) {
     } else {
         memcpy(g_wifiSSID, wifiUTF8, wifiLength + 1);
     }
+    bds_disk_size_set((long long)cfgInt(@"diskSize", 64) * 1024LL * 1024LL * 1024LL);
 }
 
 static void loadConfig() {
@@ -279,6 +311,18 @@ static void loadConfig() {
         if (!loaded[@"bootTimeOffsetSeconds"]) merged[@"bootTimeOffsetSeconds"] = @0;
         [merged writeToFile:p1 atomically:YES];
     }
+    if (ver < 174) {
+        // 1.7.4 反关联增强第二批：新开关默认开启
+        merged[@"configVersion"] = @174;
+        NSArray<NSString *> *newSwitches = @[
+            @"spoofStatfs", @"spoofDlopen", @"spoofUbiquity",
+            @"spoofPrivacyPermissions", @"spoofWebKitCookie", @"spoofBattery"
+        ];
+        for (NSString *key in newSwitches) {
+            if (!loaded[key]) merged[key] = @YES;
+        }
+        [merged writeToFile:p1 atomically:YES];
+    }
     g_config = [merged copy];
     bds_update_c_cache();
 }
@@ -294,11 +338,13 @@ static BOOL saveConfigValues(NSDictionary *values) {
         BDS_ATOMIC_SET(g_enabledC, cfgBool(@"enabled", NO) ? 1 : 0);
         BDS_ATOMIC_SET(g_spoofSysctlC, cfgBool(@"spoofSysctl", NO) ? 1 : 0);
         BDS_ATOMIC_SET(g_bypassJailbreakC, cfgBool(@"bypassJailbreakDetect", NO) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofWiFiC, cfgBool(@"spoofWiFi", NO) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofLocalIPC, cfgBool(@"spoofLocalIP", NO) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofProxyC, cfgBool(@"spoofProxyDetection", NO) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofBootTimeC, cfgBool(@"spoofBootTime", NO) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofCPUC, cfgBool(@"spoofCPU", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofWiFiC, cfgBool(@"spoofWiFi", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofLocalIPC, cfgBool(@"spoofLocalIP", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofProxyC, cfgBool(@"spoofProxyDetection", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofBootTimeC, cfgBool(@"spoofBootTime", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofCPUC, cfgBool(@"spoofCPU", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofStatfsC, cfgBool(@"spoofStatfs", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofDlopenC, cfgBool(@"spoofDlopen", YES) ? 1 : 0);
     }
     return saved;
 }
@@ -342,6 +388,12 @@ static BDSDiagCounter g_diagBootTime;
 static BDSDiagCounter g_diagCPU;
 static BDSDiagCounter g_diagLocation;
 static BDSDiagCounter g_diagProxy;
+static BDSDiagCounter g_diagStatfs;
+static BDSDiagCounter g_diagDlopen;
+static BDSDiagCounter g_diagUbiquity;
+static BDSDiagCounter g_diagPrivacy;
+static BDSDiagCounter g_diagWebKitCookie;
+static BDSDiagCounter g_diagBattery;
 
 #define BDS_DIAG_RECORD(counter, state) do { \
     __atomic_fetch_add(&(counter).hits, 1, __ATOMIC_RELAXED); \
@@ -378,7 +430,10 @@ static void bds_diag_reset_all(void) {
         &g_diagSysctl, &g_diagKeychain, &g_diagUserAgent, &g_diagDyld,
         &g_diagCFiles, &g_diagObjCJailbreak, &g_diagBundles,
         &g_diagWiFi, &g_diagLocalIP, &g_diagAppGroup, &g_diagPasteboard,
-        &g_diagBootTime, &g_diagCPU, &g_diagLocation, &g_diagProxy
+        &g_diagBootTime, &g_diagCPU, &g_diagLocation, &g_diagProxy,
+        &g_diagStatfs, &g_diagDlopen, &g_diagUbiquity, &g_diagPrivacy,
+        &g_diagWebKitCookie,
+        &g_diagBattery
     };
     for (size_t i = 0; i < sizeof(counters) / sizeof(counters[0]); i++) {
         bds_diag_reset_counter(counters[i]);
@@ -679,6 +734,35 @@ static IMP orig_systemName = NULL;
 static NSString *new_systemName(id self, SEL _cmd) {
     BDS_DIAG_RECORD(g_diagUIDevice, BDSDiagStateChanged);
     return @"iOS";
+}
+
+#pragma mark - 电池电量伪装
+
+static volatile float g_fakeBatteryLevel = -1.0f;
+static dispatch_once_t g_batteryOnce;
+static IMP orig_batteryLevel = NULL;
+static float new_batteryLevel(id self, SEL _cmd) {
+    if (!cfgBool(@"spoofBattery", YES)) {
+        typedef float (*BatteryLevelIMP)(id, SEL);
+        if (orig_batteryLevel) return ((BatteryLevelIMP)orig_batteryLevel)(self, _cmd);
+        return -1.0f;
+    }
+    BDS_DIAG_RECORD(g_diagBattery, BDSDiagStateChanged);
+    dispatch_once(&g_batteryOnce, ^{
+        g_fakeBatteryLevel = 0.30f + (float)(arc4random_uniform(56)) / 100.0f;
+    });
+    return g_fakeBatteryLevel;
+}
+
+static IMP orig_batteryState = NULL;
+static NSInteger new_batteryState(id self, SEL _cmd) {
+    if (!cfgBool(@"spoofBattery", YES)) {
+        typedef NSInteger (*BatteryStateIMP)(id, SEL);
+        if (orig_batteryState) return ((BatteryStateIMP)orig_batteryState)(self, _cmd);
+        return 0;
+    }
+    BDS_DIAG_RECORD(g_diagBattery, BDSDiagStateChanged);
+    return 1; // UIDeviceBatteryStateUnplugged
 }
 
 static IMP orig_identifierForVendor = NULL;
@@ -1453,7 +1537,7 @@ static NSArray *new_loadedBundles(id self, SEL _cmd) {
 
 static IMP orig_containerURL = NULL;
 static NSURL *new_containerURL(id self, SEL _cmd, NSString *groupIdentifier) {
-    if (cfgBool(@"spoofAppGroup", NO) && groupIdentifier &&
+    if (cfgBool(@"spoofAppGroup", YES) && groupIdentifier &&
         [groupIdentifier rangeOfString:@"baidu" options:NSCaseInsensitiveSearch].location != NSNotFound) {
         BDS_DIAG_RECORD(g_diagAppGroup, BDSDiagStateBlocked);
         return nil;
@@ -1467,7 +1551,7 @@ static NSURL *new_containerURL(id self, SEL _cmd, NSString *groupIdentifier) {
 #pragma mark - P4: 剪贴板保护
 
 static BOOL bds_shouldBlockPasteboardRead(id pasteboard) {
-    if (!cfgBool(@"spoofPasteboard", NO)) return NO;
+    if (!cfgBool(@"spoofPasteboard", YES)) return NO;
     UIPasteboard *general = [UIPasteboard generalPasteboard];
     if (pasteboard != general) return NO;
     // 前台读取通常来自用户主动粘贴；只阻止 App 非活动状态下读取通用剪贴板。
@@ -1526,7 +1610,7 @@ static NSArray *new_pb_items(id self, SEL _cmd) {
 
 static IMP orig_clm_locationServicesEnabled_class = NULL;
 static BOOL new_clm_locationServicesEnabled_class(id self, SEL _cmd) {
-    if (cfgBool(@"spoofLocation", NO)) {
+    if (cfgBool(@"spoofLocation", YES)) {
         BDS_DIAG_RECORD(g_diagLocation, BDSDiagStateChanged);
         return NO;
     }
@@ -1538,7 +1622,7 @@ static BOOL new_clm_locationServicesEnabled_class(id self, SEL _cmd) {
 
 static IMP orig_clm_authorizationStatus_class = NULL;
 static NSInteger new_clm_authorizationStatus_class(id self, SEL _cmd) {
-    if (cfgBool(@"spoofLocation", NO)) {
+    if (cfgBool(@"spoofLocation", YES)) {
         BDS_DIAG_RECORD(g_diagLocation, BDSDiagStateChanged);
         return kCLAuthorizationStatusDenied;
     }
@@ -1550,7 +1634,7 @@ static NSInteger new_clm_authorizationStatus_class(id self, SEL _cmd) {
 
 static IMP orig_clm_authorizationStatus_instance = NULL;
 static NSInteger new_clm_authorizationStatus_instance(id self, SEL _cmd) {
-    if (cfgBool(@"spoofLocation", NO)) {
+    if (cfgBool(@"spoofLocation", YES)) {
         BDS_DIAG_RECORD(g_diagLocation, BDSDiagStateChanged);
         return kCLAuthorizationStatusDenied;
     }
@@ -1564,7 +1648,7 @@ static NSInteger new_clm_authorizationStatus_instance(id self, SEL _cmd) {
 
 static IMP orig_clm_location = NULL;
 static CLLocation *new_clm_location(id self, SEL _cmd) {
-    if (cfgBool(@"spoofLocation", NO)) {
+    if (cfgBool(@"spoofLocation", YES)) {
         BDS_DIAG_RECORD(g_diagLocation, BDSDiagStateChanged);
         return nil;
     }
@@ -1572,6 +1656,265 @@ static CLLocation *new_clm_location(id self, SEL _cmd) {
     typedef CLLocation *(*CLMLocIMP)(id, SEL);
     if (orig_clm_location) return ((CLMLocIMP)orig_clm_location)(self, _cmd);
     return nil;
+}
+
+#pragma mark - Q3: iCloud 容器隔离
+
+static IMP orig_ubiquityContainerURL = NULL;
+static NSURL *new_ubiquityContainerURL(id self, SEL _cmd, NSString *containerID) {
+    if (cfgBool(@"spoofUbiquity", YES)) {
+        // 只拦截默认容器（nil）和百度相关 containerID，不影响系统其他 iCloud 功能
+        BOOL shouldBlock = (containerID == nil) ||
+            ([containerID rangeOfString:@"baidu" options:NSCaseInsensitiveSearch].location != NSNotFound);
+        if (shouldBlock) {
+            BDS_DIAG_RECORD(g_diagUbiquity, BDSDiagStateBlocked);
+            return nil;
+        }
+    }
+    BDS_DIAG_RECORD(g_diagUbiquity, BDSDiagStatePassed);
+    typedef NSURL *(*UbiquityIMP)(id, SEL, NSString *);
+    if (orig_ubiquityContainerURL) return ((UbiquityIMP)orig_ubiquityContainerURL)(self, _cmd, containerID);
+    return nil;
+}
+
+#pragma mark - Q4: 通讯录/日历/照片权限返回拒绝
+
+static IMP orig_cn_authorizationStatus = NULL;
+static NSInteger new_cn_authorizationStatus(id self, SEL _cmd, NSInteger entityType) {
+    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateChanged);
+        return 2; // CNAuthorizationStatusDenied
+    }
+    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
+    typedef NSInteger (*CNAuthIMP)(id, SEL, NSInteger);
+    if (orig_cn_authorizationStatus) return ((CNAuthIMP)orig_cn_authorizationStatus)(self, _cmd, entityType);
+    return 2;
+}
+
+static IMP orig_ek_authorizationStatus = NULL;
+static NSInteger new_ek_authorizationStatus(id self, SEL _cmd, NSInteger entityType) {
+    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateChanged);
+        return 2; // EKAuthorizationStatusDenied
+    }
+    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
+    typedef NSInteger (*EKAuthIMP)(id, SEL, NSInteger);
+    if (orig_ek_authorizationStatus) return ((EKAuthIMP)orig_ek_authorizationStatus)(self, _cmd, entityType);
+    return 2;
+}
+
+static IMP orig_ph_authorizationStatus = NULL;
+static NSInteger new_ph_authorizationStatus(id self, SEL _cmd) {
+    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateChanged);
+        return 2; // PHAuthorizationStatusDenied
+    }
+    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
+    typedef NSInteger (*PHAuthIMP)(id, SEL);
+    if (orig_ph_authorizationStatus) return ((PHAuthIMP)orig_ph_authorizationStatus)(self, _cmd);
+    return 2;
+}
+
+static IMP orig_ph_authorizationStatusForAccessLevel = NULL;
+static NSInteger new_ph_authorizationStatusForAccessLevel(id self, SEL _cmd, NSInteger accessLevel) {
+    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateChanged);
+        return 2; // PHAuthorizationStatusDenied
+    }
+    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
+    typedef NSInteger (*PHAuthLevelIMP)(id, SEL, NSInteger);
+    if (orig_ph_authorizationStatusForAccessLevel) return ((PHAuthLevelIMP)orig_ph_authorizationStatusForAccessLevel)(self, _cmd, accessLevel);
+    return 2;
+}
+
+static IMP orig_cn_requestAccess = NULL;
+static void new_cn_requestAccess(id self, SEL _cmd, NSInteger entityType, void (^completionHandler)(BOOL, NSError *)) {
+    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateBlocked);
+        // 异步回调，与系统原始行为一致
+        if (completionHandler) {
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                completionHandler(NO, nil);
+            });
+        }
+        return;
+    }
+    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
+    typedef void (*CNRequestIMP)(id, SEL, NSInteger, void (^)(BOOL, NSError *));
+    if (orig_cn_requestAccess) ((CNRequestIMP)orig_cn_requestAccess)(self, _cmd, entityType, completionHandler);
+}
+
+static IMP orig_ek_requestAccess = NULL;
+static void new_ek_requestAccess(id self, SEL _cmd, NSInteger entityType, void (^completionHandler)(BOOL, NSError *)) {
+    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateBlocked);
+        if (completionHandler) {
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                completionHandler(NO, nil);
+            });
+        }
+        return;
+    }
+    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
+    typedef void (*EKRequestIMP)(id, SEL, NSInteger, void (^)(BOOL, NSError *));
+    if (orig_ek_requestAccess) ((EKRequestIMP)orig_ek_requestAccess)(self, _cmd, entityType, completionHandler);
+}
+
+static IMP orig_ph_requestAuthorization = NULL;
+static void new_ph_requestAuthorization(id self, SEL _cmd, NSInteger accessLevel, void (^handler)(NSInteger)) {
+    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateBlocked);
+        if (handler) {
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                handler(2); // PHAuthorizationStatusDenied
+            });
+        }
+        return;
+    }
+    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
+    typedef void (*PHRequestIMP)(id, SEL, NSInteger, void (^)(NSInteger));
+    if (orig_ph_requestAuthorization) ((PHRequestIMP)orig_ph_requestAuthorization)(self, _cmd, accessLevel, handler);
+}
+
+// 旧版照片授权 API（iOS 8-13）：+[PHPhotoLibrary requestAuthorization:]
+static IMP orig_ph_requestAuthorizationOld = NULL;
+static void new_ph_requestAuthorizationOld(id self, SEL _cmd, void (^handler)(NSInteger)) {
+    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateBlocked);
+        if (handler) {
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                handler(2);
+            });
+        }
+        return;
+    }
+    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
+    typedef void (*PHRequestOldIMP)(id, SEL, void (^)(NSInteger));
+    if (orig_ph_requestAuthorizationOld) ((PHRequestOldIMP)orig_ph_requestAuthorizationOld)(self, _cmd, handler);
+}
+
+#pragma mark - Q5: WebKit Cookie 过滤
+// 覆盖范围说明：
+// getAllCookies: — 拦截 App 主动读取 Cookie
+// requestHeaderFieldsWithCookies: — 拦截 NSURLSession/NSURLRequest 生成 Cookie 头
+// cookiesWithResponseHeaderFields:forURL: — 拦截响应中的 Set-Cookie 写入
+// 注意：WebKit 网络进程内部的 Cookie 管理可能不完全经过上述公开 API，
+// 此 Hook 不能保证 100% 阻断所有网络层 Cookie 传输。
+
+static IMP orig_wk_getAllCookies = NULL;
+static IMP orig_cookieRequestHeaders = NULL;
+static IMP orig_cookieSetCookies = NULL;
+
+static BOOL bds_shouldBlockCookie(NSHTTPCookie *cookie) {
+    if (!cookie) return NO;
+    NSString *domain = cookie.domain.lowercaseString ?: @"";
+    // 精确匹配百度域名后缀，避免 containsString 误拦截
+    BOOL isBaidu = NO;
+    NSArray *baiduSuffixes = @[
+        @".baidu.com", @".bdstatic.com", @".bdimg.com",
+        @".hao123.com", @".nuomi.com", @".baidubcs.com",
+        @".baidupcs.com", @".mbd.baidu.com"
+    ];
+    for (NSString *suffix in baiduSuffixes) {
+        if ([domain hasSuffix:suffix] || [domain isEqualToString:[suffix substringFromIndex:1]]) {
+            isBaidu = YES;
+            break;
+        }
+    }
+    if (!isBaidu) return NO;
+    NSString *name = cookie.name ?: @"";
+    if ([name caseInsensitiveCompare:@"BDUSS"] == NSOrderedSame ||
+        [name caseInsensitiveCompare:@"STOKEN"] == NSOrderedSame) {
+        return NO;
+    }
+    static NSSet<NSString *> *blockedNames = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        blockedNames = [NSSet setWithArray:@[
+            @"BAIDUID", @"BAIDUID_BFESS", @"cuid", @"cuid_galaxy2",
+            @"BAIDU_DEVICE_ID", @"device_id", @"utdid", @"UTDID",
+            @"bd_deviceid", @"BD_DEVICEID", @"__yjs_duid", @"__yjsv5_",
+            @"PSTM", @"BDSVRTM"
+        ]];
+    });
+    for (NSString *blockedName in blockedNames) {
+        if ([name caseInsensitiveCompare:blockedName] == NSOrderedSame ||
+            [name rangeOfString:blockedName options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static void new_wk_getAllCookies(id self, SEL _cmd, void (^completionHandler)(NSArray<NSHTTPCookie *> *)) {
+    typedef void (*WKGetAllCookiesIMP)(id, SEL, void (^)(NSArray<NSHTTPCookie *> *));
+    if (!cfgBool(@"spoofWebKitCookie", YES)) {
+        BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStatePassed);
+        if (orig_wk_getAllCookies) {
+            ((WKGetAllCookiesIMP)orig_wk_getAllCookies)(self, _cmd, completionHandler);
+        } else if (completionHandler) {
+            completionHandler(@[]);
+        }
+        return;
+    }
+    void (^wrappedHandler)(NSArray<NSHTTPCookie *> *) = ^(NSArray<NSHTTPCookie *> *cookies) {
+        NSMutableArray<NSHTTPCookie *> *filtered = [NSMutableArray array];
+        for (NSHTTPCookie *cookie in cookies) {
+            if (!bds_shouldBlockCookie(cookie)) [filtered addObject:cookie];
+        }
+        if (filtered.count != cookies.count) {
+            BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStateChanged);
+        } else {
+            BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStatePassed);
+        }
+        if (completionHandler) completionHandler(filtered);
+    };
+    if (orig_wk_getAllCookies) {
+        ((WKGetAllCookiesIMP)orig_wk_getAllCookies)(self, _cmd, wrappedHandler);
+    } else if (completionHandler) {
+        completionHandler(@[]);
+    }
+}
+
+static NSDictionary *new_cookieRequestHeaders(id self, SEL _cmd, NSArray<NSHTTPCookie *> *cookies) {
+    typedef NSDictionary *(*CookieHeadersIMP)(id, SEL, NSArray *);
+    if (!cfgBool(@"spoofWebKitCookie", YES)) {
+        BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStatePassed);
+        if (orig_cookieRequestHeaders) return ((CookieHeadersIMP)orig_cookieRequestHeaders)(self, _cmd, cookies);
+        return @{};
+    }
+    NSMutableArray<NSHTTPCookie *> *filtered = [NSMutableArray array];
+    for (NSHTTPCookie *cookie in cookies) {
+        if (!bds_shouldBlockCookie(cookie)) [filtered addObject:cookie];
+    }
+    if (filtered.count != cookies.count) {
+        BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStateChanged);
+    } else {
+        BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStatePassed);
+    }
+    if (orig_cookieRequestHeaders) return ((CookieHeadersIMP)orig_cookieRequestHeaders)(self, _cmd, filtered);
+    return @{};
+}
+
+static NSArray<NSHTTPCookie *> *new_cookieSetCookies(id self, SEL _cmd, NSDictionary *headerFields, NSURL *URL) {
+    typedef NSArray *(*CookieSetIMP)(id, SEL, NSDictionary *, NSURL *);
+    NSArray<NSHTTPCookie *> *original = orig_cookieSetCookies
+        ? ((CookieSetIMP)orig_cookieSetCookies)(self, _cmd, headerFields, URL)
+        : @[];
+    if (!cfgBool(@"spoofWebKitCookie", YES)) {
+        BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStatePassed);
+        return original;
+    }
+    NSMutableArray<NSHTTPCookie *> *filtered = [NSMutableArray array];
+    for (NSHTTPCookie *cookie in original) {
+        if (!bds_shouldBlockCookie(cookie)) [filtered addObject:cookie];
+    }
+    if (filtered.count != original.count) {
+        BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStateChanged);
+    } else {
+        BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStatePassed);
+    }
+    return filtered;
 }
 
 #pragma mark - P1: WiFi SSID/BSSID Hook（fishhook）
@@ -1666,6 +2009,97 @@ static CFDictionaryRef bds_my_SCDynamicStoreCopyProxies(SCDynamicStoreRef store)
                               &kCFTypeDictionaryValueCallBacks);
 }
 
+#pragma mark - Q1: statfs/statvfs 磁盘剩余空间 Hook（fishhook）
+
+static int (*orig_statfs)(const char *, struct statfs *);
+static int (*orig_statvfs)(const char *, struct statvfs *);
+
+static int bds_my_statfs(const char *path, struct statfs *buf) {
+    int result = orig_statfs(path, buf);
+    if (result != 0 || !buf) {
+        BDS_DIAG_RECORD(g_diagStatfs, BDSDiagStatePassed);
+        return result;
+    }
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofStatfsC)) {
+        BDS_DIAG_RECORD(g_diagStatfs, BDSDiagStatePassed);
+        return result;
+    }
+    BDS_DIAG_RECORD(g_diagStatfs, BDSDiagStateChanged);
+    long long diskSize = bds_disk_size_get();
+    long long fakeFree = diskSize / 2;
+    if (buf->f_bsize > 0) {
+        buf->f_blocks = (uint64_t)(diskSize / buf->f_bsize);
+        buf->f_bfree = (uint64_t)(fakeFree / buf->f_bsize);
+        buf->f_bavail = (uint64_t)(fakeFree / buf->f_bsize);
+    }
+    return result;
+}
+
+static int bds_my_statvfs(const char *path, struct statvfs *buf) {
+    int result = orig_statvfs(path, buf);
+    if (result != 0 || !buf) {
+        BDS_DIAG_RECORD(g_diagStatfs, BDSDiagStatePassed);
+        return result;
+    }
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofStatfsC)) {
+        BDS_DIAG_RECORD(g_diagStatfs, BDSDiagStatePassed);
+        return result;
+    }
+    BDS_DIAG_RECORD(g_diagStatfs, BDSDiagStateChanged);
+    unsigned long long diskSize = (unsigned long long)bds_disk_size_get();
+    unsigned long long fakeFree = diskSize / 2;
+    unsigned long frsize = buf->f_frsize > 0 ? buf->f_frsize : buf->f_bsize;
+    if (frsize > 0) {
+        buf->f_blocks = (fsblkcnt_t)(diskSize / frsize);
+        buf->f_bfree = (fsblkcnt_t)(fakeFree / frsize);
+        buf->f_bavail = (fsblkcnt_t)(fakeFree / frsize);
+    }
+    return result;
+}
+
+#pragma mark - Q2: dlopen 反检测（fishhook）
+
+static void *(*orig_dlopen)(const char *, int);
+static int (*orig_dlopen_preflight)(const char *);
+
+static BOOL bds_is_suspicious_dlopen_path(const char *path) {
+    if (!path) return NO;
+    static const char *badPaths[] = {
+        "/var/jb", "/Library/MobileSubstrate", "/bootstrap",
+        "/usr/lib/TweakInject", "/.jailbreak", "/.cydia",
+        "/jb/", "/electra", "/chimera", "/odyssey",
+        "/var/containers/Bundle/trollstore", "/TrollFools",
+        NULL
+    };
+    for (int i = 0; badPaths[i]; i++) {
+        if (strstr(path, badPaths[i])) return YES;
+    }
+    return NO;
+}
+
+static void *bds_my_dlopen(const char *path, int mode) {
+    if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_spoofDlopenC) &&
+        bds_is_suspicious_dlopen_path(path)) {
+        BDS_DIAG_RECORD(g_diagDlopen, BDSDiagStateBlocked);
+        // 让系统加载一个不存在的路径，自然设置 dlerror 并返回 NULL
+        return orig_dlopen("/.bds_blocked_nonexistent", mode);
+    }
+    BDS_DIAG_RECORD(g_diagDlopen, BDSDiagStatePassed);
+    return orig_dlopen(path, mode);
+}
+
+static int bds_my_dlopen_preflight(const char *path) {
+    if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_spoofDlopenC) &&
+        bds_is_suspicious_dlopen_path(path)) {
+        BDS_DIAG_RECORD(g_diagDlopen, BDSDiagStateBlocked);
+        if (orig_dlopen_preflight) return orig_dlopen_preflight("/.bds_blocked_nonexistent");
+        return 0;
+    }
+    BDS_DIAG_RECORD(g_diagDlopen, BDSDiagStatePassed);
+    if (orig_dlopen_preflight) return orig_dlopen_preflight(path);
+    return 0;
+}
+
 #pragma mark - C 函数 hook 安装（fishhook）
 
 static void installCHooks(void) {
@@ -1682,6 +2116,10 @@ static void installCHooks(void) {
         {"getifaddrs", (void *)bds_my_getifaddrs, (void **)&orig_getifaddrs},
         {"CFNetworkCopySystemProxySettings", (void *)bds_my_CFNetworkCopySystemProxySettings, (void **)&orig_CFNetworkCopySystemProxySettings},
         {"SCDynamicStoreCopyProxies", (void *)bds_my_SCDynamicStoreCopyProxies, (void **)&orig_SCDynamicStoreCopyProxies},
+        {"statfs", (void *)bds_my_statfs, (void **)&orig_statfs},
+        {"statvfs", (void *)bds_my_statvfs, (void **)&orig_statvfs},
+        {"dlopen", (void *)bds_my_dlopen, (void **)&orig_dlopen},
+        {"dlopen_preflight", (void *)bds_my_dlopen_preflight, (void **)&orig_dlopen_preflight},
     };
     bds_rebind_symbols(rebindings, sizeof(rebindings) / sizeof(rebindings[0]));
 }
@@ -2163,7 +2601,13 @@ static NSString *BDSConfigSummary(void) {
             @"spoofBootTime": @NO,
             @"spoofCPU": @NO,
             @"spoofLocation": @NO,
-            @"spoofProxyDetection": @NO
+            @"spoofProxyDetection": @NO,
+            @"spoofStatfs": @NO,
+            @"spoofDlopen": @NO,
+            @"spoofUbiquity": @NO,
+            @"spoofPrivacyPermissions": @NO,
+            @"spoofWebKitCookie": @NO,
+            @"spoofBattery": @NO
         };
         [self showRestartNotice:saveConfigValues(safe)];
     }]];
@@ -2560,7 +3004,13 @@ static NSString *BDSConfigSummary(void) {
         @{@"key": @"spoofBootTime", @"name": @"系统启动时间随机化"},
         @{@"key": @"spoofCPU", @"name": @"CPU 参数伪装"},
         @{@"key": @"spoofLocation", @"name": @"定位保护"},
-        @{@"key": @"spoofProxyDetection", @"name": @"代理设置隐藏（可能影响网络）"}
+        @{@"key": @"spoofProxyDetection", @"name": @"代理设置隐藏（可能影响网络）"},
+        @{@"key": @"spoofStatfs", @"name": @"磁盘剩余空间伪装（C层）"},
+        @{@"key": @"spoofDlopen", @"name": @"dlopen 反检测"},
+        @{@"key": @"spoofUbiquity", @"name": @"iCloud 容器隔离"},
+        @{@"key": @"spoofPrivacyPermissions", @"name": @"通讯录/日历/照片权限拒绝"},
+        @{@"key": @"spoofWebKitCookie", @"name": @"WebKit Cookie 过滤"},
+        @{@"key": @"spoofBattery", @"name": @"电池电量伪装"}
     ];
     for (NSDictionary *item in items) {
         NSString *key = item[@"key"];
@@ -2822,7 +3272,7 @@ static NSString *BDSConfigSummary(void) {
     BDSAppendDiagLine(message, @"C 文件查询", &g_diagCFiles);
     BDSAppendDiagLine(message, @"ObjC 文件 / URL", &g_diagObjCJailbreak);
     BDSAppendDiagLine(message, @"NSBundle 遍历", &g_diagBundles);
-    [message appendString:@"\n\n--- 8 项读取与返回统计 ---"];
+    [message appendString:@"\n\n--- 反关联增强统计 ---"];
     BDSAppendDiagLine(message, @"WiFi SSID/BSSID", &g_diagWiFi);
     BDSAppendDiagLine(message, @"本地 IP", &g_diagLocalIP);
     BDSAppendDiagLine(message, @"App Group", &g_diagAppGroup);
@@ -2831,6 +3281,12 @@ static NSString *BDSConfigSummary(void) {
     BDSAppendDiagLine(message, @"CPU 参数", &g_diagCPU);
     BDSAppendDiagLine(message, @"定位", &g_diagLocation);
     BDSAppendDiagLine(message, @"代理设置", &g_diagProxy);
+    BDSAppendDiagLine(message, @"磁盘剩余空间", &g_diagStatfs);
+    BDSAppendDiagLine(message, @"dlopen 反检测", &g_diagDlopen);
+    BDSAppendDiagLine(message, @"iCloud 容器", &g_diagUbiquity);
+    BDSAppendDiagLine(message, @"隐私权限", &g_diagPrivacy);
+    BDSAppendDiagLine(message, @"WebKit Cookie", &g_diagWebKitCookie);
+    BDSAppendDiagLine(message, @"电池电量", &g_diagBattery);
 
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
@@ -3001,6 +3457,22 @@ static NSString *BDSConfigSummary(void) {
         sysctlbyname("hw.physicalcpu", &physcpu, &physLen, NULL, 0);
         [advanced appendFormat:@"\n  CPU：%d 核 / %d 物理核", ncpu, physcpu];
     }
+    [advanced appendFormat:@"\n磁盘剩余空间：%@", cfgBool(@"spoofStatfs", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\ndlopen 反检测：%@", cfgBool(@"spoofDlopen", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\niCloud 容器：%@", cfgBool(@"spoofUbiquity", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n隐私权限拒绝：%@", cfgBool(@"spoofPrivacyPermissions", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\nWebKit Cookie：%@", cfgBool(@"spoofWebKitCookie", YES) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n电池电量：%@", cfgBool(@"spoofBattery", YES) ? @"开" : @"关"];
+    if (cfgBool(@"spoofBattery", YES)) {
+        // 用 dispatch_once 保证读取在初始化写入之后
+        dispatch_once(&g_batteryOnce, ^{
+            g_fakeBatteryLevel = 0.30f + (float)(arc4random_uniform(56)) / 100.0f;
+        });
+        float level = g_fakeBatteryLevel;
+        if (level >= 0) {
+            [advanced appendFormat:@"\n  当前返回：%.0f%%", level * 100];
+        }
+    }
 
     message = [message stringByAppendingString:advanced];
 
@@ -3074,11 +3546,13 @@ static void bds_initialize() {
         BDS_ATOMIC_SET(g_enabledC, 1);
         BDS_ATOMIC_SET(g_spoofSysctlC, cfgBool(@"spoofSysctl", NO) ? 1 : 0);
         BDS_ATOMIC_SET(g_bypassJailbreakC, cfgBool(@"bypassJailbreakDetect", NO) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofWiFiC, cfgBool(@"spoofWiFi", NO) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofLocalIPC, cfgBool(@"spoofLocalIP", NO) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofProxyC, cfgBool(@"spoofProxyDetection", NO) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofBootTimeC, cfgBool(@"spoofBootTime", NO) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofCPUC, cfgBool(@"spoofCPU", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofWiFiC, cfgBool(@"spoofWiFi", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofLocalIPC, cfgBool(@"spoofLocalIP", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofProxyC, cfgBool(@"spoofProxyDetection", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofBootTimeC, cfgBool(@"spoofBootTime", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofCPUC, cfgBool(@"spoofCPU", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofStatfsC, cfgBool(@"spoofStatfs", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofDlopenC, cfgBool(@"spoofDlopen", YES) ? 1 : 0);
 
         // 使用持久化偏移量和真实 boot time 生成稳定值：同一次系统启动期间，
         // App 重启不会重新跳到另一个随机日期；设备真实重启后会随之更新。
@@ -3106,6 +3580,11 @@ static void bds_initialize() {
         hookInst(cls, @selector(name), (IMP)new_name, &orig_name);
         hookInst(cls, @selector(systemName), (IMP)new_systemName, &orig_systemName);
         hookInst(cls, @selector(identifierForVendor), (IMP)new_identifierForVendor, &orig_identifierForVendor);
+
+        if (cfgBool(@"spoofBattery", YES)) {
+            hookInst(cls, @selector(batteryLevel), (IMP)new_batteryLevel, &orig_batteryLevel);
+            hookInst(cls, @selector(batteryState), (IMP)new_batteryState, &orig_batteryState);
+        }
 
         if (cfgBool(@"spoofAdvertisingIdentifiers", YES)) {
             cls = objc_getClass("ASIdentifierManager");
@@ -3189,14 +3668,14 @@ static void bds_initialize() {
         }
 
         // P3: App Group 共享容器隔离
-        if (cfgBool(@"spoofAppGroup", NO)) {
+        if (cfgBool(@"spoofAppGroup", YES)) {
             cls = objc_getClass("NSFileManager");
             hookInst(cls, @selector(containerURLForSecurityApplicationGroupIdentifier:),
                      (IMP)new_containerURL, &orig_containerURL);
         }
 
         // P4: 剪贴板保护
-        if (cfgBool(@"spoofPasteboard", NO)) {
+        if (cfgBool(@"spoofPasteboard", YES)) {
             cls = objc_getClass("UIPasteboard");
             hookInst(cls, @selector(string), (IMP)new_pb_string, &orig_pb_string);
             hookInst(cls, @selector(strings), (IMP)new_pb_strings, &orig_pb_strings);
@@ -3205,7 +3684,7 @@ static void bds_initialize() {
         }
 
         // P7: 定位保护
-        if (cfgBool(@"spoofLocation", NO)) {
+        if (cfgBool(@"spoofLocation", YES)) {
             cls = objc_getClass("CLLocationManager");
             if (cls) {
                 hookClass(cls, @selector(locationServicesEnabled),
@@ -3221,6 +3700,78 @@ static void bds_initialize() {
                          (IMP)new_clm_authorizationStatus_instance,
                          &orig_clm_authorizationStatus_instance);
                 hookInst(cls, @selector(location), (IMP)new_clm_location, &orig_clm_location);
+            }
+        }
+
+        // Q3: iCloud 容器隔离
+        if (cfgBool(@"spoofUbiquity", YES)) {
+            cls = objc_getClass("NSFileManager");
+            hookInst(cls, @selector(URLForUbiquityContainerIdentifier:),
+                     (IMP)new_ubiquityContainerURL, &orig_ubiquityContainerURL);
+        }
+
+        // Q4: 通讯录/日历/照片权限返回拒绝
+        if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+            cls = objc_getClass("CNContactStore");
+            if (cls) {
+                hookClass(cls, @selector(authorizationStatusForEntityType:),
+                          (IMP)new_cn_authorizationStatus, &orig_cn_authorizationStatus);
+                hookInst(cls, @selector(requestAccessForEntityType:completionHandler:),
+                         (IMP)new_cn_requestAccess, &orig_cn_requestAccess);
+            }
+            cls = objc_getClass("EKEventStore");
+            if (cls) {
+                hookClass(cls, @selector(authorizationStatusForEntityType:),
+                          (IMP)new_ek_authorizationStatus, &orig_ek_authorizationStatus);
+                hookInst(cls, @selector(requestAccessForEntityType:completionHandler:),
+                         (IMP)new_ek_requestAccess, &orig_ek_requestAccess);
+            }
+            cls = objc_getClass("PHPhotoLibrary");
+            if (cls) {
+                Method phAuth = class_getClassMethod(cls, @selector(authorizationStatus));
+                if (phAuth) {
+                    hookClass(cls, @selector(authorizationStatus),
+                              (IMP)new_ph_authorizationStatus, &orig_ph_authorizationStatus);
+                }
+                Method phAuthLevel = class_getClassMethod(cls, @selector(authorizationStatusForAccessLevel:));
+                if (phAuthLevel) {
+                    hookClass(cls, @selector(authorizationStatusForAccessLevel:),
+                              (IMP)new_ph_authorizationStatusForAccessLevel,
+                              &orig_ph_authorizationStatusForAccessLevel);
+                }
+                Method phRequest = class_getClassMethod(cls, @selector(requestAuthorizationForAccessLevel:handler:));
+                if (phRequest) {
+                    hookClass(cls, @selector(requestAuthorizationForAccessLevel:handler:),
+                              (IMP)new_ph_requestAuthorization, &orig_ph_requestAuthorization);
+                }
+                // 旧版 API：+[PHPhotoLibrary requestAuthorization:]
+                Method phRequestOld = class_getClassMethod(cls, @selector(requestAuthorization:));
+                if (phRequestOld) {
+                    hookClass(cls, @selector(requestAuthorization:),
+                              (IMP)new_ph_requestAuthorizationOld, &orig_ph_requestAuthorizationOld);
+                }
+            }
+        }
+
+        // Q5: WebKit Cookie 过滤
+        if (cfgBool(@"spoofWebKitCookie", YES)) {
+            cls = objc_getClass("WKHTTPCookieStore");
+            if (cls) {
+                hookInst(cls, @selector(getAllCookies:),
+                         (IMP)new_wk_getAllCookies, &orig_wk_getAllCookies);
+            }
+            cls = objc_getClass("NSHTTPCookie");
+            if (cls) {
+                Method m1 = class_getClassMethod(cls, @selector(requestHeaderFieldsWithCookies:));
+                if (m1) {
+                    hookClass(cls, @selector(requestHeaderFieldsWithCookies:),
+                              (IMP)new_cookieRequestHeaders, &orig_cookieRequestHeaders);
+                }
+                Method m2 = class_getClassMethod(cls, @selector(cookiesWithResponseHeaderFields:forURL:));
+                if (m2) {
+                    hookClass(cls, @selector(cookiesWithResponseHeaderFields:forURL:),
+                              (IMP)new_cookieSetCookies, &orig_cookieSetCookies);
+                }
             }
         }
     }

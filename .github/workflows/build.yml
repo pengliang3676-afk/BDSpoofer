@@ -37,8 +37,11 @@ jobs:
             -framework WebKit \
             -framework SystemConfiguration \
             -framework CoreLocation \
-            -install_name @rpath/BDSpoofer_1.7.3.dylib \
-            -o BDSpoofer_1.7.3_arm64.dylib \
+            -framework Contacts \
+            -framework EventKit \
+            -framework Photos \
+            -install_name @rpath/BDSpoofer_1.7.4.dylib \
+            -o BDSpoofer_1.7.4_arm64.dylib \
             BDSpoofer.m
 
       - name: Build arm64e
@@ -59,26 +62,27 @@ jobs:
             -framework WebKit \
             -framework SystemConfiguration \
             -framework CoreLocation \
-            -install_name @rpath/BDSpoofer_1.7.3.dylib \
-            -o BDSpoofer_1.7.3_arm64e.dylib \
+            -framework Contacts \
+            -framework EventKit \
+            -framework Photos \
+            -install_name @rpath/BDSpoofer_1.7.4.dylib \
+            -o BDSpoofer_1.7.4_arm64e.dylib \
             BDSpoofer.m
 
       - name: Create fat binary and verify
         run: |
-          lipo -create BDSpoofer_1.7.3_arm64.dylib BDSpoofer_1.7.3_arm64e.dylib -output BDSpoofer_1.7.3.dylib
+          lipo -create BDSpoofer_1.7.4_arm64.dylib BDSpoofer_1.7.4_arm64e.dylib -output BDSpoofer_1.7.4.dylib
           echo "=== file type ==="
-          file BDSpoofer_1.7.3.dylib
+          file BDSpoofer_1.7.4.dylib
           echo "=== dependencies ==="
-          otool -L BDSpoofer_1.7.3.dylib
+          otool -L BDSpoofer_1.7.4.dylib
           echo "=== platform ==="
-          otool -l BDSpoofer_1.7.3.dylib | grep -A5 LC_BUILD_VERSION
-          echo "=== interpose sections ==="
-          otool -l BDSpoofer_1.7.3.dylib | grep -A2 "__interpose" || true
+          otool -l BDSpoofer_1.7.4.dylib | grep -A5 LC_BUILD_VERSION
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: BDSpoofer-1.7.3
+          name: BDSpoofer-1.7.4
           path: |
-            BDSpoofer_1.7.3.dylib
+            BDSpoofer_1.7.4.dylib
             bdspoofer_config.plist
