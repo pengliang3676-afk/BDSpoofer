@@ -4,6 +4,10 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  1.8.0：
+//    S. 兼容/扩展随机池合并为统一 10 款机型，不再区分随机模式；SE2 不参与随机。
+//    T. 移除照片权限 Hook；相机权限继续不做 Hook，保留通讯录/日历保护。
+//    U. 基础功能 6 个开关继续默认开启，一键基础随机后仍保持开启。
 //  1.7.8：
 //    R. 发布版本号升级；功能与 1.7.4 保持一致。
 //  1.7.4：
@@ -11,7 +15,7 @@
 //       - statfs/statvfs 磁盘剩余空间伪装（C 层兜底）
 //       - dlopen/dlopen_preflight 反检测（越狱库路径返回 NULL）
 //       - iCloud 容器隔离（URLForUbiquityContainerIdentifier 返回 nil）
-//       - 通讯录/日历/照片权限返回拒绝（相机权限不 hook）
+//       - 通讯录/日历/照片权限返回拒绝（1.8.0 已移除照片 Hook）
 //       - WebKit Cookie 过滤（过滤百度域名设备标识 Cookie，保留登录态）
 //  1.7.3：
 //    P. 反关联增强（独立二级页面）：
@@ -83,7 +87,6 @@
 #import <dlfcn.h>
 #import <Contacts/Contacts.h>
 #import <EventKit/EventKit.h>
-#import <Photos/Photos.h>
 
 #pragma mark - 原子操作
 
@@ -136,7 +139,7 @@ static NSDictionary *BDSDefaultConfig(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @178,
+            @"configVersion": @180,
             @"enabled": @YES,
             @"spoofAdvertisingIdentifiers": @YES,
             @"spoofProcessHardware": @YES,
@@ -165,7 +168,6 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"spoofBattery": @YES,
             @"wifiSSID": @"",
             @"bootTimeOffsetSeconds": @0,
-            @"deviceRandomMode": @"compatible",
             @"deviceProfileName": @"iPhone SE (3rd generation)",
             @"systemVersion": @"15.4.1",
             @"systemBuild": @"19E258",
@@ -331,6 +333,12 @@ static void loadConfig() {
         for (NSString *key in newSwitches) {
             if (!loaded[key]) merged[key] = @YES;
         }
+        [merged writeToFile:p1 atomically:YES];
+    }
+    if (ver < 180) {
+        // 1.8.0 合并机型随机池；旧的 compatible/extended 选择不再使用。
+        merged[@"configVersion"] = @180;
+        [merged removeObjectForKey:@"deviceRandomMode"];
         [merged writeToFile:p1 atomically:YES];
     }
     g_config = [merged copy];
@@ -1687,7 +1695,7 @@ static NSURL *new_ubiquityContainerURL(id self, SEL _cmd, NSString *containerID)
     return nil;
 }
 
-#pragma mark - Q4: 通讯录/日历/照片权限返回拒绝
+#pragma mark - Q4: 通讯录/日历权限返回拒绝
 
 static IMP orig_cn_authorizationStatus = NULL;
 static NSInteger new_cn_authorizationStatus(id self, SEL _cmd, NSInteger entityType) {
@@ -1710,30 +1718,6 @@ static NSInteger new_ek_authorizationStatus(id self, SEL _cmd, NSInteger entityT
     BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
     typedef NSInteger (*EKAuthIMP)(id, SEL, NSInteger);
     if (orig_ek_authorizationStatus) return ((EKAuthIMP)orig_ek_authorizationStatus)(self, _cmd, entityType);
-    return 2;
-}
-
-static IMP orig_ph_authorizationStatus = NULL;
-static NSInteger new_ph_authorizationStatus(id self, SEL _cmd) {
-    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
-        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateChanged);
-        return 2; // PHAuthorizationStatusDenied
-    }
-    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
-    typedef NSInteger (*PHAuthIMP)(id, SEL);
-    if (orig_ph_authorizationStatus) return ((PHAuthIMP)orig_ph_authorizationStatus)(self, _cmd);
-    return 2;
-}
-
-static IMP orig_ph_authorizationStatusForAccessLevel = NULL;
-static NSInteger new_ph_authorizationStatusForAccessLevel(id self, SEL _cmd, NSInteger accessLevel) {
-    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
-        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateChanged);
-        return 2; // PHAuthorizationStatusDenied
-    }
-    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
-    typedef NSInteger (*PHAuthLevelIMP)(id, SEL, NSInteger);
-    if (orig_ph_authorizationStatusForAccessLevel) return ((PHAuthLevelIMP)orig_ph_authorizationStatusForAccessLevel)(self, _cmd, accessLevel);
     return 2;
 }
 
@@ -1768,39 +1752,6 @@ static void new_ek_requestAccess(id self, SEL _cmd, NSInteger entityType, void (
     BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
     typedef void (*EKRequestIMP)(id, SEL, NSInteger, void (^)(BOOL, NSError *));
     if (orig_ek_requestAccess) ((EKRequestIMP)orig_ek_requestAccess)(self, _cmd, entityType, completionHandler);
-}
-
-static IMP orig_ph_requestAuthorization = NULL;
-static void new_ph_requestAuthorization(id self, SEL _cmd, NSInteger accessLevel, void (^handler)(NSInteger)) {
-    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
-        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateBlocked);
-        if (handler) {
-            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                handler(2); // PHAuthorizationStatusDenied
-            });
-        }
-        return;
-    }
-    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
-    typedef void (*PHRequestIMP)(id, SEL, NSInteger, void (^)(NSInteger));
-    if (orig_ph_requestAuthorization) ((PHRequestIMP)orig_ph_requestAuthorization)(self, _cmd, accessLevel, handler);
-}
-
-// 旧版照片授权 API（iOS 8-13）：+[PHPhotoLibrary requestAuthorization:]
-static IMP orig_ph_requestAuthorizationOld = NULL;
-static void new_ph_requestAuthorizationOld(id self, SEL _cmd, void (^handler)(NSInteger)) {
-    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
-        BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateBlocked);
-        if (handler) {
-            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                handler(2);
-            });
-        }
-        return;
-    }
-    BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStatePassed);
-    typedef void (*PHRequestOldIMP)(id, SEL, void (^)(NSInteger));
-    if (orig_ph_requestAuthorizationOld) ((PHRequestOldIMP)orig_ph_requestAuthorizationOld)(self, _cmd, handler);
 }
 
 #pragma mark - Q5: WebKit Cookie 过滤
@@ -2310,27 +2261,24 @@ static NSArray<NSDictionary *> *BDSDeviceProfiles(void) {
     return profiles;
 }
 
-static BOOL BDSUsesExtendedDeviceRange(void) {
-    return [cfgStr(@"deviceRandomMode", @"compatible") isEqualToString:@"extended"];
-}
-
 static NSString *BDSDeviceRangeName(void) {
-    return BDSUsesExtendedDeviceRange() ? @"扩展模式（8款）" : @"兼容模式（3款）";
+    return @"统一随机（10款，不含 SE2）";
 }
 
-static NSArray<NSDictionary *> *BDSDeviceProfilesForCurrentMode(void) {
-    NSSet<NSString *> *machines = BDSUsesExtendedDeviceRange()
-        ? [NSSet setWithArray:@[
-            @"iPhone10,1", // iPhone 8
-            @"iPhone10,3", // iPhone X
-            @"iPhone11,2", // iPhone XS
-            @"iPhone12,3", // iPhone 11 Pro
-            @"iPhone13,1", // iPhone 12 mini
-            @"iPhone14,4", // iPhone 13 mini
-            @"iPhone12,8", // iPhone SE2
-            @"iPhone14,6"  // iPhone SE3
-        ]]
-        : [NSSet setWithArray:@[@"iPhone10,1", @"iPhone12,8", @"iPhone14,6"]];
+static NSArray<NSDictionary *> *BDSUnifiedDeviceProfiles(void) {
+    // 1.8.0 统一机型池：SE2 保留在资料表中供旧配置读取，但不参与一键随机。
+    NSSet<NSString *> *machines = [NSSet setWithArray:@[
+        @"iPhone10,1", // iPhone 8
+        @"iPhone10,3", // iPhone X
+        @"iPhone11,8", // iPhone XR
+        @"iPhone11,2", // iPhone XS
+        @"iPhone12,1", // iPhone 11
+        @"iPhone12,3", // iPhone 11 Pro
+        @"iPhone13,1", // iPhone 12 mini
+        @"iPhone13,2", // iPhone 12
+        @"iPhone14,4", // iPhone 13 mini
+        @"iPhone14,6"  // iPhone SE3
+    ]];
     NSMutableArray<NSDictionary *> *filtered = [NSMutableArray array];
     for (NSDictionary *profile in BDSDeviceProfiles()) {
         if ([machines containsObject:profile[@"machine"]]) [filtered addObject:profile];
@@ -2403,7 +2351,7 @@ static NSDictionary *BDSRandomSystemProfileForDevice(NSDictionary *device) {
 }
 
 static NSDictionary *BDSRandomBasicProfileValues(void) {
-    NSArray<NSDictionary *> *allDevices = BDSDeviceProfilesForCurrentMode();
+    NSArray<NSDictionary *> *allDevices = BDSUnifiedDeviceProfiles();
     NSString *currentMachine = cfgStr(@"hwMachine", @"");
     NSMutableArray<NSDictionary *> *candidates = [NSMutableArray array];
     for (NSDictionary *profile in allDevices) {
@@ -2810,22 +2758,6 @@ static NSString *BDSConfigSummary(void) {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"基础功能设置"
                                                                    message:@"屏幕始终保持本机真实尺寸，不在这里显示。修改后重启生效。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:
-        [NSString stringWithFormat:@"机型随机范围：%@", BDSDeviceRangeName()]
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *action) {
-        (void)action;
-        NSString *nextMode = BDSUsesExtendedDeviceRange() ? @"compatible" : @"extended";
-        BOOL saved = saveConfigValues(@{@"deviceRandomMode": nextMode});
-        NSString *name = [nextMode isEqualToString:@"extended"] ? @"扩展模式（8款）" : @"兼容模式（3款）";
-        NSString *detail = [nextMode isEqualToString:@"extended"]
-            ? @"扩展模式包含 X、XS、11 Pro 和 mini 系列；屏幕仍保持 SE2 真实尺寸，机型与屏幕可能不完全一致。"
-            : @"兼容模式只使用 iPhone 8、SE2、SE3，屏幕参数与本机一致。";
-        [self presentMessage:(saved
-            ? [NSString stringWithFormat:@"已切换为%@，下次点击基础随机时使用。无需重启。\n\n%@", name, detail]
-            : @"随机范围保存失败。")
-                        title:(saved ? @"设置成功" : @"保存失败")];
-    }]];
     NSArray<NSDictionary *> *items = @[
         @{@"key": @"enabled", @"name": @"基础功能总开关"},
         @{@"key": @"spoofAdvertisingIdentifiers", @"name": @"广告标识符"},
@@ -3067,7 +2999,7 @@ static NSString *BDSConfigSummary(void) {
         @{@"key": @"spoofStatfs", @"name": @"磁盘剩余空间伪装（C层）"},
         @{@"key": @"spoofDlopen", @"name": @"dlopen 反检测"},
         @{@"key": @"spoofUbiquity", @"name": @"iCloud 容器隔离"},
-        @{@"key": @"spoofPrivacyPermissions", @"name": @"通讯录/日历/照片权限拒绝"},
+        @{@"key": @"spoofPrivacyPermissions", @"name": @"通讯录/日历权限拒绝"},
         @{@"key": @"spoofWebKitCookie", @"name": @"WebKit Cookie 过滤"},
         @{@"key": @"spoofBattery", @"name": @"电池电量伪装"}
     ];
@@ -3769,7 +3701,7 @@ static void bds_initialize() {
                      (IMP)new_ubiquityContainerURL, &orig_ubiquityContainerURL);
         }
 
-        // Q4: 通讯录/日历/照片权限返回拒绝
+        // Q4: 通讯录/日历权限返回拒绝；相机和照片均不 Hook。
         if (cfgBool(@"spoofPrivacyPermissions", YES)) {
             cls = objc_getClass("CNContactStore");
             if (cls) {
@@ -3784,31 +3716,6 @@ static void bds_initialize() {
                           (IMP)new_ek_authorizationStatus, &orig_ek_authorizationStatus);
                 hookInst(cls, @selector(requestAccessForEntityType:completionHandler:),
                          (IMP)new_ek_requestAccess, &orig_ek_requestAccess);
-            }
-            cls = objc_getClass("PHPhotoLibrary");
-            if (cls) {
-                Method phAuth = class_getClassMethod(cls, @selector(authorizationStatus));
-                if (phAuth) {
-                    hookClass(cls, @selector(authorizationStatus),
-                              (IMP)new_ph_authorizationStatus, &orig_ph_authorizationStatus);
-                }
-                Method phAuthLevel = class_getClassMethod(cls, @selector(authorizationStatusForAccessLevel:));
-                if (phAuthLevel) {
-                    hookClass(cls, @selector(authorizationStatusForAccessLevel:),
-                              (IMP)new_ph_authorizationStatusForAccessLevel,
-                              &orig_ph_authorizationStatusForAccessLevel);
-                }
-                Method phRequest = class_getClassMethod(cls, @selector(requestAuthorizationForAccessLevel:handler:));
-                if (phRequest) {
-                    hookClass(cls, @selector(requestAuthorizationForAccessLevel:handler:),
-                              (IMP)new_ph_requestAuthorization, &orig_ph_requestAuthorization);
-                }
-                // 旧版 API：+[PHPhotoLibrary requestAuthorization:]
-                Method phRequestOld = class_getClassMethod(cls, @selector(requestAuthorization:));
-                if (phRequestOld) {
-                    hookClass(cls, @selector(requestAuthorization:),
-                              (IMP)new_ph_requestAuthorizationOld, &orig_ph_requestAuthorizationOld);
-                }
             }
         }
 

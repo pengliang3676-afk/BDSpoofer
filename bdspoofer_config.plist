@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>configVersion</key>
-	<integer>178</integer>
+	<integer>180</integer>
 	<key>enabled</key>
 	<true/>
 	<key>spoofScreen</key>
@@ -104,8 +104,6 @@
 	<string>19E258</string>
 	<key>deviceProfileName</key>
 	<string>iPhone SE (3rd generation)</string>
-	<key>deviceRandomMode</key>
-	<string>compatible</string>
 	<key>screenWidth</key>
 	<integer>375</integer>
 	<key>screenHeight</key>
