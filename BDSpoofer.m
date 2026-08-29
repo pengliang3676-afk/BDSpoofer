@@ -1,10 +1,10 @@
 //
 //  BDSpoofer.m
-//  百度极速版设备信息虚拟化插件
+//  MGspoofer1.0.0 - 芒果 TV 设备信息虚拟化插件
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
-//  1.8.1：
+//  MGspoofer1.0.0（内部配置架构 181）：
 //    V. 基础与高级功能默认关闭；高级身份随机仍保持独立、手动触发。
 //    W. 基础随机会开启基础 6 项和常规高级功能，并按当前 Crane 容器持久保存。
 //    X. Keychain/App Group/WebKit Cookie/User-Agent 集中到兼容风险测试页面手动控制。
@@ -1380,7 +1380,7 @@ static const char *bds_fake_image_names[] = {
 static int bds_c_should_hide_image(const char *name) {
     if (!name) return 0;
     static const char *needles[] = {
-        "BDSpoofer", "TrollFools", "TrollStore", "dopamine", "Dopamine",
+        "MGspoofer", "BDSpoofer", "TrollFools", "TrollStore", "dopamine", "Dopamine",
         "ellekit", "ElleKit", "libhooker", "substrate", "Substrate",
         "CydiaSubstrate", "TweakInject", "/var/jb/", "roothide", "RootHide",
         "Choicy", "A-Bypass", "Shadow", "Liberty", "UnSub",
@@ -1495,7 +1495,7 @@ static BOOL bds_isSuspiciousBundlePath(NSString *path) {
     if (!path) return NO;
     if (bds_isJailbreakPath(path)) return YES;
     NSString *lower = path.lowercaseString;
-    NSArray *needles = @[@"bdspoofer", @"trollfools", @"trollstore", @"dopamine",
+    NSArray *needles = @[@"mgspoofer", @"bdspoofer", @"trollfools", @"trollstore", @"dopamine",
                          @"ellekit", @"libhooker", @"substrate", @"tweakinject",
                          @"roothide", @"/var/jb/"];
     for (NSString *n in needles) {
@@ -2619,14 +2619,14 @@ static NSString *BDSConfigSummary(void) {
 }
 
 - (void)showRestartNotice:(BOOL)saved {
-    [self presentMessage:(saved ? @"配置已写入。请彻底关闭百度极速版后重新打开。" : @"配置写入失败，请检查 App Documents 目录权限。")
+    [self presentMessage:(saved ? @"配置已写入。请彻底关闭芒果 TV 后重新打开。" : @"配置写入失败，请检查 App Documents 目录权限。")
                     title:(saved ? @"保存成功" : @"保存失败")];
 }
 
 - (void)openPanel {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"百度设备隐私"
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"MGspoofer1.0.0"
                                                                    message:BDSConfigSummary()
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"一键随机整套基础参数" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
@@ -2941,7 +2941,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"兼容风险测试"
-                                                                   message:@"这 4 项可能影响登录、共享数据或网络请求。支持逐项切换，也可一键开启/关闭；修改后请彻底重启百度极速版。"
+                                                                   message:@"这 4 项可能影响登录、共享数据或网络请求。支持逐项切换，也可一键开启/关闭；修改后请彻底重启芒果 TV。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSDictionary *> *items = @[
         @{@"key": @"spoofKeychain", @"name": @"Keychain 拦截"},
@@ -3315,7 +3315,7 @@ static NSString *BDSConfigSummary(void) {
 }
 
 - (void)shareDiagnosticText:(NSString *)text {
-    NSString *fileName = [NSString stringWithFormat:@"BDSpoofer_diagnostics_%lld.txt",
+    NSString *fileName = [NSString stringWithFormat:@"MGspoofer1.0.0_diagnostics_%lld.txt",
         (long long)NSDate.date.timeIntervalSince1970];
     NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:fileName];
     NSError *error = nil;
@@ -3358,7 +3358,7 @@ static NSString *BDSConfigSummary(void) {
     [sheet addAction:[UIAlertAction actionWithTitle:@"开始新诊断（清零统计）" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         bds_diag_reset_all();
-        [self presentMessage:@"统计已清零。现在正常操作百度极速版；出现问题后再打开“Hook 命中统计”。"
+        [self presentMessage:@"统计已清零。现在正常操作芒果 TV；出现问题后再打开“Hook 命中统计”。"
                         title:@"诊断已开始"];
     }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
@@ -3376,7 +3376,7 @@ static NSString *BDSConfigSummary(void) {
 
 - (void)showHookDiagnostics {
     NSMutableString *message = [NSMutableString stringWithString:
-        @"范围：百度极速版当前进程；不代表这些值已经上传到服务器。\n"
+        @"范围：芒果 TV 当前进程；不代表这些值已经上传到服务器。\n"
          "读取表示 App 调用了对应 API；返回状态表示插件交给 App 的结果类型。\n"
          "统计从 App 启动或上次清零开始。"];
     BDSAppendDiagLine(message, @"UIDevice", &g_diagUIDevice);
@@ -3655,7 +3655,7 @@ static void bds_initialize() {
         // 配置入口始终安装
         BDSInstallUI();
 
-        // 1.8.1 起，enabled 只代表“基础功能总开关”。
+        // MGspoofer1.0.0 起，enabled 只代表“基础功能总开关”。
         // 高级功能仍按各自开关独立加载，不能因基础功能关闭而提前返回。
         BOOL basicEnabled = cfgBool(@"enabled", NO);
 

@@ -1,8 +1,8 @@
-# BDSpoofer - 百度极速版设备信息虚拟化插件
+# MGspoofer1.0.0 - 芒果 TV 设备信息虚拟化插件
 
-通过 TrollFools 注入到百度极速版，虚拟化设备信息。
+通过 TrollFools 注入到芒果 TV（`com.hunantv.imgotv`），虚拟化设备信息。
 
-## 当前版本：1.8.1 基础按需启用版
+## 当前版本：MGspoofer1.0.0 基础按需启用版
 
 > 基础功能总开关和 5 个基础子开关默认关闭；点击基础随机后才统一开启。
 > 高级功能也默认关闭；点击基础随机后自动开启常规高级功能。
@@ -68,7 +68,7 @@
    README.md
    ```
 2. Actions 自动编译
-3. 在 Artifacts 下载 BDSpoofer.zip，解压得到 BDSpoofer.dylib
+3. 在 Artifacts 下载 MGspoofer1.0.0.zip，解压得到 MGspoofer1.0.0.dylib
 
 ### 本地编译（macOS + Xcode）
 
@@ -81,7 +81,7 @@ xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK_PATH" -miphoneos-version-
   -framework Foundation -framework UIKit -framework CoreGraphics \
   -framework AdSupport -framework CoreTelephony -framework Security -framework WebKit \
   -framework SystemConfiguration -framework CoreLocation -framework Contacts -framework EventKit \
-  -install_name @rpath/BDSpoofer_1.8.1.dylib -o BDSpoofer_1.8.1_arm64.dylib BDSpoofer.m
+  -install_name @rpath/MGspoofer1.0.0.dylib -o MGspoofer1.0.0_arm64.dylib BDSpoofer.m
 
 # arm64e
 xcrun --sdk iphoneos clang -arch arm64e -isysroot "$SDK_PATH" -miphoneos-version-min=15.0 \
@@ -89,17 +89,17 @@ xcrun --sdk iphoneos clang -arch arm64e -isysroot "$SDK_PATH" -miphoneos-version
   -framework Foundation -framework UIKit -framework CoreGraphics \
   -framework AdSupport -framework CoreTelephony -framework Security -framework WebKit \
   -framework SystemConfiguration -framework CoreLocation -framework Contacts -framework EventKit \
-  -install_name @rpath/BDSpoofer_1.8.1.dylib -o BDSpoofer_1.8.1_arm64e.dylib BDSpoofer.m
+  -install_name @rpath/MGspoofer1.0.0.dylib -o MGspoofer1.0.0_arm64e.dylib BDSpoofer.m
 
 # 合并
-lipo -create BDSpoofer_1.8.1_arm64.dylib BDSpoofer_1.8.1_arm64e.dylib -output BDSpoofer_1.8.1.dylib
+lipo -create MGspoofer1.0.0_arm64.dylib MGspoofer1.0.0_arm64e.dylib -output MGspoofer1.0.0.dylib
 ```
 
 ## 安装
 
-1. 将 BDSpoofer.dylib 传到手机
-2. 打开 TrollFools → 选择百度极速版 → 添加 dylib → 注入
-3. 杀掉百度极速版重新打开
+1. 将 MGspoofer1.0.0.dylib 传到手机
+2. 打开 TrollFools → 选择芒果 TV → 添加 dylib → 注入
+3. 杀掉芒果 TV 重新打开
 4. 点击右侧"隐"按钮打开配置；按钮可以拖动
 
 ## 配置建议
@@ -122,14 +122,14 @@ lipo -create BDSpoofer_1.8.1_arm64.dylib BDSpoofer_1.8.1_arm64e.dylib -output BD
 
 ### 配置文件位置
 
-"隐"面板会自动把配置写入百度极速版的 Documents 目录：
+"隐"面板会自动把配置写入芒果 TV 的 Documents 目录：
 `/var/mobile/Containers/Data/Application/<UUID>/Documents/bdspoofer_config.plist`
 
 也可以使用 Filza 手工放入或编辑同名 plist。
 
 ## 验证
 
-1. 注入后先确认百度极速版能够正常启动和登录
+1. 注入后先确认芒果 TV 能够正常启动和登录
 2. 点击"隐"→"公开 API 自检"，确认基础 hook 生效
 3. 在"我的 → 设置 → 关于"里查看系统版本是否变成配置值
 4. 高级功能开启后，确认 App 不崩溃、登录正常
