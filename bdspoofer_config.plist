@@ -3,21 +3,21 @@
 <plist version="1.0">
 <dict>
 	<key>configVersion</key>
-	<integer>178</integer>
+	<integer>181</integer>
 	<key>enabled</key>
-	<true/>
+	<false/>
 	<key>spoofScreen</key>
 	<false/>
 	<key>spoofAdvertisingIdentifiers</key>
-	<true/>
+	<false/>
 	<key>spoofProcessHardware</key>
-	<true/>
+	<false/>
 	<key>spoofLocale</key>
-	<true/>
+	<false/>
 	<key>spoofCarrier</key>
-	<true/>
+	<false/>
 	<key>spoofStorage</key>
-	<true/>
+	<false/>
 	<key>spoofBaiduSDK</key>
 	<true/>
 	<key>spoofSysctl</key>
@@ -67,9 +67,9 @@
 	<key>marketingModel</key>
 	<string>iPhone</string>
 	<key>systemVersion</key>
-	<string>15.7.1</string>
+	<string>15.4.1</string>
 	<key>systemBuild</key>
-	<string>19H117</string>
+	<string>19E258</string>
 	<key>idfa</key>
 	<string>8C4BF2A1-7D3E-4F5A-9B6C-2D8E1F3A5B7C</string>
 	<key>idfv</key>
@@ -93,19 +93,17 @@
 	<key>diskSize</key>
 	<integer>64</integer>
 	<key>memorySize</key>
-	<integer>2048</integer>
+	<integer>4096</integer>
 	<key>kernHostname</key>
 	<string>iPhone</string>
 	<key>hwMachine</key>
-	<string>iPhone10,1</string>
+	<string>iPhone14,6</string>
 	<key>hwModel</key>
-	<string>D20AP</string>
+	<string>D49AP</string>
 	<key>kernOSVersion</key>
-	<string>19H117</string>
+	<string>19E258</string>
 	<key>deviceProfileName</key>
-	<string>iPhone 8</string>
-	<key>deviceRandomMode</key>
-	<string>compatible</string>
+	<string>iPhone SE (3rd generation)</string>
 	<key>screenWidth</key>
 	<integer>375</integer>
 	<key>screenHeight</key>
