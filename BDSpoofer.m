@@ -5,9 +5,9 @@
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
 //  1.8.1：
-//    V. 基础功能默认关闭；高级功能保持 1.8.0 的独立开关和默认状态。
-//    W. 基础随机会自动开启基础总开关及 5 个基础子开关，并按当前 Crane 容器持久保存。
-//    X. 基础总开关不再阻断高级 Hook；高级身份随机仍保持独立、手动触发。
+//    V. 基础与高级功能默认关闭；高级身份随机仍保持独立、手动触发。
+//    W. 基础随机会开启基础 6 项和常规高级功能，并按当前 Crane 容器持久保存。
+//    X. Keychain/App Group/WebKit Cookie/User-Agent 集中到兼容风险测试页面手动控制。
 //  1.8.0：
 //    S. 兼容/扩展随机池合并为统一 10 款机型，不再区分随机模式；SE2 不参与随机。
 //    T. 移除照片权限 Hook；相机权限继续不做 Hook，保留通讯录/日历保护。
@@ -151,25 +151,25 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"spoofCarrier": @NO,
             @"spoofScreen": @NO,
             @"spoofStorage": @NO,
-            @"spoofBaiduSDK": @YES,
-            @"spoofSysctl": @YES,
+            @"spoofBaiduSDK": @NO,
+            @"spoofSysctl": @NO,
             @"spoofKeychain": @NO,
             @"spoofUserAgent": @NO,
-            @"bypassJailbreakDetect": @YES,
-            @"spoofWiFi": @YES,
-            @"spoofLocalIP": @YES,
-            @"spoofAppGroup": @YES,
-            @"spoofPasteboard": @YES,
-            @"spoofBootTime": @YES,
-            @"spoofCPU": @YES,
-            @"spoofLocation": @YES,
-            @"spoofProxyDetection": @YES,
-            @"spoofStatfs": @YES,
-            @"spoofDlopen": @YES,
-            @"spoofUbiquity": @YES,
-            @"spoofPrivacyPermissions": @YES,
-            @"spoofWebKitCookie": @YES,
-            @"spoofBattery": @YES,
+            @"bypassJailbreakDetect": @NO,
+            @"spoofWiFi": @NO,
+            @"spoofLocalIP": @NO,
+            @"spoofAppGroup": @NO,
+            @"spoofPasteboard": @NO,
+            @"spoofBootTime": @NO,
+            @"spoofCPU": @NO,
+            @"spoofLocation": @NO,
+            @"spoofProxyDetection": @NO,
+            @"spoofStatfs": @NO,
+            @"spoofDlopen": @NO,
+            @"spoofUbiquity": @NO,
+            @"spoofPrivacyPermissions": @NO,
+            @"spoofWebKitCookie": @NO,
+            @"spoofBattery": @NO,
             @"wifiSSID": @"",
             @"bootTimeOffsetSeconds": @0,
             @"deviceProfileName": @"iPhone SE (3rd generation)",
@@ -203,6 +203,19 @@ static BOOL cfgBool(NSString *key, BOOL def) {
 static NSInteger cfgInt(NSString *key, NSInteger def) {
     NSNumber *v = g_config[key];
     return v ? [v integerValue] : def;
+}
+
+static BOOL BDSHasEnabledCHookFeature(void) {
+    return cfgBool(@"spoofSysctl", NO) ||
+           cfgBool(@"spoofKeychain", NO) ||
+           cfgBool(@"bypassJailbreakDetect", NO) ||
+           cfgBool(@"spoofWiFi", NO) ||
+           cfgBool(@"spoofLocalIP", NO) ||
+           cfgBool(@"spoofBootTime", NO) ||
+           cfgBool(@"spoofCPU", NO) ||
+           cfgBool(@"spoofProxyDetection", NO) ||
+           cfgBool(@"spoofStatfs", NO) ||
+           cfgBool(@"spoofDlopen", NO);
 }
 
 static void bds_update_c_cache(void) {
@@ -346,8 +359,8 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 181) {
-        // 1.8.1：每个 App/Crane 数据容器首次升级时关闭全部基础功能。
-        // 高级开关和已保存参数保持不变；用户手动点击基础随机后再统一开启基础项。
+        // 1.8.1：每个 App/Crane 数据容器首次升级时关闭基础和高级功能。
+        // 已保存参数保持不变；基础随机只负责开启常规项，风险测试项继续手动控制。
         [merged addEntriesFromDictionary:@{
             @"configVersion": @181,
             @"enabled": @NO,
@@ -356,7 +369,26 @@ static void loadConfig() {
             @"spoofLocale": @NO,
             @"spoofCarrier": @NO,
             @"spoofScreen": @NO,
-            @"spoofStorage": @NO
+            @"spoofStorage": @NO,
+            @"spoofBaiduSDK": @NO,
+            @"spoofSysctl": @NO,
+            @"spoofKeychain": @NO,
+            @"spoofUserAgent": @NO,
+            @"bypassJailbreakDetect": @NO,
+            @"spoofWiFi": @NO,
+            @"spoofLocalIP": @NO,
+            @"spoofAppGroup": @NO,
+            @"spoofPasteboard": @NO,
+            @"spoofBootTime": @NO,
+            @"spoofCPU": @NO,
+            @"spoofLocation": @NO,
+            @"spoofProxyDetection": @NO,
+            @"spoofStatfs": @NO,
+            @"spoofDlopen": @NO,
+            @"spoofUbiquity": @NO,
+            @"spoofPrivacyPermissions": @NO,
+            @"spoofWebKitCookie": @NO,
+            @"spoofBattery": @NO
         }];
         [merged writeToFile:p1 atomically:YES];
     }
@@ -372,17 +404,17 @@ static BOOL saveConfigValues(NSDictionary *values) {
     if (saved) {
         g_config = [next copy];
         bds_update_c_cache();
-        // C 层 Hook 属于高级功能，不能再被基础总开关 enabled 一并关闭。
-        BDS_ATOMIC_SET(g_enabledC, 1);
+        // C 层 Hook 属于高级功能，不能被基础总开关 enabled 一并关闭。
+        BDS_ATOMIC_SET(g_enabledC, BDSHasEnabledCHookFeature() ? 1 : 0);
         BDS_ATOMIC_SET(g_spoofSysctlC, cfgBool(@"spoofSysctl", NO) ? 1 : 0);
         BDS_ATOMIC_SET(g_bypassJailbreakC, cfgBool(@"bypassJailbreakDetect", NO) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofWiFiC, cfgBool(@"spoofWiFi", YES) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofLocalIPC, cfgBool(@"spoofLocalIP", YES) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofProxyC, cfgBool(@"spoofProxyDetection", YES) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofBootTimeC, cfgBool(@"spoofBootTime", YES) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofCPUC, cfgBool(@"spoofCPU", YES) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofStatfsC, cfgBool(@"spoofStatfs", YES) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofDlopenC, cfgBool(@"spoofDlopen", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofWiFiC, cfgBool(@"spoofWiFi", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofLocalIPC, cfgBool(@"spoofLocalIP", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofProxyC, cfgBool(@"spoofProxyDetection", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofBootTimeC, cfgBool(@"spoofBootTime", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofCPUC, cfgBool(@"spoofCPU", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofStatfsC, cfgBool(@"spoofStatfs", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofDlopenC, cfgBool(@"spoofDlopen", NO) ? 1 : 0);
     }
     return saved;
 }
@@ -780,7 +812,7 @@ static volatile float g_fakeBatteryLevel = -1.0f;
 static dispatch_once_t g_batteryOnce;
 static IMP orig_batteryLevel = NULL;
 static float new_batteryLevel(id self, SEL _cmd) {
-    if (!cfgBool(@"spoofBattery", YES)) {
+    if (!cfgBool(@"spoofBattery", NO)) {
         typedef float (*BatteryLevelIMP)(id, SEL);
         if (orig_batteryLevel) return ((BatteryLevelIMP)orig_batteryLevel)(self, _cmd);
         return -1.0f;
@@ -794,7 +826,7 @@ static float new_batteryLevel(id self, SEL _cmd) {
 
 static IMP orig_batteryState = NULL;
 static NSInteger new_batteryState(id self, SEL _cmd) {
-    if (!cfgBool(@"spoofBattery", YES)) {
+    if (!cfgBool(@"spoofBattery", NO)) {
         typedef NSInteger (*BatteryStateIMP)(id, SEL);
         if (orig_batteryState) return ((BatteryStateIMP)orig_batteryState)(self, _cmd);
         return 0;
@@ -1575,7 +1607,7 @@ static NSArray *new_loadedBundles(id self, SEL _cmd) {
 
 static IMP orig_containerURL = NULL;
 static NSURL *new_containerURL(id self, SEL _cmd, NSString *groupIdentifier) {
-    if (cfgBool(@"spoofAppGroup", YES) && groupIdentifier &&
+    if (cfgBool(@"spoofAppGroup", NO) && groupIdentifier &&
         [groupIdentifier rangeOfString:@"baidu" options:NSCaseInsensitiveSearch].location != NSNotFound) {
         BDS_DIAG_RECORD(g_diagAppGroup, BDSDiagStateBlocked);
         return nil;
@@ -1589,7 +1621,7 @@ static NSURL *new_containerURL(id self, SEL _cmd, NSString *groupIdentifier) {
 #pragma mark - P4: 剪贴板保护
 
 static BOOL bds_shouldBlockPasteboardRead(id pasteboard) {
-    if (!cfgBool(@"spoofPasteboard", YES)) return NO;
+    if (!cfgBool(@"spoofPasteboard", NO)) return NO;
     UIPasteboard *general = [UIPasteboard generalPasteboard];
     if (pasteboard != general) return NO;
     // 前台读取通常来自用户主动粘贴；只阻止 App 非活动状态下读取通用剪贴板。
@@ -1648,7 +1680,7 @@ static NSArray *new_pb_items(id self, SEL _cmd) {
 
 static IMP orig_clm_locationServicesEnabled_class = NULL;
 static BOOL new_clm_locationServicesEnabled_class(id self, SEL _cmd) {
-    if (cfgBool(@"spoofLocation", YES)) {
+    if (cfgBool(@"spoofLocation", NO)) {
         BDS_DIAG_RECORD(g_diagLocation, BDSDiagStateChanged);
         return NO;
     }
@@ -1660,7 +1692,7 @@ static BOOL new_clm_locationServicesEnabled_class(id self, SEL _cmd) {
 
 static IMP orig_clm_authorizationStatus_class = NULL;
 static NSInteger new_clm_authorizationStatus_class(id self, SEL _cmd) {
-    if (cfgBool(@"spoofLocation", YES)) {
+    if (cfgBool(@"spoofLocation", NO)) {
         BDS_DIAG_RECORD(g_diagLocation, BDSDiagStateChanged);
         return kCLAuthorizationStatusDenied;
     }
@@ -1672,7 +1704,7 @@ static NSInteger new_clm_authorizationStatus_class(id self, SEL _cmd) {
 
 static IMP orig_clm_authorizationStatus_instance = NULL;
 static NSInteger new_clm_authorizationStatus_instance(id self, SEL _cmd) {
-    if (cfgBool(@"spoofLocation", YES)) {
+    if (cfgBool(@"spoofLocation", NO)) {
         BDS_DIAG_RECORD(g_diagLocation, BDSDiagStateChanged);
         return kCLAuthorizationStatusDenied;
     }
@@ -1686,7 +1718,7 @@ static NSInteger new_clm_authorizationStatus_instance(id self, SEL _cmd) {
 
 static IMP orig_clm_location = NULL;
 static CLLocation *new_clm_location(id self, SEL _cmd) {
-    if (cfgBool(@"spoofLocation", YES)) {
+    if (cfgBool(@"spoofLocation", NO)) {
         BDS_DIAG_RECORD(g_diagLocation, BDSDiagStateChanged);
         return nil;
     }
@@ -1700,7 +1732,7 @@ static CLLocation *new_clm_location(id self, SEL _cmd) {
 
 static IMP orig_ubiquityContainerURL = NULL;
 static NSURL *new_ubiquityContainerURL(id self, SEL _cmd, NSString *containerID) {
-    if (cfgBool(@"spoofUbiquity", YES)) {
+    if (cfgBool(@"spoofUbiquity", NO)) {
         // 只拦截默认容器（nil）和百度相关 containerID，不影响系统其他 iCloud 功能
         BOOL shouldBlock = (containerID == nil) ||
             ([containerID rangeOfString:@"baidu" options:NSCaseInsensitiveSearch].location != NSNotFound);
@@ -1719,7 +1751,7 @@ static NSURL *new_ubiquityContainerURL(id self, SEL _cmd, NSString *containerID)
 
 static IMP orig_cn_authorizationStatus = NULL;
 static NSInteger new_cn_authorizationStatus(id self, SEL _cmd, NSInteger entityType) {
-    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+    if (cfgBool(@"spoofPrivacyPermissions", NO)) {
         BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateChanged);
         return 2; // CNAuthorizationStatusDenied
     }
@@ -1731,7 +1763,7 @@ static NSInteger new_cn_authorizationStatus(id self, SEL _cmd, NSInteger entityT
 
 static IMP orig_ek_authorizationStatus = NULL;
 static NSInteger new_ek_authorizationStatus(id self, SEL _cmd, NSInteger entityType) {
-    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+    if (cfgBool(@"spoofPrivacyPermissions", NO)) {
         BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateChanged);
         return 2; // EKAuthorizationStatusDenied
     }
@@ -1743,7 +1775,7 @@ static NSInteger new_ek_authorizationStatus(id self, SEL _cmd, NSInteger entityT
 
 static IMP orig_cn_requestAccess = NULL;
 static void new_cn_requestAccess(id self, SEL _cmd, NSInteger entityType, void (^completionHandler)(BOOL, NSError *)) {
-    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+    if (cfgBool(@"spoofPrivacyPermissions", NO)) {
         BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateBlocked);
         // 异步回调，与系统原始行为一致
         if (completionHandler) {
@@ -1760,7 +1792,7 @@ static void new_cn_requestAccess(id self, SEL _cmd, NSInteger entityType, void (
 
 static IMP orig_ek_requestAccess = NULL;
 static void new_ek_requestAccess(id self, SEL _cmd, NSInteger entityType, void (^completionHandler)(BOOL, NSError *)) {
-    if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+    if (cfgBool(@"spoofPrivacyPermissions", NO)) {
         BDS_DIAG_RECORD(g_diagPrivacy, BDSDiagStateBlocked);
         if (completionHandler) {
             dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -1829,7 +1861,7 @@ static BOOL bds_shouldBlockCookie(NSHTTPCookie *cookie) {
 
 static void new_wk_getAllCookies(id self, SEL _cmd, void (^completionHandler)(NSArray<NSHTTPCookie *> *)) {
     typedef void (*WKGetAllCookiesIMP)(id, SEL, void (^)(NSArray<NSHTTPCookie *> *));
-    if (!cfgBool(@"spoofWebKitCookie", YES)) {
+    if (!cfgBool(@"spoofWebKitCookie", NO)) {
         BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStatePassed);
         if (orig_wk_getAllCookies) {
             ((WKGetAllCookiesIMP)orig_wk_getAllCookies)(self, _cmd, completionHandler);
@@ -1859,7 +1891,7 @@ static void new_wk_getAllCookies(id self, SEL _cmd, void (^completionHandler)(NS
 
 static NSDictionary *new_cookieRequestHeaders(id self, SEL _cmd, NSArray<NSHTTPCookie *> *cookies) {
     typedef NSDictionary *(*CookieHeadersIMP)(id, SEL, NSArray *);
-    if (!cfgBool(@"spoofWebKitCookie", YES)) {
+    if (!cfgBool(@"spoofWebKitCookie", NO)) {
         BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStatePassed);
         if (orig_cookieRequestHeaders) return ((CookieHeadersIMP)orig_cookieRequestHeaders)(self, _cmd, cookies);
         return @{};
@@ -1882,7 +1914,7 @@ static NSArray<NSHTTPCookie *> *new_cookieSetCookies(id self, SEL _cmd, NSDictio
     NSArray<NSHTTPCookie *> *original = orig_cookieSetCookies
         ? ((CookieSetIMP)orig_cookieSetCookies)(self, _cmd, headerFields, URL)
         : @[];
-    if (!cfgBool(@"spoofWebKitCookie", YES)) {
+    if (!cfgBool(@"spoofWebKitCookie", NO)) {
         BDS_DIAG_RECORD(g_diagWebKitCookie, BDSDiagStatePassed);
         return original;
     }
@@ -2127,6 +2159,7 @@ static const NSTimeInterval BDSButtonCollapseDelay = 5.0;
 - (void)showAdvancedSwitches;
 - (void)showAdvancedEditors;
 - (void)showAntiAssociation;
+- (void)showRiskTestSwitches;
 - (void)editWiFiSSID;
 - (void)editProcessHardware;
 - (void)editLocaleCarrier;
@@ -2394,6 +2427,23 @@ static NSDictionary *BDSRandomBasicProfileValues(void) {
     // 保持本机真实屏幕，避免随机到大屏机型后界面被放大或缩小。
     values[@"spoofScreen"] = @NO;
     values[@"spoofStorage"] = @YES;
+    // 常规高级功能随基础随机一起开启；高级身份值本身不在这里重新生成。
+    values[@"spoofBaiduSDK"] = @YES;
+    values[@"spoofSysctl"] = @YES;
+    values[@"bypassJailbreakDetect"] = @YES;
+    values[@"spoofWiFi"] = @YES;
+    values[@"spoofLocalIP"] = @YES;
+    values[@"spoofPasteboard"] = @YES;
+    values[@"spoofBootTime"] = @YES;
+    values[@"spoofCPU"] = @YES;
+    values[@"spoofLocation"] = @YES;
+    values[@"spoofProxyDetection"] = @YES;
+    values[@"spoofStatfs"] = @YES;
+    values[@"spoofDlopen"] = @YES;
+    values[@"spoofUbiquity"] = @YES;
+    values[@"spoofPrivacyPermissions"] = @YES;
+    values[@"spoofBattery"] = @YES;
+    // 兼容风险测试 4 项不在这里修改：Keychain、User-Agent、App Group、WebKit Cookie。
     values[@"deviceProfileName"] = device[@"name"];
     values[@"deviceModel"] = @"iPhone";
     values[@"marketingModel"] = @"iPhone";
@@ -2734,7 +2784,8 @@ static NSString *BDSConfigSummary(void) {
         return;
     }
     NSString *message = [NSString stringWithFormat:
-        @"已随机、保存并开启基础功能；高级参数和高级开关没有改动。\n"
+        @"已随机并保存基础参数；基础功能和常规高级功能已开启。\n"
+         "高级身份参数没有改动；兼容风险测试 4 项保持原状态。\n"
          "请彻底关闭 App 后重新打开。\n\n"
          "随机范围：%@\n机型：%@\n系统：%@ (%@)\n"
          "内存：%@ MB\n磁盘：%@ GB\n设备名称：%@",
@@ -2841,13 +2892,11 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"高级功能设置"
-                                                                   message:@"Keychain 和 User-Agent 默认关闭；其余保持原设置。修改后重启生效。"
+                                                                   message:@"高级功能初始全部关闭；点击基础随机后自动开启常规项目。兼容风险项目在独立页面手动测试。修改后重启生效。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSDictionary *> *items = @[
-        @{@"key": @"spoofBaiduSDK", @"name": @"百度 SDK 标识（CUID/UTDID/DeviceID）"},
+        @{@"key": @"spoofBaiduSDK", @"name": @"高级身份（IDFV/CUID/UTDID/DeviceID）"},
         @{@"key": @"spoofSysctl", @"name": @"sysctlbyname（hw.machine 等）"},
-        @{@"key": @"spoofKeychain", @"name": @"Keychain 拦截（默认关）"},
-        @{@"key": @"spoofUserAgent", @"name": @"User-Agent 自定义（空值透传）"},
         @{@"key": @"bypassJailbreakDetect", @"name": @"越狱检测绕过（含镜像名/C函数/NSBundle）"}
     ];
     for (NSDictionary *item in items) {
@@ -2858,6 +2907,13 @@ static NSString *BDSConfigSummary(void) {
             [self showRestartNotice:saveConfigValues(@{key: @(!cfgBool(key, NO))})];
         }]];
     }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"兼容风险测试（4项）  ›"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self showRiskTestSwitches]; });
+    }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"编辑高级参数  ›"
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
@@ -2871,6 +2927,60 @@ static NSString *BDSConfigSummary(void) {
         (void)action;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{ [self openPanel]; });
+    }]];
+    if (sheet.popoverPresentationController) {
+        sheet.popoverPresentationController.sourceView = presenter.view;
+        sheet.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(presenter.view.bounds), CGRectGetMidY(presenter.view.bounds), 1, 1);
+    }
+    [presenter presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)showRiskTestSwitches {
+    UIViewController *presenter = BDSTopController();
+    if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"兼容风险测试"
+                                                                   message:@"这 4 项可能影响登录、共享数据或网络请求。支持逐项切换，也可一键开启/关闭；修改后请彻底重启百度极速版。"
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray<NSDictionary *> *items = @[
+        @{@"key": @"spoofKeychain", @"name": @"Keychain 拦截"},
+        @{@"key": @"spoofAppGroup", @"name": @"App Group 隔离"},
+        @{@"key": @"spoofWebKitCookie", @"name": @"WebKit Cookie 过滤"},
+        @{@"key": @"spoofUserAgent", @"name": @"User-Agent 自定义（空值透传）"}
+    ];
+    for (NSDictionary *item in items) {
+        NSString *key = item[@"key"];
+        NSString *title = [NSString stringWithFormat:@"%@：%@", item[@"name"], BDSOnOff(cfgBool(key, NO))];
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            (void)action;
+            [self showRestartNotice:saveConfigValues(@{key: @(!cfgBool(key, NO))})];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"一键开启本页 4 项"
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(UIAlertAction *action) {
+        (void)action;
+        [self showRestartNotice:saveConfigValues(@{
+            @"spoofKeychain": @YES,
+            @"spoofAppGroup": @YES,
+            @"spoofWebKitCookie": @YES,
+            @"spoofUserAgent": @YES
+        })];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"一键关闭本页 4 项"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        (void)action;
+        [self showRestartNotice:saveConfigValues(@{
+            @"spoofKeychain": @NO,
+            @"spoofAppGroup": @NO,
+            @"spoofWebKitCookie": @NO,
+            @"spoofUserAgent": @NO
+        })];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self showAdvancedSwitches]; });
     }]];
     if (sheet.popoverPresentationController) {
         sheet.popoverPresentationController.sourceView = presenter.view;
@@ -3005,12 +3115,11 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"反关联增强"
-                                                                   message:@"以下功能默认开启；已保留兼容处理。App Group 等项目仍可能影响 App 功能，可单独关闭。修改后重启生效。"
+                                                                   message:@"以下常规项目初始关闭，点击基础随机后自动开启。兼容风险项目已集中到独立测试页面。修改后重启生效。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSDictionary *> *items = @[
         @{@"key": @"spoofWiFi", @"name": @"WiFi SSID/BSSID 隐藏"},
         @{@"key": @"spoofLocalIP", @"name": @"本地 IP 隐藏（实验）"},
-        @{@"key": @"spoofAppGroup", @"name": @"App Group 隔离（可能影响登录）"},
         @{@"key": @"spoofPasteboard", @"name": @"剪贴板保护"},
         @{@"key": @"spoofBootTime", @"name": @"系统启动时间随机化"},
         @{@"key": @"spoofCPU", @"name": @"CPU 参数伪装"},
@@ -3020,15 +3129,14 @@ static NSString *BDSConfigSummary(void) {
         @{@"key": @"spoofDlopen", @"name": @"dlopen 反检测"},
         @{@"key": @"spoofUbiquity", @"name": @"iCloud 容器隔离"},
         @{@"key": @"spoofPrivacyPermissions", @"name": @"通讯录/日历权限拒绝"},
-        @{@"key": @"spoofWebKitCookie", @"name": @"WebKit Cookie 过滤"},
         @{@"key": @"spoofBattery", @"name": @"电池电量伪装"}
     ];
     for (NSDictionary *item in items) {
         NSString *key = item[@"key"];
-        NSString *title = [NSString stringWithFormat:@"%@：%@", item[@"name"], BDSOnOff(cfgBool(key, YES))];
+        NSString *title = [NSString stringWithFormat:@"%@：%@", item[@"name"], BDSOnOff(cfgBool(key, NO))];
         [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
             (void)action;
-            [self showRestartNotice:saveConfigValues(@{key: @(!cfgBool(key, YES))})];
+            [self showRestartNotice:saveConfigValues(@{key: @(!cfgBool(key, NO))})];
         }]];
     }
     [sheet addAction:[UIAlertAction actionWithTitle:@"编辑伪造 WiFi SSID"
@@ -3443,15 +3551,15 @@ static NSString *BDSConfigSummary(void) {
     }
 
     [advanced appendFormat:@"\n--- 反关联增强 ---"];
-    [advanced appendFormat:@"\nWiFi 隐藏：%@", cfgBool(@"spoofWiFi", YES) ? @"开" : @"关"];
-    [advanced appendFormat:@"\n本地 IP：%@", cfgBool(@"spoofLocalIP", YES) ? @"开" : @"关"];
-    [advanced appendFormat:@"\nApp Group：%@", cfgBool(@"spoofAppGroup", YES) ? @"开" : @"关"];
-    [advanced appendFormat:@"\n剪贴板：%@", cfgBool(@"spoofPasteboard", YES) ? @"开" : @"关"];
-    [advanced appendFormat:@"\n启动时间：%@", cfgBool(@"spoofBootTime", YES) ? @"开" : @"关"];
-    [advanced appendFormat:@"\nCPU 参数：%@", cfgBool(@"spoofCPU", YES) ? @"开" : @"关"];
-    [advanced appendFormat:@"\n定位保护：%@", cfgBool(@"spoofLocation", YES) ? @"开" : @"关"];
-    [advanced appendFormat:@"\n代理设置隐藏：%@", cfgBool(@"spoofProxyDetection", YES) ? @"开" : @"关"];
-    if (cfgBool(@"spoofBootTime", YES)) {
+    [advanced appendFormat:@"\nWiFi 隐藏：%@", cfgBool(@"spoofWiFi", NO) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n本地 IP：%@", cfgBool(@"spoofLocalIP", NO) ? @"开" : @"关"];
+    [advanced appendFormat:@"\nApp Group：%@", cfgBool(@"spoofAppGroup", NO) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n剪贴板：%@", cfgBool(@"spoofPasteboard", NO) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n启动时间：%@", cfgBool(@"spoofBootTime", NO) ? @"开" : @"关"];
+    [advanced appendFormat:@"\nCPU 参数：%@", cfgBool(@"spoofCPU", NO) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n定位保护：%@", cfgBool(@"spoofLocation", NO) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n代理设置隐藏：%@", cfgBool(@"spoofProxyDetection", NO) ? @"开" : @"关"];
+    if (cfgBool(@"spoofBootTime", NO)) {
         struct timeval bt;
         size_t btLen = sizeof(bt);
         if (sysctlbyname("kern.boottime", &bt, &btLen, NULL, 0) == 0) {
@@ -3461,20 +3569,20 @@ static NSString *BDSConfigSummary(void) {
             [advanced appendFormat:@"\n  伪造启动时间：%@", [fmt stringFromDate:bootDate]];
         }
     }
-    if (cfgBool(@"spoofCPU", YES)) {
+    if (cfgBool(@"spoofCPU", NO)) {
         int ncpu = 0; size_t ncpuLen = sizeof(ncpu);
         int physcpu = 0; size_t physLen = sizeof(physcpu);
         sysctlbyname("hw.ncpu", &ncpu, &ncpuLen, NULL, 0);
         sysctlbyname("hw.physicalcpu", &physcpu, &physLen, NULL, 0);
         [advanced appendFormat:@"\n  CPU：%d 核 / %d 物理核", ncpu, physcpu];
     }
-    [advanced appendFormat:@"\n磁盘剩余空间：%@", cfgBool(@"spoofStatfs", YES) ? @"开" : @"关"];
-    [advanced appendFormat:@"\ndlopen 反检测：%@", cfgBool(@"spoofDlopen", YES) ? @"开" : @"关"];
-    [advanced appendFormat:@"\niCloud 容器：%@", cfgBool(@"spoofUbiquity", YES) ? @"开" : @"关"];
-    [advanced appendFormat:@"\n隐私权限拒绝：%@", cfgBool(@"spoofPrivacyPermissions", YES) ? @"开" : @"关"];
-    [advanced appendFormat:@"\nWebKit Cookie：%@", cfgBool(@"spoofWebKitCookie", YES) ? @"开" : @"关"];
-    [advanced appendFormat:@"\n电池电量：%@", cfgBool(@"spoofBattery", YES) ? @"开" : @"关"];
-    if (cfgBool(@"spoofBattery", YES)) {
+    [advanced appendFormat:@"\n磁盘剩余空间：%@", cfgBool(@"spoofStatfs", NO) ? @"开" : @"关"];
+    [advanced appendFormat:@"\ndlopen 反检测：%@", cfgBool(@"spoofDlopen", NO) ? @"开" : @"关"];
+    [advanced appendFormat:@"\niCloud 容器：%@", cfgBool(@"spoofUbiquity", NO) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n隐私权限拒绝：%@", cfgBool(@"spoofPrivacyPermissions", NO) ? @"开" : @"关"];
+    [advanced appendFormat:@"\nWebKit Cookie：%@", cfgBool(@"spoofWebKitCookie", NO) ? @"开" : @"关"];
+    [advanced appendFormat:@"\n电池电量：%@", cfgBool(@"spoofBattery", NO) ? @"开" : @"关"];
+    if (cfgBool(@"spoofBattery", NO)) {
         // 用 dispatch_once 保证读取在初始化写入之后
         dispatch_once(&g_batteryOnce, ^{
             g_fakeBatteryLevel = 0.30f + (float)(arc4random_uniform(56)) / 100.0f;
@@ -3549,24 +3657,24 @@ static void bds_initialize() {
         // 高级功能仍按各自开关独立加载，不能因基础功能关闭而提前返回。
         BOOL basicEnabled = cfgBool(@"enabled", NO);
 
-        // 安装 C 函数 hook（fishhook GOT 替换）
+        // 只在至少一个 C 层高级功能开启时安装 fishhook GOT 替换。
         // fishhook 保存的 orig 指针直接指向 libSystem 真实地址，
         // 调用 orig 不经过 GOT，结构上不可能递归。
-        // C 层项目属于高级功能，由各自的高级开关控制。
-        installCHooks();
+        BOOL hasCHookFeature = BDSHasEnabledCHookFeature();
+        if (hasCHookFeature) installCHooks();
 
         // 同步 C 全局开关
-        // g_enabledC 表示插件 C 层基础设施已加载，不再映射基础总开关。
-        BDS_ATOMIC_SET(g_enabledC, 1);
+        // g_enabledC 表示插件 C 层基础设施已加载，不映射基础总开关。
+        BDS_ATOMIC_SET(g_enabledC, hasCHookFeature ? 1 : 0);
         BDS_ATOMIC_SET(g_spoofSysctlC, cfgBool(@"spoofSysctl", NO) ? 1 : 0);
         BDS_ATOMIC_SET(g_bypassJailbreakC, cfgBool(@"bypassJailbreakDetect", NO) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofWiFiC, cfgBool(@"spoofWiFi", YES) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofLocalIPC, cfgBool(@"spoofLocalIP", YES) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofProxyC, cfgBool(@"spoofProxyDetection", YES) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofBootTimeC, cfgBool(@"spoofBootTime", YES) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofCPUC, cfgBool(@"spoofCPU", YES) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofStatfsC, cfgBool(@"spoofStatfs", YES) ? 1 : 0);
-        BDS_ATOMIC_SET(g_spoofDlopenC, cfgBool(@"spoofDlopen", YES) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofWiFiC, cfgBool(@"spoofWiFi", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofLocalIPC, cfgBool(@"spoofLocalIP", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofProxyC, cfgBool(@"spoofProxyDetection", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofBootTimeC, cfgBool(@"spoofBootTime", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofCPUC, cfgBool(@"spoofCPU", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofStatfsC, cfgBool(@"spoofStatfs", NO) ? 1 : 0);
+        BDS_ATOMIC_SET(g_spoofDlopenC, cfgBool(@"spoofDlopen", NO) ? 1 : 0);
 
         // 使用持久化偏移量和真实 boot time 生成稳定值：同一次系统启动期间，
         // App 重启不会重新跳到另一个随机日期；设备真实重启后会随之更新。
@@ -3587,7 +3695,7 @@ static void bds_initialize() {
         }
 
         // UIDevice：公开基础参数只在基础总开关开启时安装。
-        // IDFV 与电池属于现有高级功能，继续独立加载。
+        // IDFV 与电池属于高级功能，分别跟随高级开关加载。
         Class cls = objc_getClass("UIDevice");
         if (basicEnabled) {
             hookInst(cls, @selector(systemVersion), (IMP)new_systemVersion, &orig_systemVersion);
@@ -3596,9 +3704,11 @@ static void bds_initialize() {
             hookInst(cls, @selector(name), (IMP)new_name, &orig_name);
             hookInst(cls, @selector(systemName), (IMP)new_systemName, &orig_systemName);
         }
-        hookInst(cls, @selector(identifierForVendor), (IMP)new_identifierForVendor, &orig_identifierForVendor);
+        if (cfgBool(@"spoofBaiduSDK", NO)) {
+            hookInst(cls, @selector(identifierForVendor), (IMP)new_identifierForVendor, &orig_identifierForVendor);
+        }
 
-        if (cfgBool(@"spoofBattery", YES)) {
+        if (cfgBool(@"spoofBattery", NO)) {
             hookInst(cls, @selector(batteryLevel), (IMP)new_batteryLevel, &orig_batteryLevel);
             hookInst(cls, @selector(batteryState), (IMP)new_batteryState, &orig_batteryState);
         }
@@ -3687,14 +3797,14 @@ static void bds_initialize() {
         }
 
         // P3: App Group 共享容器隔离
-        if (cfgBool(@"spoofAppGroup", YES)) {
+        if (cfgBool(@"spoofAppGroup", NO)) {
             cls = objc_getClass("NSFileManager");
             hookInst(cls, @selector(containerURLForSecurityApplicationGroupIdentifier:),
                      (IMP)new_containerURL, &orig_containerURL);
         }
 
         // P4: 剪贴板保护
-        if (cfgBool(@"spoofPasteboard", YES)) {
+        if (cfgBool(@"spoofPasteboard", NO)) {
             cls = objc_getClass("UIPasteboard");
             hookInst(cls, @selector(string), (IMP)new_pb_string, &orig_pb_string);
             hookInst(cls, @selector(strings), (IMP)new_pb_strings, &orig_pb_strings);
@@ -3703,7 +3813,7 @@ static void bds_initialize() {
         }
 
         // P7: 定位保护
-        if (cfgBool(@"spoofLocation", YES)) {
+        if (cfgBool(@"spoofLocation", NO)) {
             cls = objc_getClass("CLLocationManager");
             if (cls) {
                 hookClass(cls, @selector(locationServicesEnabled),
@@ -3723,14 +3833,14 @@ static void bds_initialize() {
         }
 
         // Q3: iCloud 容器隔离
-        if (cfgBool(@"spoofUbiquity", YES)) {
+        if (cfgBool(@"spoofUbiquity", NO)) {
             cls = objc_getClass("NSFileManager");
             hookInst(cls, @selector(URLForUbiquityContainerIdentifier:),
                      (IMP)new_ubiquityContainerURL, &orig_ubiquityContainerURL);
         }
 
         // Q4: 通讯录/日历权限返回拒绝；相机和照片均不 Hook。
-        if (cfgBool(@"spoofPrivacyPermissions", YES)) {
+        if (cfgBool(@"spoofPrivacyPermissions", NO)) {
             cls = objc_getClass("CNContactStore");
             if (cls) {
                 hookClass(cls, @selector(authorizationStatusForEntityType:),
@@ -3748,7 +3858,7 @@ static void bds_initialize() {
         }
 
         // Q5: WebKit Cookie 过滤
-        if (cfgBool(@"spoofWebKitCookie", YES)) {
+        if (cfgBool(@"spoofWebKitCookie", NO)) {
             cls = objc_getClass("WKHTTPCookieStore");
             if (cls) {
                 hookInst(cls, @selector(getAllCookies:),

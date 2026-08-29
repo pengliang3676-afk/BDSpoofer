@@ -19,43 +19,43 @@
 	<key>spoofStorage</key>
 	<false/>
 	<key>spoofBaiduSDK</key>
-	<true/>
+	<false/>
 	<key>spoofSysctl</key>
-	<true/>
+	<false/>
 	<key>spoofKeychain</key>
 	<false/>
 	<key>spoofUserAgent</key>
 	<false/>
 	<key>bypassJailbreakDetect</key>
-	<true/>
+	<false/>
 	<key>spoofWiFi</key>
-	<true/>
+	<false/>
 	<key>spoofLocalIP</key>
-	<true/>
+	<false/>
 	<key>spoofAppGroup</key>
-	<true/>
+	<false/>
 	<key>spoofPasteboard</key>
-	<true/>
+	<false/>
 	<key>spoofBootTime</key>
-	<true/>
+	<false/>
 	<key>spoofCPU</key>
-	<true/>
+	<false/>
 	<key>spoofLocation</key>
-	<true/>
+	<false/>
 	<key>spoofProxyDetection</key>
-	<true/>
+	<false/>
 	<key>spoofStatfs</key>
-	<true/>
+	<false/>
 	<key>spoofDlopen</key>
-	<true/>
+	<false/>
 	<key>spoofUbiquity</key>
-	<true/>
+	<false/>
 	<key>spoofPrivacyPermissions</key>
-	<true/>
+	<false/>
 	<key>spoofWebKitCookie</key>
-	<true/>
+	<false/>
 	<key>spoofBattery</key>
-	<true/>
+	<false/>
 	<key>wifiSSID</key>
 	<string></string>
 	<key>bootTimeOffsetSeconds</key>

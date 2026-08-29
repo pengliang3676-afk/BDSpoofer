@@ -5,7 +5,8 @@
 ## 当前版本：1.8.1 基础按需启用版
 
 > 基础功能总开关和 5 个基础子开关默认关闭；点击基础随机后才统一开启。
-> Keychain 和 User-Agent 默认关闭，其余现有高级/隐私功能保持原默认值。
+> 高级功能也默认关闭；点击基础随机后自动开启常规高级功能。
+> Keychain、App Group、WebKit Cookie 和 User-Agent 保留在独立风险测试页面手动控制。
 > 随机参数只在用户手动点击时生成并持久保存，不会在启动时自动变化。
 
 ### 基础功能（默认关闭）
@@ -18,7 +19,7 @@
 - UIScreen：bounds、nativeBounds、scale（支持但默认关闭）
 - NSFileManager：磁盘大小
 
-### 高级功能
+### 高级功能（默认关闭）
 
 - **高级身份**：identifierForVendor 使用已保存的 IDFV；高级随机仍由用户单独触发
 - **百度 SDK 标识**（spoofBaiduSDK）：hook CuidSDK、UTDIDModule、MobStat、DeviceIdentifierFetcher，返回伪造的 CUID/UTDID/DeviceID
@@ -29,7 +30,9 @@
 
 ### 一键随机参数
 
-“一键随机整套基础参数”从统一的 10 款机型池选择机型，并生成匹配的 iOS/Build、硬件型号、内存、磁盘、设备名称和主机名。机型池包含 iPhone 8、X、XR、XS、11、11 Pro、12 mini、12、13 mini、SE3；iPhone SE2 不参与随机。iPhone 8/X 只使用 iOS 15/16，其余机型使用 iOS 15-18。点击后会自动开启基础总开关及 5 个基础子开关，屏幕继续使用真机尺寸；高级参数和高级开关不变。
+“一键随机整套基础参数”从统一的 10 款机型池选择机型，并生成匹配的 iOS/Build、硬件型号、内存、磁盘、设备名称和主机名。机型池包含 iPhone 8、X、XR、XS、11、11 Pro、12 mini、12、13 mini、SE3；iPhone SE2 不参与随机。iPhone 8/X 只使用 iOS 15/16，其余机型使用 iOS 15-18。点击后会自动开启基础总开关、5 个基础子开关及常规高级功能，屏幕继续使用真机尺寸；高级身份参数不变。
+
+基础随机不会改变兼容风险测试 4 项：Keychain、App Group、WebKit Cookie、User-Agent。代理隐藏属于常规高级功能，会随基础随机自动开启。
 
 “一键随机整套高级参数”单独生成并持久保存 IDFA、IDFV、DeviceID、CUID 和 UTDID，不修改基础参数。
 
@@ -40,6 +43,12 @@
 - 通讯录、日历权限返回拒绝
 - WebKit 设备标识 Cookie 过滤，保留 BDUSS/STOKEN 登录 Cookie
 - 相机和照片权限均不 Hook
+
+### 兼容风险测试页面
+
+- 集中显示 Keychain、App Group、WebKit Cookie、User-Agent 4 个开关
+- 支持逐项切换、一键开启本页 4 项、一键关闭本页 4 项
+- 这些项目可能影响登录、共享数据或网络请求，修改后需要重启 App
 
 ### 不包含
 
