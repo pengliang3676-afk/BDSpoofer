@@ -2560,7 +2560,7 @@ static NSString *BDSConfigSummary(void) {
                                BDSButtonCollapsedWidth, BDSButtonFullSize);
     [UIView animateWithDuration:0.22 animations:^{
         button.frame = target;
-        button.backgroundColor = [UIColor colorWithRed:0.92 green:0.12 blue:0.14 alpha:0.35];
+        button.backgroundColor = [UIColor colorWithRed:0.92 green:0.12 blue:0.14 alpha:1.00];
         button.layer.cornerRadius = BDSButtonCollapsedWidth / 2.0;
         button.layer.borderWidth = 0.0;
         [button setTitle:(leftSide ? @"›" : @"‹") forState:UIControlStateNormal];
