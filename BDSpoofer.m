@@ -2142,7 +2142,8 @@ static void installCHooks(void) {
 static const void *BDSButtonKey = &BDSButtonKey;
 static const CGFloat BDSButtonFullSize = 42.0;
 static const CGFloat BDSButtonCollapsedWidth = 18.0;
-static const NSTimeInterval BDSButtonCollapseDelay = 5.0;
+static const CGFloat BDSButtonCollapsedVisibleWidth = 10.0;
+static const NSTimeInterval BDSButtonCollapseDelay = 2.0;
 
 @interface BDSUIController : NSObject
 @property (nonatomic, assign) NSUInteger floatingButtonGeneration;
@@ -2555,7 +2556,8 @@ static NSString *BDSConfigSummary(void) {
     if (!container) return;
     BOOL leftSide = CGRectGetMidX(button.frame) < CGRectGetWidth(container.bounds) / 2.0;
     CGFloat centerY = CGRectGetMidY(button.frame);
-    CGRect target = CGRectMake(leftSide ? 0.0 : CGRectGetWidth(container.bounds) - BDSButtonCollapsedWidth,
+    CGFloat hiddenWidth = BDSButtonCollapsedWidth - BDSButtonCollapsedVisibleWidth;
+    CGRect target = CGRectMake(leftSide ? -hiddenWidth : CGRectGetWidth(container.bounds) - BDSButtonCollapsedVisibleWidth,
                                centerY - BDSButtonFullSize / 2.0,
                                BDSButtonCollapsedWidth, BDSButtonFullSize);
     [UIView animateWithDuration:0.22 animations:^{
