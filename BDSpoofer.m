@@ -3650,7 +3650,7 @@ static void bds_initialize() {
         loadConfig();
 
         NSString *bundleID = [NSBundle mainBundle].bundleIdentifier;
-        if (![bundleID isEqualToString:@"com.imgotv"]) return;
+        if (![bundleID isEqualToString:@"com.hunantv.imgotv"]) return;
 
         // 配置入口始终安装
         BDSInstallUI();
