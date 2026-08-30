@@ -1,6 +1,6 @@
 Package: com.peng.bdsglobalspoofer
 Name: BDS Global Spoofer (Mango)
-Version: 1.9.6
+Version: 1.9.7
 Architecture: iphoneos-arm64e
 Description: Global device fingerprint virtualization for Mango TV CPA (Dipfy) with bundle whitelist. One coherent virtual identity shared by Mango and advertiser apps.
 Section: Tweaks

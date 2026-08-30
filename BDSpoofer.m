@@ -1,6 +1,6 @@
 //
 //  BDSpoofer.m
-//  BDS Global Spoofer 1.9.6（roothide / dopamine，ElleKit 全局注入 deb；亦可 TrollFools 单注入）
+//  BDS Global Spoofer 1.9.7（roothide / dopamine，ElleKit 全局注入 deb；亦可 TrollFools 单注入）
 //    - 全局共享一份虚拟身份：芒果 TV 与任意广告主 App 读取同一套设备参数，保证 CPA 归因一致。
 //    - 系统 App 与白名单（微信/QQ/支付宝/百度等）完全透传，不生成身份、不安装 hook。
 //    - 全局目录走 roothide jbroot 解析 + 真实可写探测；首发生成/迁移/保存用 flock 跨进程锁串行化。
@@ -10,6 +10,10 @@
 //       「换全新身份」可挂一次性标记，下次芒果启动、在所有业务 SDK 读取前清空自身 Keychain、
 //       NSUserDefaults 标识键、Foundation Cookie，以及自有容器/AppGroup 内的设备-ID 类文件，
 //       并重置 Dipfy 本地 ID，使每次换号等价于一台从未装过芒果的全新设备。
+//  1.9.7：
+//    W. 清理策略改为 Apps Manager 式「整容器重置」：冷启动最早期清空 Documents/Library/tmp 与
+//       AppGroup 全部内容、整域删除 NSUserDefaults、全清 Foundation+WKWebView 网站数据与 Keychain，
+//       仅保留本插件身份配置 plist。实测按文件名筛选会漏掉账号会话数据库，整容器重置才等价首装。
 //  1.8.0：
 //    S. 兼容/扩展随机池合并为统一 10 款机型，不再区分随机模式；SE2 不参与随机。
 //    T. 移除照片权限 Hook；相机权限继续不做 Hook，保留通讯录/日历保护。
@@ -148,7 +152,7 @@ static NSDictionary *BDSDefaultConfig(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @196,
+            @"configVersion": @197,
             @"enabled": @NO,
             @"spoofAdvertisingIdentifiers": @NO,
             @"spoofProcessHardware": @NO,
@@ -720,6 +724,11 @@ static void loadConfig() {
         if (!loaded[@"wipePersistenceOnNextLaunch"]) merged[@"wipePersistenceOnNextLaunch"] = @NO;
         if (!loaded[@"lastWipeAt"]) merged[@"lastWipeAt"] = @0;
         if (!loaded[@"lastWipeReport"]) merged[@"lastWipeReport"] = @"";
+        [merged writeToFile:p1 atomically:YES];
+    }
+    if (ver < 197) {
+        // 1.9.7 清理策略升级为整容器重置，无新增配置键，仅推进版本号。
+        merged[@"configVersion"] = @197;
         [merged writeToFile:p1 atomically:YES];
     }
     g_config = [merged copy];
@@ -3247,7 +3256,7 @@ static NSString *BDSConfigSummary(void) {
 - (void)openPanel {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"BDS Global 1.9.6"
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"BDS Global 1.9.7"
                                                                    message:BDSConfigSummary()
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"换全新身份（全局）" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
@@ -3927,7 +3936,7 @@ static NSString *BDSConfigSummary(void) {
         @{@"key": @"spoofUbiquity", @"name": @"iCloud 容器隔离"},
         @{@"key": @"spoofPrivacyPermissions", @"name": @"通讯录/日历权限拒绝"},
         @{@"key": @"spoofBattery", @"name": @"电池电量伪装"},
-        @{@"key": @"autoWipeOnRotate", @"name": @"换身份时清空Keychain/本地ID"}
+        @{@"key": @"autoWipeOnRotate", @"name": @"换身份时整容器重置(=清数据)"}
     ];
     for (NSDictionary *item in items) {
         NSString *key = item[@"key"];
@@ -3938,14 +3947,14 @@ static NSString *BDSConfigSummary(void) {
         }]];
     }
     [sheet addAction:[UIAlertAction actionWithTitle:
-        [NSString stringWithFormat:@"下次启动清空持久标识：%@", BDSOnOff(cfgBool(@"wipePersistenceOnNextLaunch", NO))]
+        [NSString stringWithFormat:@"下次启动整容器重置：%@", BDSOnOff(cfgBool(@"wipePersistenceOnNextLaunch", NO))]
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
         (void)action;
         BOOL next = !cfgBool(@"wipePersistenceOnNextLaunch", NO);
         [self showRestartNotice:saveConfigValues(@{@"wipePersistenceOnNextLaunch": @(next)})];
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"立即清空本机持久标识（现在执行）"
+    [sheet addAction:[UIAlertAction actionWithTitle:@"立即整容器重置(=Apps Manager清数据)"
                                               style:UIAlertActionStyleDestructive
                                             handler:^(UIAlertAction *action) {
         (void)action;
@@ -3979,9 +3988,9 @@ static NSString *BDSConfigSummary(void) {
                        // 运行中的 SDK 可能把内存缓存重新落盘；下一次冷启动必须再做最终清理。
                        @"wipePersistenceOnNextLaunch": @YES});
     [self presentMessage:[NSString stringWithFormat:
-        @"已执行第一遍清理：%@\n\n已保留下次启动清理标记。请立即彻底关闭芒果再重开；只有冷启动清理成功后标记才会自动复位。%@",
+        @"已执行第一遍整容器重置：%@\n\n已保留下次启动重置标记。请立即彻底关闭芒果再重开；冷启动最早期会做最终整容器重置，成功后标记自动复位。%@",
         report, complete ? @"" : @"\n本次存在未完成项，下次启动会继续重试。"]
-                    title:@"持久标识清理"];
+                    title:@"整容器重置"];
 }
 
 - (void)editWiFiSSID {
@@ -4695,85 +4704,202 @@ static NSUInteger bds_wipeIDFilesInRoot(NSString *root, NSFileManager *fm, NSUIn
     return removed;
 }
 
-// 总入口：返回人类可读的清理报告。全程 @try 保护，任何一步失败都不影响 App 启动。
+// 1.9.7 整容器重置（对齐已验证有效的 Apps Manager「清数据」）。
+// 有界递归：限制总删除数与总耗时，避免预 main 阶段长时间同步 I/O 触发 watchdog。
+typedef struct {
+    NSUInteger visited;
+    NSUInteger removed;
+    NSUInteger errors;
+    BOOL complete;
+    CFAbsoluteTime deadline;
+    NSUInteger maxItems;
+} BDSPurgeCtx;
+
+// iOS 同一路径可能分别以 /var 与 /private/var 表示。保留项和遍历项统一为同一种文本形式，
+// 但不解析条目自身的符号链接，避免把删除目标换成链接指向的真实文件。
+static NSString *bds_purgeNormalizedPath(NSString *path) {
+    NSString *p = [path stringByStandardizingPath];
+    if ([p isEqualToString:@"/private/var"] || [p hasPrefix:@"/private/var/"])
+        p = [p substringFromIndex:@"/private".length];
+    return p;
+}
+
+static BOOL bds_purgeBudgetAvailable(BDSPurgeCtx *ctx) {
+    if (!ctx->complete) return NO;
+    if (ctx->visited >= ctx->maxItems || CFAbsoluteTimeGetCurrent() > ctx->deadline) {
+        ctx->complete = NO;
+        return NO;
+    }
+    return YES;
+}
+
+// 删除 path 内全部条目，仅保留 keepAbs（身份配置）。符号链接只删链接本身、绝不跟随；
+// 用 lstat + unlink/rmdir 逐项操作；不再用 removeItemAtPath 递归删除非空目录，保证预算不可被绕过。
+static void bds_purgePath(NSString *path, NSString *rootAbs, NSString *keepAbs,
+                          NSFileManager *fm, BDSPurgeCtx *ctx, NSUInteger depth) {
+    if (!ctx->complete) return;
+    if (depth > 8 || !bds_purgeBudgetAvailable(ctx)) {
+        ctx->complete = NO; return;
+    }
+    NSString *dirPath = bds_purgeNormalizedPath(path);
+    NSString *rootPath = bds_purgeNormalizedPath(rootAbs ?: path);
+    if (!bds_pathIsInsideRoot(dirPath, rootPath)) {
+        ctx->errors++; ctx->complete = NO; return;
+    }
+    DIR *dp = opendir(dirPath.fileSystemRepresentation);
+    if (!dp) { ctx->errors++; ctx->complete = NO; return; }
+    for (;;) {
+        if (!bds_purgeBudgetAvailable(ctx)) break;
+        errno = 0;
+        struct dirent *entry = readdir(dp);
+        if (!entry) {
+            if (errno != 0) { ctx->errors++; ctx->complete = NO; }
+            break;
+        }
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        ctx->visited++;
+        @autoreleasepool {
+            NSString *name = [fm stringWithFileSystemRepresentation:entry->d_name
+                                                              length:strlen(entry->d_name)];
+            if (!name.length) { ctx->errors++; ctx->complete = NO; break; }
+            NSString *full = bds_purgeNormalizedPath([dirPath stringByAppendingPathComponent:name]);
+            if (!bds_pathIsInsideRoot(full, rootPath)) {
+                ctx->errors++; ctx->complete = NO; break;
+            }
+            struct stat st;
+            if (lstat(full.fileSystemRepresentation, &st) != 0) {
+                if (errno != ENOENT) { ctx->errors++; ctx->complete = NO; }
+                if (!ctx->complete) break;
+                continue;
+            }
+            if (keepAbs.length && ([full isEqualToString:keepAbs] ||
+                [keepAbs hasPrefix:[full stringByAppendingString:@"/"]])) {
+                if (S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode))
+                    bds_purgePath(full, rootPath, keepAbs, fm, ctx, depth + 1);
+                continue; // 命中保留项（配置文件本身或其祖先目录）
+            }
+            if (S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode)) {
+                bds_purgePath(full, rootPath, keepAbs, fm, ctx, depth + 1);
+                if (!ctx->complete) break; // 预算用尽时绝不退化为一次无界递归删除。
+                if (rmdir(full.fileSystemRepresentation) == 0) ctx->removed++;
+                else if (errno != ENOENT) { ctx->errors++; ctx->complete = NO; break; }
+            } else {
+                // 文件和符号链接都用 unlink；symlink 只删除目录项本身，不跟随目标。
+                if (unlink(full.fileSystemRepresentation) == 0) ctx->removed++;
+                else if (errno != ENOENT) { ctx->errors++; ctx->complete = NO; break; }
+            }
+        }
+    }
+    closedir(dp);
+}
+
+// WebKit 的完成回调回到 MainActor，主线程绝不能 semaphore 自锁。
+// 当前 constructor/界面调用都在主线程：直接依赖后续 Library 整体清空；若未来从后台调用，
+// 则把 WebKit API 投递到主线程，并只阻塞后台调用线程做有界等待。
+static BOOL bds_clearAllWebsiteDataSync(NSTimeInterval waitSeconds) {
+    if ([NSThread isMainThread]) return YES;
+    if (waitSeconds <= 0) return NO;
+    __block BOOL callbackDone = NO;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
+            WKWebsiteDataStore *store = WKWebsiteDataStore.defaultDataStore;
+            NSSet<NSString *> *types = WKWebsiteDataStore.allWebsiteDataTypes;
+            if (!store || !types.count) {
+                callbackDone = YES;
+                dispatch_semaphore_signal(sem);
+                return;
+            }
+            [store removeDataOfTypes:types
+                        modifiedSince:[NSDate dateWithTimeIntervalSince1970:0]
+                    completionHandler:^{
+                        callbackDone = YES;
+                        dispatch_semaphore_signal(sem);
+                    }];
+        } @catch (NSException *e) {
+            (void)e;
+            dispatch_semaphore_signal(sem);
+        }
+    });
+    long r = dispatch_semaphore_wait(sem,
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(waitSeconds * NSEC_PER_SEC)));
+    return r == 0 && callbackDone;
+}
+
+// 总入口：返回人类可读的重置报告。全程 @try 保护，任何一步失败都不影响 App 启动。
 static NSString *bds_wipeMangoPersistence(BOOL *outSuccess) {
-    NSUInteger kc = 0, kcScanned = 0, ud = 0, ck = 0, files = 0, scanned = 0, errors = 0;
-    BOOL complete = YES;
+    NSUInteger kc = 0, kcScanned = 0, kcErr = 0, purged = 0, groups = 0;
+    BOOL complete = YES, webOK = YES;
     if (outSuccess) *outSuccess = NO;
     @try {
-        // 1) Keychain
-        kc = bds_wipeOwnKeychain(&kcScanned, &errors);
-
-        // 2) NSUserDefaults 标识类键
-        NSUserDefaults *defs = NSUserDefaults.standardUserDefaults;
-        NSDictionary *all = [defs dictionaryRepresentation];
-        for (NSString *key in all) {
-            if (bds_nameLooksLikePersistID(key)) {
-                [defs removeObjectForKey:key];
-                ud++;
-            }
-        }
-        [defs synchronize];
-
-        // 3) Foundation Cookie（WKWebView 的 Cookie 在容器内，Crane 新容器已隔离，此处尽力清理）
-        @try {
-            NSHTTPCookieStorage *store = NSHTTPCookieStorage.sharedHTTPCookieStorage;
-            NSArray<NSHTTPCookie *> *cookies = [store.cookies copy];
-            ck = 0;
-            for (NSHTTPCookie *c in cookies) {
-                NSString *domain = c.domain.lowercaseString ?: @"";
-                if ([domain containsString:@"mgtv.com"] || [domain containsString:@"hunantv.com"]) {
-                    [store deleteCookie:c];
-                    ck++;
-                }
-            }
-        } @catch (NSException *inner) {
-            (void)inner;
-            complete = NO;
-            errors++;
-        }
-
-        // 4) 自有 Documents/Library/Caches + 可解析到的 AppGroup 内标识类文件
         NSFileManager *fm = NSFileManager.defaultManager;
-        NSMutableArray<NSString *> *roots = [NSMutableArray array];
-        NSArray<NSNumber *> *which = @[@(NSDocumentDirectory), @(NSLibraryDirectory), @(NSCachesDirectory)];
-        for (NSNumber *w in which) {
-            NSArray<NSURL *> *urls = [fm URLsForDirectory:w.unsignedIntegerValue inDomains:NSUserDomainMask];
-            for (NSURL *u in urls) if (u.path.length) [roots addObject:u.path];
+        NSString *bid = g_bundleID ?: (NSBundle.mainBundle.bundleIdentifier ?: @"");
+
+        // 1) Keychain：由安全守护进程介导，预 main 阶段调用安全。
+        kc = bds_wipeOwnKeychain(&kcScanned, &kcErr);
+        if (kcErr) complete = NO;
+
+        // 2) Foundation Cookie 全清。
+        @try {
+            NSHTTPCookieStorage *cookieStore = NSHTTPCookieStorage.sharedHTTPCookieStorage;
+            for (NSHTTPCookie *c in [cookieStore.cookies copy]) [cookieStore deleteCookie:c];
+        } @catch (NSException *ckEx) {
+            (void)ckEx; complete = NO;
         }
-        NSString *bid = g_bundleID ?: @"";
+
+        // 3) 主线程不启动 WebKit 异步任务，直接由后续 Library 重置覆盖其磁盘数据；
+        // 只有未来从后台调用时，才把任务交给主线程并在后台最多等待 1.2s。
+        webOK = bds_clearAllWebsiteDataSync(1.2);
+        if (!webOK) complete = NO;
+
+        // 4) 整容器重置（有界：最多 20000 项 / 1.5s）：Documents/Library/tmp 全清，仅保留身份配置 plist。
+        NSString *keepAbs = bds_purgeNormalizedPath(configPath());
+        NSString *home = bds_purgeNormalizedPath(NSHomeDirectory());
+        BDSPurgeCtx ctx = {0, 0, 0, YES, CFAbsoluteTimeGetCurrent() + 1.5, 20000};
+        for (NSString *sub in @[@"Documents", @"Library", @"tmp"]) {
+            NSString *d = bds_purgeNormalizedPath([home stringByAppendingPathComponent:sub]);
+            BOOL isDir = NO;
+            if ([fm fileExistsAtPath:d isDirectory:&isDir] && isDir)
+                bds_purgePath(d, d, keepAbs, fm, &ctx, 0);
+        }
+        purged += ctx.removed;
+        if (ctx.errors || !ctx.complete) complete = NO;
+
+        // App Group 容器：能解析到的整目录清空（身份配置不在其中，keepAbs 传 nil）。
         NSMutableArray<NSString *> *groupIds = [NSMutableArray array];
         if (bid.length) [groupIds addObject:[@"group." stringByAppendingString:bid]];
         [groupIds addObject:@"group.com.hunantv.imgotv"];
+        NSMutableSet<NSString *> *seenGroup = [NSMutableSet set];
         for (NSString *gid in groupIds) {
             NSURL *u = [fm containerURLForSecurityApplicationGroupIdentifier:gid];
-            if (u.path.length && ![roots containsObject:u.path]) [roots addObject:u.path];
+            if (!u.path.length) continue;
+            NSString *gp = bds_purgeNormalizedPath(u.path);
+            if ([seenGroup containsObject:gp]) continue;
+            [seenGroup addObject:gp];
+            BDSPurgeCtx gctx = {0, 0, 0, YES, CFAbsoluteTimeGetCurrent() + 1.0, 20000};
+            bds_purgePath(gp, gp, nil, fm, &gctx, 0);
+            purged += gctx.removed;
+            if (gctx.errors || !gctx.complete) complete = NO;
+            groups++;
         }
-        NSMutableSet<NSString *> *seenRoot = [NSMutableSet set];
-        for (NSString *root in roots) {
-            NSString *canonical = [[root stringByStandardizingPath] stringByResolvingSymlinksInPath];
-            if (!canonical.length) continue;
-            BOOL covered = NO;
-            for (NSString *seen in seenRoot) {
-                if (bds_pathIsInsideRoot(canonical, seen)) { covered = YES; break; }
-            }
-            if (covered) continue;
-            [seenRoot addObject:canonical];
-            files += bds_wipeIDFilesInRoot(canonical, fm, &scanned, &errors, &complete);
+
+        // 5) 偏好域最后清：磁盘文件已删，再让 cfprefsd 丢弃内存域，避免它把偏好 plist 重建回磁盘（不使用已废弃的 synchronize）。
+        @try {
+            if (bid.length) [NSUserDefaults.standardUserDefaults removePersistentDomainForName:bid];
+        } @catch (NSException *udEx) {
+            (void)udEx; complete = NO;
         }
+
+        if (outSuccess) *outSuccess = complete;
+        return [NSString stringWithFormat:@"整容器重置 Keychain:%lu/%lu(错%lu) 清项:%lu AppGroup:%lu Web:%@%@",
+                (unsigned long)kc, (unsigned long)kcScanned, (unsigned long)kcErr,
+                (unsigned long)purged, (unsigned long)groups,
+                webOK ? @"OK" : @"超时", complete ? @"" : @"，未完成(将重试)"];
     } @catch (NSException *e) {
-        complete = NO;
-        errors++;
-        return [NSString stringWithFormat:@"清理异常：%@（Keychain:%lu/%lu 偏好键:%lu Cookie:%lu 标识文件:%lu/扫描%lu 错误:%lu）",
-                e.name ?: @"?", (unsigned long)kc, (unsigned long)kcScanned, (unsigned long)ud,
-                (unsigned long)ck, (unsigned long)files, (unsigned long)scanned, (unsigned long)errors];
+        if (outSuccess) *outSuccess = NO;
+        return [NSString stringWithFormat:@"重置异常：%@（Keychain:%lu/%lu 清项:%lu）",
+                e.name ?: @"?", (unsigned long)kc, (unsigned long)kcScanned, (unsigned long)purged];
     }
-    complete = complete && errors == 0;
-    if (outSuccess) *outSuccess = complete;
-    return [NSString stringWithFormat:@"Keychain:%lu/%lu 偏好键:%lu Cookie:%lu 标识文件:%lu（扫描%lu） 错误:%lu%@",
-            (unsigned long)kc, (unsigned long)kcScanned, (unsigned long)ud, (unsigned long)ck,
-            (unsigned long)files, (unsigned long)scanned, (unsigned long)errors,
-            complete ? @"" : @"，未完成"];
 }
 
 __attribute__((constructor))
