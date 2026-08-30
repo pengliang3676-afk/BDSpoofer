@@ -1,13 +1,10 @@
 //
 //  BDSpoofer.m
-//  MGspoofer1.0.0 - 芒果 TV 设备信息虚拟化插件
-//  注入方式：TrollFools
-//  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
-//
-//  MGspoofer1.0.0（内部配置架构 181）：
-//    V. 基础与高级功能默认关闭；高级身份随机仍保持独立、手动触发。
-//    W. 基础随机会开启基础 6 项和常规高级功能，并按当前 Crane 容器持久保存。
-//    X. Keychain/App Group/WebKit Cookie/User-Agent 集中到兼容风险测试页面手动控制。
+//  BDS Global Spoofer 1.9.4（roothide / dopamine，ElleKit 全局注入 deb；亦可 TrollFools 单注入）
+//    - 全局共享一份虚拟身份：芒果 TV 与任意广告主 App 读取同一套设备参数，保证 CPA 归因一致。
+//    - 系统 App 与白名单（微信/QQ/支付宝/百度等）完全透传，不生成身份、不安装 hook。
+//    - 全局目录走 roothide jbroot 解析 + 真实可写探测；首发生成/迁移/保存用 flock 跨进程锁串行化。
+//    - Dipfy 安全 SDK 专属 hook：越狱/代理/调试返回 NO，自产设备标识返回当前身份伪造值。
 //  1.8.0：
 //    S. 兼容/扩展随机池合并为统一 10 款机型，不再区分随机模式；SE2 不参与随机。
 //    T. 移除照片权限 Hook；相机权限继续不做 Hook，保留通讯录/日历保护。
@@ -91,6 +88,8 @@
 #import <dlfcn.h>
 #import <Contacts/Contacts.h>
 #import <EventKit/EventKit.h>
+#import <fcntl.h>
+#import <sys/file.h>
 
 #pragma mark - 原子操作
 
@@ -181,15 +180,257 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"memorySize": @4096,
             @"diskSize": @64,
             @"floatingButtonSide": @"right",
-            @"floatingButtonYPermille": @520
+            @"floatingButtonYPermille": @520,
+            // 1.9.0 全局伪装（芒果 CPA）新增
+            @"globalMode": @YES,              // 全局注入模式：非白名单进程一律伪装
+            @"spoofDipfy": @NO,               // 芒果 Dipfy 安全 SDK 专属 hook（迁移后默认开）
+            @"dipfyDeviceKey": @"",
+            @"dipfyFakeUUID": @"",
+            @"identityId": @"",
+            @"macAddress": @"",
+            // 透传白名单：com.apple. 前缀始终透传，这里是用户额外选择的 App。
+            // 以 "." 或 "*" 结尾表示前缀匹配，其余为精确匹配。
+            @"passthroughBundles": @[
+                @"com.baidu.",
+                @"com.tencent.xin",
+                @"com.tencent.mqq",
+                @"com.alipay."
+            ]
         };
     });
     return defaults;
 }
 
+// 无法取得共享锁时，只接受已经完成迁移且关键身份字段完整的磁盘配置。
+// 此检查只读，不生成字段、不执行迁移，避免不同进程在无锁状态下各自补值。
+static BOOL bds_isCompleteSharedConfig(NSDictionary *config) {
+    if (![config isKindOfClass:NSDictionary.class]) return NO;
+    NSNumber *version = config[@"configVersion"];
+    if (![version isKindOfClass:NSNumber.class] || version.integerValue < 190) return NO;
+    NSArray<NSString *> *requiredStrings = @[
+        @"identityId", @"idfa", @"idfv", @"dipfyDeviceKey", @"dipfyFakeUUID", @"macAddress",
+        @"deviceProfileName", @"systemVersion", @"systemBuild", @"hwMachine", @"hwModel"
+    ];
+    for (NSString *key in requiredStrings) {
+        id value = config[key];
+        if (![value isKindOfClass:NSString.class] || [(NSString *)value length] == 0) return NO;
+    }
+    if (![config[@"globalMode"] isKindOfClass:NSNumber.class]) return NO;
+    if (![config[@"passthroughBundles"] isKindOfClass:NSArray.class]) return NO;
+    return YES;
+}
+
+#pragma mark - 全局共享配置路径 / 进程身份 / 白名单
+
+// 芒果 TV 主 App bundle id（配置浮窗只在它里面显示）
+#define BDS_MG_BUNDLE @"com.hunantv.imgotv"
+
+static NSString *g_bundleID = nil;   // 当前进程 bundle id
+static BOOL g_isMango = NO;          // 当前进程是否为芒果 TV 主 App
+
+
+// ===== 1.9.3 全局共享存储：roothide jbroot 官方 API + 真实可写探测 + 可嵌套/带状态双锁 + 跨App登记 =====
+
+typedef const char *(*bds_jbroot_fn_t)(const char *);
+// 惰性解析一次：jbroot 函数指针 + JBRootPath 环境变量（roothide 的 jbroot 每次越狱随机命名）。
+static void bds_resolveJbroot(bds_jbroot_fn_t *outFn, NSString **outEnvRoot) {
+    static dispatch_once_t once;
+    static bds_jbroot_fn_t sFn = NULL;
+    static NSString *sEnv = nil;
+    dispatch_once(&once, ^{
+        sFn = (bds_jbroot_fn_t)dlsym(RTLD_DEFAULT, "jbroot");
+        const char *e = getenv("JBRootPath");
+        if (e && *e) sEnv = [NSString stringWithUTF8String:e];
+    });
+    if (outFn) *outFn = sFn;
+    if (outEnvRoot) *outEnvRoot = sEnv;
+}
+
+// 全局目录候选（顺序即优先级）：roothide jbroot 官方换算优先，其次 $JBRootPath、经典 /var/jb、裸路径，去重。
+static NSArray<NSString *> *bds_globalConfigCandidates(void) {
+    NSArray<NSString *> *rel = @[ @"/var/mobile/Media/BDSpoofer", @"/var/mobile/Library/BDSpoofer" ];
+    NSMutableArray<NSString *> *list = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    void (^add)(NSString *) = ^(NSString *p) {
+        if (p.length && ![seen containsObject:p]) { [seen addObject:p]; [list addObject:p]; }
+    };
+    bds_jbroot_fn_t fn = NULL; NSString *envRoot = nil;
+    bds_resolveJbroot(&fn, &envRoot);
+    for (NSString *r in rel) {
+        if (fn) {
+            const char *cp = fn([r UTF8String]); // 官方用法：把越狱内绝对路径交给 jbroot() 换算
+            if (cp && *cp) add([NSString stringWithUTF8String:cp]);
+        }
+        if (envRoot.length) add([envRoot stringByAppendingString:r]);
+        add([@"/var/jb" stringByAppendingString:r]); // 经典 rootless
+        add(r);                                          // 裸路径兜底
+    }
+    return list;
+}
+
+// 真实可写探测：建目录 + 写“进程/线程唯一”探针 + 回读比对 + 删除。
+// 探针名带 pid+uuid，避免多进程/多线程并发时互相删除对方探针而误判不可写。
+static BOOL bds_dirReallyWritable(NSString *dir) {
+    if (!dir.length) return NO;
+    NSFileManager *fm = NSFileManager.defaultManager;
+    if (![fm fileExistsAtPath:dir]) {
+        if (![fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil]) return NO;
+    }
+    NSString *probe = [dir stringByAppendingPathComponent:
+        [NSString stringWithFormat:@".wprobe.%d.%@", (int)getpid(), NSUUID.UUID.UUIDString]];
+    NSString *token = NSUUID.UUID.UUIDString;
+    if (![token writeToFile:probe atomically:YES encoding:NSUTF8StringEncoding error:nil]) return NO;
+    NSString *back = [NSString stringWithContentsOfFile:probe encoding:NSUTF8StringEncoding error:nil];
+    [fm removeItemAtPath:probe error:nil];
+    return [back isEqualToString:token];
+}
+
+// 选定一个“确实可写”的全局目录；都不可写返回 @""，由 configPath 回退沙盒 Documents。
+static NSString *bds_globalConfigDir(void) {
+    static NSString *cached = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        for (NSString *dir in bds_globalConfigCandidates()) {
+            if (bds_dirReallyWritable(dir)) { cached = dir; break; }
+        }
+        if (!cached) cached = @"";
+    });
+    return cached;
+}
+
 static NSString *configPath(void) {
+    NSString *dir = bds_globalConfigDir();
+    if (dir.length) return [dir stringByAppendingPathComponent:@"bdspoofer_config.plist"];
     NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
     return [docs stringByAppendingPathComponent:@"bdspoofer_config.plist"];
+}
+
+// 随 dylib 同目录打包的种子配置（deb 在 DynamicLibraries，TrollFools 在 Frameworks），只读兜底。
+static NSString *bds_bundledSeedPath(void) {
+    static NSString *cached = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        uint32_t n = _dyld_image_count();
+        for (uint32_t i = 0; i < n; i++) {
+            const char *img = _dyld_get_image_name(i);
+            if (!img) continue;
+            NSString *p = [NSString stringWithUTF8String:img];
+            NSString *base = p.lastPathComponent.lowercaseString;
+            if ([base containsString:@"bdsspoofer"] || [base containsString:@"bdsglobal"]) {
+                NSString *sib = [[p stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"bdspoofer_config.plist"];
+                if ([NSFileManager.defaultManager fileExistsAtPath:sib]) { cached = sib; return; }
+            }
+        }
+        cached = [[NSBundle mainBundle] pathForResource:@"bdspoofer_config" ofType:@"plist"];
+    });
+    return cached;
+}
+
+// 双临界区：进程内 NSRecursiveLock 保证线程互斥；每次独立 fd + flock 保证跨进程互斥。
+static NSRecursiveLock *bds_csLock(void) {
+    static NSRecursiveLock *lock = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSRecursiveLock new]; });
+    return lock;
+}
+static int bds_csFD = -1;      // 最外层持有的跨进程锁 fd
+static int bds_csDepth = 0;    // 同线程嵌套深度
+static volatile int g_csProcLockOK = 0;    // 最近一次是否真正拿到跨进程 flock
+static volatile int g_csLockEverFailed = 0; // 粘性：本进程是否曾拿不到跨进程锁（防止后续成功掩盖初始化失败）
+
+// flock 带 EINTR 重试。
+static BOOL bds_flockLoop(int fd, int op) {
+    int rc;
+    do { rc = flock(fd, op); } while (rc != 0 && errno == EINTR);
+    return rc == 0;
+}
+// 进入临界区：进程内递归锁（线程互斥、同线程可嵌套）+ 仅最外层申请一次跨进程 flock。
+// 返回是否拿到跨进程锁；拿不到时调用方必须以磁盘最新值为准，不能假定已互斥。
+static BOOL bds_beginCriticalSection(void) {
+    [bds_csLock() lock];
+    bds_csDepth++;
+    if (bds_csDepth == 1) {
+        bds_csFD = -1; g_csProcLockOK = 0;
+        NSString *dir = bds_globalConfigDir();
+        if (dir.length) {
+            NSString *lockPath = [dir stringByAppendingPathComponent:@"config.lock"];
+            // 阻塞 flock 偶发瞬时失败时重试 3 次（每次间隔 20ms），仍失败才记粘性失败。
+            for (int attempt = 0; attempt < 3 && bds_csFD < 0; attempt++) {
+                int fd = open([lockPath fileSystemRepresentation], O_CREAT | O_RDWR, 0666);
+                if (fd >= 0) {
+                    if (bds_flockLoop(fd, LOCK_EX)) { bds_csFD = fd; g_csProcLockOK = 1; }
+                    else { close(fd); usleep(20000); }
+                } else { usleep(20000); }
+            }
+            if (bds_csFD < 0) g_csLockEverFailed = 1;
+        } else {
+            g_csLockEverFailed = 1; // 没有共享目录，天然无法跨进程互斥
+        }
+    }
+    return bds_csFD >= 0;
+}
+static void bds_endCriticalSection(void) {
+    if (bds_csDepth > 0) {
+        bds_csDepth--;
+        if (bds_csDepth == 0 && bds_csFD >= 0) {
+            bds_flockLoop(bds_csFD, LOCK_UN);
+            close(bds_csFD);
+            bds_csFD = -1;
+        }
+    }
+    [bds_csLock() unlock];
+}
+
+// 单条白名单规则匹配：以 "." 或 "*" 结尾为前缀匹配，否则精确匹配。
+static BOOL bds_ruleMatchesBundle(NSString *bundleID, NSString *rule) {
+    if (![bundleID isKindOfClass:NSString.class] || ![rule isKindOfClass:NSString.class]) return NO;
+    if (rule.length == 0) return NO;
+    if ([rule hasSuffix:@"*"]) {
+        NSString *prefix = [rule substringToIndex:rule.length - 1];
+        return prefix.length ? [bundleID hasPrefix:prefix] : NO;
+    }
+    if ([rule hasSuffix:@"."]) return [bundleID hasPrefix:rule];
+    return [bundleID isEqualToString:rule];
+}
+
+// 用显式规则集判定透传（constructor 早期 g_config 尚未加载时也能用）。
+// 注意：系统 App 与用户白名单“无条件”透传，不受 globalMode 影响，任何情况下都不 hook。
+static BOOL bds_passthroughWithRules(NSString *bundleID, id rules) {
+    if (![bundleID isKindOfClass:NSString.class] || bundleID.length == 0) return NO;
+    if ([bundleID hasPrefix:@"com.apple."]) return YES;
+    if (![rules isKindOfClass:[NSArray class]]) {
+        rules = BDSDefaultConfig()[@"passthroughBundles"];
+    }
+    for (NSString *rule in (NSArray *)rules) {
+        if (bds_ruleMatchesBundle(bundleID, rule)) return YES;
+    }
+    return NO;
+}
+
+// 正式加载配置后使用 g_config 中的规则判定。
+static BOOL bds_isPassthroughBundle(NSString *bundleID) {
+    return bds_passthroughWithRules(bundleID, g_config[@"passthroughBundles"]);
+}
+
+// 早期透传只读：在候选路径中找“已存在且可读”的全局配置，绝不建目录、绝不写探针，保证白名单零写入。
+// 候选顺序与正式可写解析一致；稳态下写入方(Mango)落在首个可写目录，读取方也在该目录最先命中。
+static NSString *bds_existingGlobalConfigReadOnly(void) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    BOOL isDir = NO;
+    for (NSString *dir in bds_globalConfigCandidates()) {
+        // 与正式写入方相同优先级：目录必须“已存在且可写”（只判断，绝不创建/写探针），
+        // 避免读到前面候选里的只读旧配置、而写入落在后面候选导致的分叉。
+        if (![fm fileExistsAtPath:dir isDirectory:&isDir] || !isDir) continue;
+        if (![fm isWritableFileAtPath:dir]) continue;
+        NSString *f = [dir stringByAppendingPathComponent:@"bdspoofer_config.plist"];
+        if ([fm isReadableFileAtPath:f]) return f;
+    }
+    return nil;
+}
+static NSDictionary *bds_readOnlyGlobalConfig(void) {
+    NSString *p = bds_existingGlobalConfigReadOnly();
+    NSDictionary *d = p ? [NSDictionary dictionaryWithContentsOfFile:p] : nil;
+    return [d isKindOfClass:[NSDictionary class]] ? d : BDSDefaultConfig();
 }
 
 static NSString *cfgStr(NSString *key, NSString *def) {
@@ -241,12 +482,37 @@ static void bds_update_c_cache(void) {
 
 static void loadConfig() {
     NSString *p1 = configPath();
-    NSString *p2 = [[NSBundle mainBundle] pathForResource:@"bdspoofer_config" ofType:@"plist"];
-    NSString *path = [[NSFileManager defaultManager] fileExistsAtPath:p1] ? p1 : p2;
-    NSDictionary *loaded = path ? [NSDictionary dictionaryWithContentsOfFile:path] : nil;
+    BOOL needsProcessLock = bds_globalConfigDir().length > 0;
+    BOOL bdsGotLock = bds_beginCriticalSection();
+    @try {
+    // 锁内重新读取磁盘：另一进程若已抢先生成，直接采用同一身份，杜绝并发首启各自随机。
+    NSString *bdsSeed = bds_bundledSeedPath();
+    NSString *bdsExisting = [[NSFileManager defaultManager] fileExistsAtPath:p1] ? p1 : bdsSeed;
+    NSDictionary *loaded = bdsExisting ? [NSDictionary dictionaryWithContentsOfFile:bdsExisting] : nil;
     NSMutableDictionary *merged = [BDSDefaultConfig() mutableCopy];
     if (loaded) [merged addEntriesFromDictionary:loaded];
+
+    // 共享目录存在但 flock 失败：禁止迁移和写盘。只采用完整、已迁移的磁盘配置；
+    // 磁盘缺失或残缺时保持安全默认值，避免无锁生成身份或采用 configVersion 高但缺键的配置。
+    if (needsProcessLock && !bdsGotLock) {
+        NSDictionary *diskOnly = [NSDictionary dictionaryWithContentsOfFile:p1];
+        if (bds_isCompleteSharedConfig(diskOnly)) {
+            [merged removeAllObjects];
+            [merged addEntriesFromDictionary:BDSDefaultConfig()];
+            [merged addEntriesFromDictionary:diskOnly];
+        } else {
+            [merged removeAllObjects];
+            [merged addEntriesFromDictionary:BDSDefaultConfig()];
+        }
+        g_config = [merged copy];
+        bds_update_c_cache();
+        return;
+    }
+
     NSInteger ver = [loaded[@"configVersion"] integerValue];
+    // 当前 1.9.x 配置若自报 190 但关键字段不完整，按 1.8.1 基线重新执行 1.9.0 补齐迁移。
+    // 仅处理已知版本 190，避免擅自降级未来更高版本的配置。
+    if (ver == 190 && !bds_isCompleteSharedConfig(loaded)) ver = 181;
     if (ver < 150) {
         [merged addEntriesFromDictionary:@{
             @"configVersion": @150,
@@ -392,16 +658,79 @@ static void loadConfig() {
         }];
         [merged writeToFile:p1 atomically:YES];
     }
+    if (ver < 190) {
+        // 1.9.0 全局伪装基线（芒果 CPA）：
+        // 全新全局配置首次生成时所有伪装开关默认开启；旧配置已保存的选择不覆盖。
+        merged[@"configVersion"] = @190;
+        merged[@"globalMode"] = @YES;
+        merged[@"spoofDipfy"] = @YES;
+        NSArray<NSString *> *allOn = @[
+            @"enabled", @"spoofAdvertisingIdentifiers", @"spoofProcessHardware", @"spoofLocale",
+            @"spoofCarrier", @"spoofStorage", @"spoofBaiduSDK", @"spoofSysctl", @"spoofKeychain",
+            @"spoofUserAgent", @"bypassJailbreakDetect", @"spoofWiFi", @"spoofLocalIP",
+            @"spoofAppGroup", @"spoofPasteboard", @"spoofBootTime", @"spoofCPU", @"spoofLocation",
+            @"spoofProxyDetection", @"spoofStatfs", @"spoofDlopen", @"spoofUbiquity",
+            @"spoofPrivacyPermissions", @"spoofWebKitCookie", @"spoofBattery"
+        ];
+        for (NSString *k in allOn) {
+            if (!loaded[k]) merged[k] = @YES;
+        }
+        // 屏幕保持真机物理尺寸，避免 UIScreen hook 导致界面缩放。
+        if (!loaded[@"spoofScreen"]) merged[@"spoofScreen"] = @NO;
+        if (!loaded[@"passthroughBundles"]) {
+            merged[@"passthroughBundles"] = BDSDefaultConfig()[@"passthroughBundles"];
+        }
+        NSString *(^bdsHex)(NSUInteger) = ^(NSUInteger n) {
+            return [[[NSUUID.UUID.UUIDString stringByReplacingOccurrencesOfString:@"-" withString:@""]
+                     substringToIndex:n] uppercaseString];
+        };
+        if (![merged[@"identityId"] isKindOfClass:NSString.class] || [merged[@"identityId"] length] == 0)
+            merged[@"identityId"] = [bdsHex(12) lowercaseString];
+        if (![merged[@"dipfyDeviceKey"] isKindOfClass:NSString.class] || [merged[@"dipfyDeviceKey"] length] == 0)
+            merged[@"dipfyDeviceKey"] = bdsHex(32);
+        if (![merged[@"dipfyFakeUUID"] isKindOfClass:NSString.class] || [merged[@"dipfyFakeUUID"] length] == 0)
+            merged[@"dipfyFakeUUID"] = NSUUID.UUID.UUIDString.uppercaseString;
+        if (![merged[@"idfa"] isKindOfClass:NSString.class] || [merged[@"idfa"] length] == 0)
+            merged[@"idfa"] = NSUUID.UUID.UUIDString.uppercaseString;
+        if (![merged[@"idfv"] isKindOfClass:NSString.class] || [merged[@"idfv"] length] == 0)
+            merged[@"idfv"] = NSUUID.UUID.UUIDString.uppercaseString;
+        if (![merged[@"macAddress"] isKindOfClass:NSString.class] || [merged[@"macAddress"] length] == 0) {
+            merged[@"macAddress"] = [NSString stringWithFormat:@"%02X:%02X:%02X:%02X:%02X:%02X",
+                (unsigned)arc4random_uniform(256), (unsigned)arc4random_uniform(256),
+                (unsigned)arc4random_uniform(256), (unsigned)arc4random_uniform(256),
+                (unsigned)arc4random_uniform(256), (unsigned)arc4random_uniform(256)];
+        }
+        [merged writeToFile:p1 atomically:YES];
+    }
     g_config = [merged copy];
     bds_update_c_cache();
+    } @finally { bds_endCriticalSection(); }
 }
 
 static BOOL saveConfigValues(NSDictionary *values) {
     if (!values.count) return NO;
-    NSMutableDictionary *next = [g_config mutableCopy] ?: [NSMutableDictionary dictionary];
-    [next addEntriesFromDictionary:values];
-    BOOL saved = [next writeToFile:configPath() atomically:YES];
-    if (saved) {
+    NSString *p = configPath();
+    BOOL needsProcessLock = bds_globalConfigDir().length > 0;
+    // 双临界区内“读磁盘最新(读不到则用内存完整配置兜底，绝不从空字典写残缺) → 叠加 → 写回 → 同步内存”。
+    BOOL bdsGotLock = bds_beginCriticalSection();
+    BOOL saved = NO;
+    @try {
+    if (needsProcessLock && !bdsGotLock) {
+        // 共享配置禁止无锁覆盖；调用方收到 NO 后可提示用户重试。
+        saved = NO;
+    } else {
+    NSDictionary *disk = [NSDictionary dictionaryWithContentsOfFile:p];
+    // 只有完整磁盘配置才能作为合并基底；磁盘残缺时使用完整内存配置。
+    // 两者都不完整则拒绝写入，避免把少量 values 持久化成新的残缺 plist。
+    NSDictionary *base = bds_isCompleteSharedConfig(disk) ? disk
+                       : (bds_isCompleteSharedConfig(g_config) ? g_config : nil);
+    if (base) {
+        NSMutableDictionary *next = [base mutableCopy];
+        // 只叠加本次要改的键；不用旧 g_config 整体覆盖正常的磁盘最新值。
+        [next addEntriesFromDictionary:values];
+        saved = [next writeToFile:p atomically:YES];
+        if (saved) {
+        // g_config 与 C 缓存必须在临界区内更新，避免两线程交错时较早的保存最后把内存回退成旧值。
         g_config = [next copy];
         bds_update_c_cache();
         // C 层 Hook 属于高级功能，不能被基础总开关 enabled 一并关闭。
@@ -415,7 +744,10 @@ static BOOL saveConfigValues(NSDictionary *values) {
         BDS_ATOMIC_SET(g_spoofCPUC, cfgBool(@"spoofCPU", NO) ? 1 : 0);
         BDS_ATOMIC_SET(g_spoofStatfsC, cfgBool(@"spoofStatfs", NO) ? 1 : 0);
         BDS_ATOMIC_SET(g_spoofDlopenC, cfgBool(@"spoofDlopen", NO) ? 1 : 0);
+        }
     }
+    }
+    } @finally { bds_endCriticalSection(); }
     return saved;
 }
 
@@ -1170,6 +1502,193 @@ static void bds_dyld_add_image_cb(const struct mach_header *mh, intptr_t vmaddr_
 static void installBaiduSDKHooks(void) {
     bds_scanBaiduSDKClasses();
     _dyld_register_func_for_add_image(bds_dyld_add_image_cb);
+}
+
+#pragma mark - Dipfy（芒果安全 SDK）专属 Hook
+// 只做两类、且都做签名校验，避免返回类型不符导致崩溃：
+//  1) 安全检测布尔值（越狱/代理/USB）-> 一律 NO
+//  2) Dipfy 自产、不经过系统 API 的设备标识字符串 -> 返回当前身份的稳定伪造值
+// 机型/系统/内存等 DipfyCDevice 只是转调系统 API 的方法，已被底层 UIDevice/NSProcessInfo/sysctl hook 覆盖，不重复 hook。
+
+static NSRecursiveLock *g_dipfyLock = nil;
+static NSMutableDictionary<NSString *, NSValue *> *g_dipfyOrigImps = nil;
+static NSMutableSet<NSString *> *g_dipfyHooked = nil;
+static volatile uint64_t g_dipfyBoolHits = 0;
+static volatile uint64_t g_dipfyStrHits = 0;
+
+typedef NS_ENUM(int, BDSDipfyKind) {
+    BDSDipfyBoolNoArg = 0,   // 无参 BOOL，返回 NO
+    BDSDipfyBoolOneArg,      // 单参 BOOL，返回 NO
+    BDSDipfyString           // 无参 NSString，返回伪造标识
+};
+
+static NSString *bds_dipfy_string_for_cmd(SEL _cmd) {
+    NSString *s = NSStringFromSelector(_cmd).lowercaseString;
+    if ([s containsString:@"devicename"]) return cfgStr(@"deviceName", @"iPhone");
+    if ([s containsString:@"mac"]) return cfgStr(@"macAddress", @"02:00:00:00:00:00");
+    if ([s containsString:@"idfv"] || [s containsString:@"identifierforvendor"])
+        return cfgStr(@"idfv", @"");
+    if ([s containsString:@"fakeuuid"] || [s containsString:@"uuid"] ||
+        [s containsString:@"flowidentifier"])
+        return cfgStr(@"dipfyFakeUUID", @"");
+    if ([s containsString:@"devicekey"] || [s containsString:@"imei"] ||
+        [s containsString:@"serial"] || [s containsString:@"deviceid"])
+        return cfgStr(@"dipfyDeviceKey", @"");
+    return nil;
+}
+
+static BOOL bds_dipfy_enabled(void) {
+    return cfgBool(@"spoofDipfy", NO);
+}
+
+static BOOL new_dipfy_bool_noarg(id self, SEL _cmd) {
+    __atomic_add_fetch(&g_dipfyBoolHits, 1, __ATOMIC_RELAXED);
+    NSString *isC = object_isClass(self) ? @"C" : @"I";
+    NSString *cls = object_isClass(self) ? NSStringFromClass(self) : NSStringFromClass([self class]);
+    NSString *key = [NSString stringWithFormat:@"%@.%@.%@.B0", cls, NSStringFromSelector(_cmd), isC];
+    NSValue *ov = nil;
+    [g_dipfyLock lock]; ov = g_dipfyOrigImps[key]; [g_dipfyLock unlock];
+    if (!bds_dipfy_enabled()) {
+        if (ov) return ((BOOL (*)(id, SEL))[ov pointerValue])(self, _cmd);
+        return NO;
+    }
+    return NO; // 越狱/代理等安全检测一律“未发现”
+}
+
+static BOOL new_dipfy_bool_onearg(id self, SEL _cmd, id arg) {
+    __atomic_add_fetch(&g_dipfyBoolHits, 1, __ATOMIC_RELAXED);
+    NSString *isC = object_isClass(self) ? @"C" : @"I";
+    NSString *cls = object_isClass(self) ? NSStringFromClass(self) : NSStringFromClass([self class]);
+    NSString *key = [NSString stringWithFormat:@"%@.%@.%@.B1", cls, NSStringFromSelector(_cmd), isC];
+    NSValue *ov = nil;
+    [g_dipfyLock lock]; ov = g_dipfyOrigImps[key]; [g_dipfyLock unlock];
+    if (!bds_dipfy_enabled()) {
+        if (ov) return ((BOOL (*)(id, SEL, id))[ov pointerValue])(self, _cmd, arg);
+        return NO;
+    }
+    return NO; // isConnUsb: 一律“未连接调试”
+}
+
+static NSString *new_dipfy_string(id self, SEL _cmd) {
+    __atomic_add_fetch(&g_dipfyStrHits, 1, __ATOMIC_RELAXED);
+    NSString *isC = object_isClass(self) ? @"C" : @"I";
+    NSString *cls = object_isClass(self) ? NSStringFromClass(self) : NSStringFromClass([self class]);
+    NSString *key = [NSString stringWithFormat:@"%@.%@.%@.S", cls, NSStringFromSelector(_cmd), isC];
+    NSValue *ov = nil;
+    [g_dipfyLock lock]; ov = g_dipfyOrigImps[key]; [g_dipfyLock unlock];
+    IMP orig = ov ? [ov pointerValue] : NULL;
+    if (!bds_dipfy_enabled()) {
+        if (orig) return ((NSString *(*)(id, SEL))orig)(self, _cmd);
+        return nil;
+    }
+    // 先取原值，确认确实是字符串才替换，类型不符时原样返回，杜绝 ABI 崩溃。
+    id original = orig ? ((id (*)(id, SEL))orig)(self, _cmd) : nil;
+    if (original && ![original isKindOfClass:NSString.class]) return original;
+    NSString *fake = bds_dipfy_string_for_cmd(_cmd);
+    if (fake.length) return fake;
+    return original;
+}
+
+static void bds_dipfy_try_method(Class cls, SEL sel, BDSDipfyKind kind, BOOL isClassMethod) {
+    if (!cls) return;
+    Method m = isClassMethod ? class_getClassMethod(cls, sel) : class_getInstanceMethod(cls, sel);
+    if (!m) return;
+
+    char ret[16] = {0};
+    method_getReturnType(m, ret, sizeof(ret));
+    unsigned nargs = method_getNumberOfArguments(m);
+    BOOL sigOK = NO;
+    IMP replacement = NULL;
+    const char *suffix = NULL;
+    switch (kind) {
+        case BDSDipfyBoolNoArg:
+            sigOK = (nargs == 2 && ret[0] == 'B');
+            replacement = (IMP)new_dipfy_bool_noarg;
+            suffix = ".B0";
+            break;
+        case BDSDipfyBoolOneArg: {
+            // 替换函数把第三个参数当 id；必须校验其类型编码确为对象(@/@?)，否则标量/结构体会 ABI 不匹配崩溃。
+            char argt[16] = {0};
+            method_getArgumentType(m, 2, argt, sizeof(argt));
+            sigOK = (nargs == 3 && ret[0] == 'B' && argt[0] == '@');
+            replacement = (IMP)new_dipfy_bool_onearg;
+            suffix = ".B1";
+            break;
+        }
+        case BDSDipfyString:
+            sigOK = (nargs == 2 && ret[0] == '@');
+            replacement = (IMP)new_dipfy_string;
+            suffix = ".S";
+            break;
+    }
+    if (!sigOK || !replacement) return;
+
+    NSString *className = NSStringFromClass(cls);
+    NSString *tag = isClassMethod ? @"C" : @"I";
+    NSString *hookKey = [NSString stringWithFormat:@"%@.%@.%@%@", className, NSStringFromSelector(sel), tag, suffix];
+
+    [g_dipfyLock lock];
+    if ([g_dipfyHooked containsObject:hookKey]) {
+        [g_dipfyLock unlock];
+        return;
+    }
+    Class targetCls = isClassMethod ? object_getClass(cls) : cls;
+    IMP oldImp = class_replaceMethod(targetCls, sel, replacement, method_getTypeEncoding(m));
+    if (!oldImp) oldImp = method_getImplementation(m);
+    [g_dipfyOrigImps setObject:[NSValue valueWithPointer:oldImp] forKey:hookKey];
+    [g_dipfyHooked addObject:hookKey];
+    [g_dipfyLock unlock];
+}
+
+static void bds_dipfy_scan(void) {
+    if (!g_dipfyLock) {
+        g_dipfyLock = [[NSRecursiveLock alloc] init];
+        g_dipfyOrigImps = [NSMutableDictionary dictionary];
+        g_dipfyHooked = [NSMutableSet set];
+    }
+    NSArray<NSString *> *classes = @[
+        @"DipfyCDevice", @"DipfyDevice", @"DipfyCInfo", @"DipfyCSecurity"
+    ];
+    NSArray<NSString *> *boolNoArg = @[
+        @"hasJailBroken", @"hasJailbroken", @"isJailbroken", @"hasProxy", @"isProxy",
+        @"isDebug", @"isSimulator"
+    ];
+    NSArray<NSString *> *boolOneArg = @[@"isConnUsb:"];
+    NSArray<NSString *> *strings = @[
+        @"deviceKey", @"deviceKeyNew", @"local_deviceKey",
+        @"getFakeUUID", @"loadFakeUUID", @"fakeUUID", @"uuid", @"UUID",
+        @"flowIdentifier", @"idfv", @"identifierForVendor", @"macAddress",
+        @"sql_deviceid", @"sql_idfv", @"sql_IMEI", @"sql_serialId", @"sql_deviceName"
+    ];
+    for (NSString *className in classes) {
+        Class cls = objc_getClass(className.UTF8String);
+        if (!cls) continue;
+        for (NSString *s in boolNoArg) {
+            SEL sel = NSSelectorFromString(s);
+            bds_dipfy_try_method(cls, sel, BDSDipfyBoolNoArg, YES);
+            bds_dipfy_try_method(cls, sel, BDSDipfyBoolNoArg, NO);
+        }
+        for (NSString *s in boolOneArg) {
+            SEL sel = NSSelectorFromString(s);
+            bds_dipfy_try_method(cls, sel, BDSDipfyBoolOneArg, YES);
+            bds_dipfy_try_method(cls, sel, BDSDipfyBoolOneArg, NO);
+        }
+        for (NSString *s in strings) {
+            SEL sel = NSSelectorFromString(s);
+            bds_dipfy_try_method(cls, sel, BDSDipfyString, YES);
+            bds_dipfy_try_method(cls, sel, BDSDipfyString, NO);
+        }
+    }
+}
+
+static void bds_dipfy_add_image_cb(const struct mach_header *mh, intptr_t slide) {
+    (void)mh; (void)slide;
+    bds_dipfy_scan();
+}
+
+static void installDipfyHooks(void) {
+    bds_dipfy_scan();
+    _dyld_register_func_for_add_image(bds_dipfy_add_image_cb);
 }
 
 #pragma mark - sysctlbyname Hook（fishhook，纯 C）
@@ -2155,6 +2674,9 @@ static const NSTimeInterval BDSButtonCollapseDelay = 2.0;
 - (void)editIdentifiers;
 - (void)randomizeBasicProfile;
 - (void)randomizeAdvancedProfile;
+- (void)rotateGlobalIdentity;
+- (void)showPassthroughWhitelist;
+- (void)showPresenceLedger;
 - (void)showOptionalSwitches;
 - (void)showOptionalEditors;
 - (void)showAdvancedSwitches;
@@ -2460,14 +2982,89 @@ static NSDictionary *BDSRandomBasicProfileValues(void) {
     return values;
 }
 
+static NSString *BDSRandomMACAddr(void) {
+    return [NSString stringWithFormat:@"%02X:%02X:%02X:%02X:%02X:%02X",
+        (unsigned)arc4random_uniform(256), (unsigned)arc4random_uniform(256),
+        (unsigned)arc4random_uniform(256), (unsigned)arc4random_uniform(256),
+        (unsigned)arc4random_uniform(256), (unsigned)arc4random_uniform(256)];
+}
+
+// 一键换全新身份：机型/系统/硬件自洽，所有设备/广告/Dipfy 标识全部重新随机，
+// 并打开全部伪装开关（屏幕保持真机物理尺寸）。写入全局共享配置，芒果与广告主 App 共用。
+static NSDictionary *BDSFullNewIdentityValues(void) {
+    NSArray<NSDictionary *> *devs = BDSUnifiedDeviceProfiles();
+    NSDictionary *device = devs[arc4random_uniform((uint32_t)devs.count)];
+    NSDictionary *system = BDSRandomSystemProfileForDevice(device);
+    NSArray<NSNumber *> *disks = device[@"disks"];
+    NSNumber *disk = disks[arc4random_uniform((uint32_t)disks.count)];
+    NSString *deviceName = [@"iPhone-" stringByAppendingString:[BDSRandomHex32(YES) substringToIndex:6]];
+
+    NSMutableDictionary *v = [NSMutableDictionary dictionary];
+    v[@"identityId"] = [[BDSRandomHex32(NO) substringToIndex:12] copy];
+    v[@"identityCreatedAt"] = @((long long)NSDate.date.timeIntervalSince1970);
+    v[@"deviceProfileName"] = device[@"name"];
+    v[@"deviceModel"] = @"iPhone";
+    v[@"marketingModel"] = @"iPhone";
+    v[@"systemVersion"] = system[@"version"];
+    v[@"systemBuild"] = system[@"build"];
+    v[@"kernOSVersion"] = system[@"build"];
+    v[@"hwMachine"] = device[@"machine"];
+    v[@"hwModel"] = device[@"model"];
+    v[@"memorySize"] = device[@"memory"];
+    v[@"diskSize"] = disk;
+    v[@"deviceName"] = deviceName;
+    v[@"kernHostname"] = deviceName;
+    // 设备 / 广告 / 百度 / Dipfy 标识全部换新
+    v[@"idfa"] = NSUUID.UUID.UUIDString.uppercaseString;
+    v[@"idfv"] = NSUUID.UUID.UUIDString.uppercaseString;
+    v[@"deviceID"] = NSUUID.UUID.UUIDString.uppercaseString;
+    v[@"cuid"] = BDSRandomHex32(YES);
+    v[@"utdid"] = BDSRandomHex32(NO);
+    v[@"dipfyDeviceKey"] = BDSRandomHex32(YES);
+    v[@"dipfyFakeUUID"] = NSUUID.UUID.UUIDString.uppercaseString;
+    v[@"macAddress"] = BDSRandomMACAddr();
+    v[@"bootTimeOffsetSeconds"] = @(86400 + (NSInteger)arc4random_uniform(7 * 86400));
+    // 全部伪装开关打开；屏幕保持真机，避免界面缩放。
+    NSArray<NSString *> *turnOn = @[
+        @"enabled", @"spoofAdvertisingIdentifiers", @"spoofProcessHardware", @"spoofLocale",
+        @"spoofCarrier", @"spoofStorage", @"spoofBaiduSDK", @"spoofSysctl", @"spoofKeychain",
+        @"spoofUserAgent", @"bypassJailbreakDetect", @"spoofWiFi", @"spoofLocalIP",
+        @"spoofAppGroup", @"spoofPasteboard", @"spoofBootTime", @"spoofCPU", @"spoofLocation",
+        @"spoofProxyDetection", @"spoofStatfs", @"spoofDlopen", @"spoofUbiquity",
+        @"spoofPrivacyPermissions", @"spoofWebKitCookie", @"spoofBattery", @"spoofDipfy"
+    ];
+    for (NSString *k in turnOn) v[k] = @YES;
+    v[@"spoofScreen"] = @NO;
+    return v;
+}
+
 static NSString *BDSConfigSummary(void) {
+    NSString *bdsDir = bds_globalConfigDir();
+    NSString *storage;
+    if (bdsDir.length) {
+        NSString *cf = [bdsDir stringByAppendingPathComponent:@"bdspoofer_config.plist"];
+        NSDictionary *attr = [[NSFileManager defaultManager] attributesOfItemAtPath:cf error:nil];
+        unsigned long long sz = [attr fileSize];
+        NSString *lock = g_csLockEverFailed ? @"跨进程锁:曾失败(并发首启有风险)"
+                          : (g_csProcLockOK ? @"跨进程锁:可用" : @"跨进程锁:本次未取得");
+        if (attr && sz > 0) {
+            storage = [NSString stringWithFormat:@"全局共享·已落盘(%lluB)\n文件:%@\n%@\n(仅证明本进程;跨App一致性请用[各App身份核对])", sz, cf, lock];
+        } else {
+            storage = [NSString stringWithFormat:@"⚠️目录可写但配置未落盘\n文件:%@\n%@", cf, lock];
+        }
+    } else {
+        storage = @"⚠️沙盒Documents(各App身份会不一致)";
+    }
     return [NSString stringWithFormat:
-        @"状态：%@\n设备：%@\n系统：iOS %@ (%@)\n随机范围：%@",
-        cfgBool(@"enabled", NO) ? @"已开启" : @"已关闭",
+        @"状态：%@\n身份ID：%@\n设备：%@\n系统：iOS %@ (%@)\n存储：%@\n进程：%@%@",
+        cfgBool(@"enabled", NO) ? @"已开启（全局伪装）" : @"已关闭",
+        cfgStr(@"identityId", @"(未生成)"),
         cfgStr(@"deviceProfileName", @"iPhone SE (3rd generation)"),
         cfgStr(@"systemVersion", @"15.4.1"),
         cfgStr(@"systemBuild", @"19E258"),
-        BDSDeviceRangeName()];
+        storage,
+        g_bundleID ?: @"-",
+        g_isMango ? @"（芒果主App，可改配置）" : @"（广告主App，静默伪装）"];
 }
 
 @implementation BDSUIController
@@ -2626,9 +3223,13 @@ static NSString *BDSConfigSummary(void) {
 - (void)openPanel {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"MGspoofer1.0.0"
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"BDS Global 1.9.4"
                                                                    message:BDSConfigSummary()
                                                             preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"换全新身份（全局）" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        [self rotateGlobalIdentity];
+    }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"一键随机整套基础参数" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         [self randomizeBasicProfile];
@@ -2653,6 +3254,18 @@ static NSString *BDSConfigSummary(void) {
         (void)action;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self showAntiAssociation];
+        });
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"透传白名单管理  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self showPassthroughWhitelist];
+        });
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"各App身份核对  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self showPresenceLedger];
         });
     }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"诊断与自检  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
@@ -2823,6 +3436,159 @@ static NSString *BDSConfigSummary(void) {
         idfvHit ? @"已命中" : @"未命中",
         baiduHit ? @"已命中" : @"未命中"];
     [self presentMessage:message title:@"高级参数已更换"];
+}
+
+- (void)rotateGlobalIdentity {
+    UIViewController *presenter = BDSTopController();
+    if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
+    NSString *current = [NSString stringWithFormat:@"当前身份：%@\n机型：%@ / iOS %@",
+                         cfgStr(@"identityId", @"(无)"),
+                         cfgStr(@"deviceProfileName", @"-"),
+                         cfgStr(@"systemVersion", @"-")];
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"换全新身份（全局）"
+                         message:[current stringByAppendingString:
+                            @"\n\n将重新随机机型/系统/IDFA/IDFV/Dipfy 等全套身份并写入全局配置，芒果与所有广告主 App 共用同一套。\n\n换号配套三步：①给芒果新建 Crane 干净容器；②卸载上一批广告主 App；③换 IP（飞行重拨/切流量卡/换节点）。"]
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"确认换新身份" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        (void)action;
+        NSDictionary *values = BDSFullNewIdentityValues();
+        BOOL saved = saveConfigValues(values);
+        if (!saved) {
+            [self presentMessage:@"全局配置写入失败，请检查 /var/jb 全局目录是否可写。" title:@"保存失败"];
+            return;
+        }
+        // 换身份代次：清空上一代各 App 登记，避免浮窗长期显示旧“不一致”。
+        NSString *bdsPDir = bds_globalConfigDir();
+        if (bdsPDir.length) {
+            [[NSFileManager defaultManager] removeItemAtPath:
+                [bdsPDir stringByAppendingPathComponent:@"presence.plist"] error:nil];
+        }
+        NSString *msg = [NSString stringWithFormat:
+            @"新身份已写入全局配置：\n身份ID：%@\n机型：%@\niOS：%@ (%@)\n\n"
+             "请按顺序操作：\n1. 给芒果新建 Crane 干净容器，再登录 B 账号\n2. 卸载上一批广告主 App\n3. 切换 IP（飞行重拨/切流量卡/换代理节点）\n4. 彻底关闭并重启相关 App",
+            values[@"identityId"], values[@"deviceProfileName"],
+            values[@"systemVersion"], values[@"systemBuild"]];
+        [self presentMessage:msg title:@"新身份已生成"];
+    }]];
+    [presenter presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)showPassthroughWhitelist {
+    UIViewController *presenter = BDSTopController();
+    if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
+    NSArray<NSString *> *rules = g_config[@"passthroughBundles"];
+    if (![rules isKindOfClass:[NSArray class]]) rules = BDSDefaultConfig()[@"passthroughBundles"];
+    NSString *msg = [NSString stringWithFormat:
+        @"以下 App 读取真机信息、完全不伪装；com.apple. 系统 App 始终透传。当前 %lu 条，点条目删除，重启后生效。",
+        (unsigned long)rules.count];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"透传白名单"
+                                                                   message:msg
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSString *rule in rules) {
+        [sheet addAction:[UIAlertAction actionWithTitle:[@"删除：" stringByAppendingString:rule]
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction *action) {
+            (void)action;
+            NSMutableArray *next = [rules mutableCopy];
+            [next removeObject:rule];
+            [self showRestartNotice:saveConfigValues(@{@"passthroughBundles": next})];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"添加白名单（精确或前缀.）"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        (void)action;
+        UIAlertController *inAlert = [UIAlertController
+            alertControllerWithTitle:@"添加透传 App"
+                             message:@"填 bundle id：精确匹配直接写，如 com.tencent.xin；以 . 结尾做前缀，如 com.alipay."
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [inAlert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+            field.placeholder = @"com.xxx.app";
+            field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+            field.autocorrectionType = UITextAutocorrectionTypeNo;
+        }];
+        [inAlert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+        [inAlert addAction:[UIAlertAction actionWithTitle:@"添加" style:UIAlertActionStyleDefault handler:^(UIAlertAction *b) {
+            (void)b;
+            NSString *v = [inAlert.textFields.firstObject.text
+                stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            if (!v.length) return;
+            NSMutableArray *next = [rules mutableCopy];
+            if (![next containsObject:v]) [next addObject:v];
+            [self showRestartNotice:saveConfigValues(@{@"passthroughBundles": next})];
+        }]];
+        [presenter presentViewController:inAlert animated:YES completion:nil];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self openPanel]; });
+    }]];
+    if (sheet.popoverPresentationController) {
+        sheet.popoverPresentationController.sourceView = presenter.view;
+        sheet.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(presenter.view.bounds), CGRectGetMidY(presenter.view.bounds), 1, 1);
+    }
+    [presenter presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)showPresenceLedger {
+    UIViewController *presenter = BDSTopController();
+    if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
+    NSString *dir = bds_globalConfigDir();
+    NSString *pf = dir.length ? [dir stringByAppendingPathComponent:@"presence.plist"] : nil;
+    NSDictionary *ledger = pf ? [NSDictionary dictionaryWithContentsOfFile:pf] : nil;
+    NSString *curId = cfgStr(@"identityId", @"-");
+    NSString *curIDFV = cfgStr(@"idfv", @"-");
+    NSString *curModel = cfgStr(@"deviceProfileName", @"-");
+    NSString *curSys = cfgStr(@"systemVersion", @"-");
+    NSMutableString *msg = [NSMutableString string];
+    if (!dir.length) {
+        [msg appendString:@"⚠️当前为沙盒回退，没有共享登记文件，无法跨App核对。"];
+    } else if (![ledger isKindOfClass:NSDictionary.class] || ledger.count == 0) {
+        [msg appendFormat:@"暂无登记记录。\n文件：%@\n请先冷启动芒果和各广告主App后再打开。", pf];
+    } else {
+        [msg appendFormat:@"芒果当前身份：%@\nIDFV:%@\n机型:%@ iOS%@\n逐项核对(身份四要素+运行值)：",
+                          curId, curIDFV, curModel, curSys];
+        NSArray *sorted = [ledger.allKeys sortedArrayUsingSelector:@selector(compare:)];
+        for (NSString *k in sorted) {
+            NSDictionary *e = ledger[k];
+            if (![e isKindOfClass:NSDictionary.class]) continue;
+            NSString *eId=[e objectForKey:@"identityId"]?:@"-", *eIDFV=[e objectForKey:@"idfv"]?:@"-";
+            NSString *eModel=[e objectForKey:@"model"]?:@"-", *eSys=[e objectForKey:@"sys"]?:@"-";
+            BOOL sameAll = [eId isEqualToString:curId] && [eIDFV isEqualToString:curIDFV]
+                        && [eModel isEqualToString:curModel] && [eSys isEqualToString:curSys];
+            NSString *gen = [eId isEqualToString:curId] ? @"" : @"\n  ⚠旧身份代次(换身份前残留,可忽略)";
+            NSString *rtIDFV=[e objectForKey:@"rtIDFV"]?:@"-", *rtSys=[e objectForKey:@"rtSys"]?:@"-";
+            BOOL idfvHookInstalled = [[e objectForKey:@"rtIDFVHookInstalled"] boolValue];
+            BOOL sysHookInstalled = [[e objectForKey:@"rtSysHookInstalled"] boolValue];
+            NSString *idfvState = idfvHookInstalled
+                ? ([rtIDFV isEqualToString:eIDFV] ? @"Hook已安装·匹配" : @"⚠Hook已安装·不匹配")
+                : @"Hook未启用";
+            NSString *sysState = sysHookInstalled
+                ? ([rtSys isEqualToString:eSys] ? @"Hook已安装·匹配" : @"⚠Hook已安装·不匹配")
+                : @"Hook未启用";
+            [msg appendFormat:@"\n————\n%@  %@%@\n  容器:%@ 锁:%@\n  配置 IDFV:%@ iOS:%@\n  运行 IDFV:%@ (%@)\n  运行 iOS:%@ (%@)\n  %@",
+                [e objectForKey:@"bundle"]?:k, sameAll?@"✓四要素一致":@"✗不一致", gen,
+                [e objectForKey:@"containerTag"]?:@"-", [e objectForKey:@"lock"]?:@"-",
+                eIDFV, eSys, rtIDFV, idfvState, rtSys, sysState,
+                [e objectForKey:@"time"]?:@""];
+        }
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"各App身份核对（共享登记）"
+                                                                   message:msg
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"复制" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        (void)a;
+        [UIPasteboard generalPasteboard].string = msg;
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:^(UIAlertAction *a) {
+        (void)a;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self openPanel]; });
+    }]];
+    [presenter presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)showOptionalSwitches {
@@ -3643,17 +4409,84 @@ static void BDSInstallUI(void) {
 
 #pragma mark - 构造函数
 
+// Crane 数据容器通常对应不同 NSHomeDirectory。显示使用容器目录名，ledger 键使用完整标准化路径，
+// 不依赖 NSString.hash，避免跨进程不稳定和 32 位碰撞。
+static NSString *bds_containerTag(void) {
+    NSString *home = [NSHomeDirectory() stringByStandardizingPath] ?: @"";
+    NSString *tag = home.lastPathComponent;
+    return tag.length ? tag : @"unknown-container";
+}
+
+// 调用方必须在 UIDevice Hook 安装阶段结束后调用；主队列只负责推迟实际读取和写入。
+static void bds_recordPresence(void) {
+    NSString *dir = bds_globalConfigDir();
+    if (!dir.length) return; // 沙盒回退无法跨 App 共享，记不了
+    BOOL sysHookInstalled = (orig_systemVersion != NULL);
+    BOOL idfvHookInstalled = (orig_identifierForVendor != NULL);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        BOOL gotLock = bds_beginCriticalSection();
+        @try {
+            if (!gotLock) return; // presence 是共享读改写，禁止无锁覆盖其他 App 的登记。
+            NSString *pf = [dir stringByAppendingPathComponent:@"presence.plist"];
+            NSMutableDictionary *ledger = [NSMutableDictionary dictionaryWithContentsOfFile:pf] ?: [NSMutableDictionary dictionary];
+            NSString *bid = g_bundleID.length ? g_bundleID : @"-";
+            // 运行时实际读到的值；同时记录两个 UIDevice Hook 是否确实安装，避免把“开关未启用”误报为安装失败。
+            UIDevice *dev = UIDevice.currentDevice;
+            NSString *rtIDFV = dev.identifierForVendor.UUIDString ?: @"(nil)";
+            NSString *rtSys = dev.systemVersion ?: @"-";
+            NSString *home = [NSHomeDirectory() stringByStandardizingPath] ?: @"";
+            NSString *tag = bds_containerTag();
+            NSString *key = [NSString stringWithFormat:@"%@#%@", bid, home.length ? home : tag];
+            ledger[key] = @{
+                @"bundle": bid,
+                @"containerTag": tag,
+                @"identityId": cfgStr(@"identityId", @"-"),
+                @"idfv": cfgStr(@"idfv", @"-"),
+                @"model": cfgStr(@"deviceProfileName", @"-"),
+                @"sys": cfgStr(@"systemVersion", @"-"),
+                @"rtIDFV": rtIDFV,
+                @"rtSys": rtSys,
+                @"rtIDFVHookInstalled": @(idfvHookInstalled),
+                @"rtSysHookInstalled": @(sysHookInstalled),
+                @"dir": dir,
+                @"cfgPath": configPath(),
+                @"lock": gotLock ? @"ok" : @"NOLOCK",
+                @"home": home.length ? home : @"-",
+                @"time": [NSDateFormatter localizedStringFromDate:NSDate.date
+                                                         dateStyle:NSDateFormatterShortStyle
+                                                         timeStyle:NSDateFormatterMediumStyle]
+            };
+            [ledger writeToFile:pf atomically:YES];
+        } @finally { bds_endCriticalSection(); }
+    });
+}
+
 __attribute__((constructor))
 static void bds_initialize() {
     @autoreleasepool {
-        // 先加载配置
+        NSString *bundleID = [NSBundle mainBundle].bundleIdentifier ?: @"";
+        g_bundleID = bundleID;
+        g_isMango = [bundleID isEqualToString:BDS_MG_BUNDLE];
+
+        // 主 App 门：只处理完整 .app 主程序，跳过 appex 扩展 / 守护进程 / 无 bundle 进程，缩小全局注入影响面。
+        NSString *bdsBundlePath = [NSBundle mainBundle].bundlePath ?: @"";
+        NSString *bdsPathExt = bdsBundlePath.pathExtension;
+        if (bundleID.length == 0 || ![bdsPathExt isEqualToString:@"app"]) return;
+
+        // 早期透传：用只读磁盘配置判定（绝不创建 / 迁移 / 写全局文件），
+        // 保证系统 App、微信、支付宝、百度等既不生成身份，也不触碰共享配置。
+        // 系统 App / 用户白名单无条件透传（与 globalMode 无关），命中即零 hook 返回。
+        NSDictionary *bdsEarly = bds_readOnlyGlobalConfig();
+        if (bds_passthroughWithRules(bundleID, bdsEarly[@"passthroughBundles"])) return;
+
+        // 通过分流后才正式加载（跨进程锁内完成首次生成 / 迁移）。
         loadConfig();
 
-        NSString *bundleID = [NSBundle mainBundle].bundleIdentifier;
-        if (![bundleID isEqualToString:@"com.hunantv.imgotv"]) return;
+        // loadConfig 后以权威 g_config 再确认一次（白名单同样无条件透传）。
+        if (bds_isPassthroughBundle(bundleID)) return;
 
-        // 配置入口始终安装
-        BDSInstallUI();
+        // 配置浮窗只在芒果 TV 主 App 内显示；广告主 App 只静默应用同一套身份，不弹任何界面。
+        if (g_isMango) BDSInstallUI();
 
         // MGspoofer1.0.0 起，enabled 只代表“基础功能总开关”。
         // 高级功能仍按各自开关独立加载，不能因基础功能关闭而提前返回。
@@ -3715,6 +4548,10 @@ static void bds_initialize() {
             hookInst(cls, @selector(batteryState), (IMP)new_batteryState, &orig_batteryState);
         }
 
+        // UIDevice 的 systemVersion / identifierForVendor 安装阶段已经结束，再登记运行时值。
+        // 即使 dylib 由后台线程加载，主队列块也不会早于这两个 Hook 的安装尝试。
+        bds_recordPresence();
+
         if (basicEnabled && cfgBool(@"spoofAdvertisingIdentifiers", NO)) {
             cls = objc_getClass("ASIdentifierManager");
             hookInst(cls, @selector(advertisingIdentifier), (IMP)new_advertisingIdentifier, &orig_advertisingIdentifier);
@@ -3764,6 +4601,11 @@ static void bds_initialize() {
         // 百度 SDK 设备标识 hook
         if (cfgBool(@"spoofBaiduSDK", NO)) {
             installBaiduSDKHooks();
+        }
+
+        // 芒果 Dipfy 安全 SDK 专属 hook（安全检测返回 NO + 伪造自产设备标识）
+        if (cfgBool(@"spoofDipfy", NO)) {
+            installDipfyHooks();
         }
 
         // User-Agent hook

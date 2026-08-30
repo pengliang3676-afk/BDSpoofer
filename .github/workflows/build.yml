@@ -1,9 +1,12 @@
-name: Build MGspoofer1.0.0
+name: Build BDS Global Spoofer 1.9.4
 
-on:
-  push:
-    branches: [main, master]
-  workflow_dispatch:
+# roothide 原生打包：载荷不带 /var/jb 前缀（jbroot 随机命名，安装时由 dpkg 映射）。
+# 任意分支 push 都触发，并保留手动触发。
+on: [push, workflow_dispatch]
+
+env:
+  LIB_NAME: BDSGlobalSpoofer
+  PKG_VER: 1.9.4
 
 jobs:
   build:
@@ -15,12 +18,14 @@ jobs:
 
       - name: Show Xcode and SDK info
         run: |
+          set -euo pipefail
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-path
           xcrun --sdk iphoneos --show-sdk-version
 
       - name: Build arm64
         run: |
+          set -euo pipefail
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           xcrun --sdk iphoneos clang \
             -arch arm64 \
@@ -39,12 +44,13 @@ jobs:
             -framework CoreLocation \
             -framework Contacts \
             -framework EventKit \
-            -install_name @rpath/MGspoofer1.0.0.dylib \
-            -o MGspoofer1.0.0_arm64.dylib \
+            -install_name @rpath/${LIB_NAME}.dylib \
+            -o ${LIB_NAME}_arm64.dylib \
             BDSpoofer.m
 
       - name: Build arm64e
         run: |
+          set -euo pipefail
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           xcrun --sdk iphoneos clang \
             -arch arm64e \
@@ -63,24 +69,65 @@ jobs:
             -framework CoreLocation \
             -framework Contacts \
             -framework EventKit \
-            -install_name @rpath/MGspoofer1.0.0.dylib \
-            -o MGspoofer1.0.0_arm64e.dylib \
+            -install_name @rpath/${LIB_NAME}.dylib \
+            -o ${LIB_NAME}_arm64e.dylib \
             BDSpoofer.m
 
-      - name: Create fat binary and verify
+      - name: Create fat binary, sign and verify
         run: |
-          lipo -create MGspoofer1.0.0_arm64.dylib MGspoofer1.0.0_arm64e.dylib -output MGspoofer1.0.0.dylib
+          set -euo pipefail
+          lipo -create ${LIB_NAME}_arm64.dylib ${LIB_NAME}_arm64e.dylib -output ${LIB_NAME}.dylib
+          # ad-hoc 签名，roothide / ElleKit 可加载
+          codesign -s - -f ${LIB_NAME}.dylib
+          codesign --verify --strict ${LIB_NAME}.dylib
+          lipo -archs ${LIB_NAME}.dylib | tee lipo-archs.txt
+          grep -qw arm64 lipo-archs.txt
+          grep -qw arm64e lipo-archs.txt
           echo "=== file type ==="
-          file MGspoofer1.0.0.dylib
+          file ${LIB_NAME}.dylib
           echo "=== dependencies ==="
-          otool -L MGspoofer1.0.0.dylib
-          echo "=== platform ==="
-          otool -l MGspoofer1.0.0.dylib | grep -A5 LC_BUILD_VERSION
+          otool -L ${LIB_NAME}.dylib
 
-      - name: Upload artifact
+      - name: Assemble roothide .deb (native layout, no /var/jb prefix)
+        run: |
+          set -euo pipefail
+          brew list dpkg >/dev/null 2>&1 || brew install dpkg
+          STAGE=_deb
+          # roothide 原生布局：直接 ./Library/...，安装时映射进随机 jbroot；不能带 /var/jb。
+          DYLDIR="$STAGE/Library/MobileSubstrate/DynamicLibraries"
+          DEB=${LIB_NAME}_${PKG_VER}_iphoneos-arm64e.deb
+          mkdir -p "$DYLDIR" "$STAGE/DEBIAN"
+          cp ${LIB_NAME}.dylib "$DYLDIR/${LIB_NAME}.dylib"
+          cp package/${LIB_NAME}.plist "$DYLDIR/${LIB_NAME}.plist"
+          # 种子配置随 dylib 同目录，供 bds_bundledSeedPath() 只读兜底
+          cp bdspoofer_config.plist "$DYLDIR/bdspoofer_config.plist"
+          cp package/control "$STAGE/DEBIAN/control"
+          find "$STAGE" -name '.DS_Store' -delete
+          find "$STAGE" -type d -exec chmod 0755 {} \;
+          find "$STAGE" -type f -exec chmod 0644 {} \;
+          chmod 0755 "$DYLDIR/${LIB_NAME}.dylib"
+          echo "=== staged tree ==="
+          find "$STAGE" -type f
+          dpkg-deb --root-owner-group -Zgzip -b "$STAGE" "$DEB"
+          echo "=== deb info ==="
+          dpkg-deb -I "$DEB"
+          dpkg-deb -c "$DEB" | tee deb-contents.txt
+          test "$(dpkg-deb -f "$DEB" Version)" = "$PKG_VER"
+          test "$(dpkg-deb -f "$DEB" Architecture)" = 'iphoneos-arm64e'
+          # 必须是 roothide 原生无 /var/jb 布局，且 dylib 落在 DynamicLibraries
+          grep -q "./Library/MobileSubstrate/DynamicLibraries/${LIB_NAME}.dylib" deb-contents.txt
+          if grep -q './var/jb/' deb-contents.txt; then
+            echo 'Unexpected legacy /var/jb payload in roothide package' >&2
+            exit 1
+          fi
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: MGspoofer1.0.0
+          # with 段不是 shell，${VAR} 不会展开，必须用 Actions 表达式 ${{ env.* }}
+          name: ${{ env.LIB_NAME }}_${{ env.PKG_VER }}
           path: |
-            MGspoofer1.0.0.dylib
+            ${{ env.LIB_NAME }}.dylib
+            ${{ env.LIB_NAME }}_${{ env.PKG_VER }}_iphoneos-arm64e.deb
             bdspoofer_config.plist
+          if-no-files-found: error
