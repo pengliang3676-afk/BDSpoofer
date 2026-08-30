@@ -1,0 +1,5 @@
+#!/bin/sh
+if command -v uicache >/dev/null 2>&1; then
+    uicache -u com.codex.bdspoofer.cranemanager >/dev/null 2>&1 || true
+fi
+exit 0

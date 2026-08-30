@@ -30,7 +30,9 @@
 
 ### 一键随机参数
 
-“一键随机整套基础参数”从统一的 10 款机型池选择机型，并生成匹配的 iOS/Build、硬件型号、内存、磁盘、设备名称和主机名。机型池包含 iPhone 8、X、XR、XS、11、11 Pro、12 mini、12、13 mini、SE3；iPhone SE2 不参与随机。iPhone 8/X 只使用 iOS 15/16，其余机型使用 iOS 15-18。点击后会自动开启基础总开关、5 个基础子开关及常规高级功能，屏幕继续使用真机尺寸；高级身份参数不变。
+注入插件内部仍使用 1.8.1 原有机型池。新增的外部 Crane 配置器使用 36 款机型、78 个稳定 iOS/Build 资料生成兼容组合，覆盖 iPhone 8 至 iPhone 17 系列；iPhone SE2 明确不参与随机。iPhone 8/X 只匹配 iOS 15/16，新机型按实际最低系统版本选择，iPhone 11 及更新机型可以匹配 iOS 26。
+
+“一键随机整套基础参数”会生成匹配的 iOS/Build、硬件型号、内存、磁盘、设备名称和主机名。点击后会自动开启基础总开关、5 个基础子开关及常规高级功能，屏幕继续使用真机尺寸；高级身份参数不变。
 
 基础随机不会改变兼容风险测试 4 项：Keychain、App Group、WebKit Cookie、User-Agent。代理隐藏属于常规高级功能，会随基础随机自动开启。
 
@@ -101,6 +103,15 @@ lipo -create BDSpoofer_1.8.1_arm64.dylib BDSpoofer_1.8.1_arm64e.dylib -output BD
 2. 打开 TrollFools → 选择百度极速版 → 添加 dylib → 注入
 3. 杀掉百度极速版重新打开
 4. 点击右侧"隐"按钮打开配置；按钮可以拖动
+
+### 外部配置 Crane 容器（可选）
+
+1. 保持上面的 dylib 注入不变。
+2. 用 Sileo 安装 `BDSpooferCraneManager_1.0.0_RootHide.deb`。
+3. 从桌面打开“百度容器配置”，勾选一个或多个 Crane 容器并执行一键随机。
+4. 配置会直接写入各容器自己的 `Documents/bdspoofer_config.plist`。尚未运行的容器可直接首次打开；已在后台运行的百度需要彻底结束后再打开。
+
+详细说明见 `CraneManager/README.md`。
 
 ## 配置建议
 

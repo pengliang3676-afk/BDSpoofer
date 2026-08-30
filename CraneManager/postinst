@@ -1,0 +1,19 @@
+#!/bin/sh
+set -e
+
+ROOT_PREFIX="/var/jb"
+if [ "$(dpkg --print-architecture 2>/dev/null)" = "iphoneos-arm" ]; then
+    ROOT_PREFIX=""
+fi
+
+APP_PATH="$ROOT_PREFIX/Applications/BDSCraneManager.app"
+if [ -d "$APP_PATH" ]; then
+    chown -R root:wheel "$APP_PATH" 2>/dev/null || true
+    chmod 0755 "$APP_PATH/BDSCraneManager" 2>/dev/null || true
+fi
+
+if command -v uicache >/dev/null 2>&1; then
+    uicache -p "$APP_PATH" >/dev/null 2>&1 || uicache >/dev/null 2>&1 || true
+fi
+
+exit 0

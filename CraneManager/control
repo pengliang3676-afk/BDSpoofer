@@ -1,0 +1,9 @@
+Package: com.codex.bdspoofer.cranemanager
+Name: 百度 Crane 参数配置
+Version: 1.0.0
+Architecture: iphoneos-arm64e
+Description: 为百度极速版的 Crane 容器提前生成并写入 BDSpoofer 配置。
+Maintainer: Codex
+Author: Codex
+Section: Utilities
+Depends: firmware (>= 15.0), rootless-compat (>= 0.9), byg.iosios.net.crane-rootless (>= 1.3.14-6), com.opa334.libsandy
