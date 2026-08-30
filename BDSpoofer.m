@@ -2696,14 +2696,23 @@ static NSString *BDSConfigSummary(void) {
 - (void)openPanel {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"卍解"
-                                                                   message:BDSConfigSummary()
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:nil
+                                                                   message:nil
                                                             preferredStyle:UIAlertControllerStyleAlert];
-    NSAttributedString *redTitle = [[NSAttributedString alloc]
-        initWithString:@"卍解"
-        attributes:@{NSForegroundColorAttributeName: UIColor.systemRedColor,
-                     NSFontAttributeName: [UIFont boldSystemFontOfSize:17.0]}];
-    [alert setValue:redTitle forKey:@"attributedTitle"];
+    NSString *compactHeaderText = [NSString stringWithFormat:@"卍解\n%@", BDSConfigSummary()];
+    NSMutableParagraphStyle *compactParagraph = [[NSMutableParagraphStyle alloc] init];
+    compactParagraph.alignment = NSTextAlignmentCenter;
+    compactParagraph.lineSpacing = 0.0;
+    compactParagraph.paragraphSpacing = 0.0;
+    NSMutableAttributedString *compactHeader = [[NSMutableAttributedString alloc]
+        initWithString:compactHeaderText
+        attributes:@{NSForegroundColorAttributeName: UIColor.labelColor,
+                     NSFontAttributeName: [UIFont systemFontOfSize:13.0],
+                     NSParagraphStyleAttributeName: compactParagraph}];
+    [compactHeader addAttributes:@{NSForegroundColorAttributeName: UIColor.systemRedColor,
+                                   NSFontAttributeName: [UIFont boldSystemFontOfSize:17.0]}
+                           range:NSMakeRange(0, [@"卍解" length])];
+    [alert setValue:compactHeader forKey:@"attributedTitle"];
     [alert addAction:[UIAlertAction actionWithTitle:@"一键随机整套基础参数" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         [self randomizeBasicProfile];
