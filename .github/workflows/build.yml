@@ -24,6 +24,11 @@ jobs:
           set -euo pipefail
           test "$(grep -c 'BDSDevice(@' CraneManager/BDSCraneManager.m)" -eq 36
           ! grep -q 'iPhone12,8' CraneManager/BDSCraneManager.m
+          test "$(grep -c '@"machine": @"iPhone' BDSpoofer.m)" -eq 37
+          grep -q 'profile\[@"machine"\].*iPhone12,8' BDSpoofer.m
+          grep -q '统一随机（%lu款）' BDSpoofer.m
+          test "$(grep -o 'BDSSystem(@"' BDSpoofer.m | wc -l | tr -d ' ')" -eq 78
+          test "$(grep -o 'BDSSystem(@"' CraneManager/BDSCraneManager.m | wc -l | tr -d ' ')" -eq 78
           grep -q '___Crane_Containers' CraneManager/BDSCraneManager.m
           grep -q 'managerResolvedPath' CraneManager/BDSCraneManager.m
           plutil -lint bdspoofer_config.plist

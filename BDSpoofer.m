@@ -2309,35 +2309,46 @@ static NSArray<NSDictionary *> *BDSDeviceProfiles(void) {
               @"scale": @3, @"memory": @6144, @"disks": @[@128, @256, @512, @1024]},
             @{@"name": @"iPhone SE (3rd generation)", @"machine": @"iPhone14,6", @"model": @"D49AP",
               @"width": @375, @"height": @667, @"nativeWidth": @750, @"nativeHeight": @1334,
-              @"scale": @2, @"memory": @4096, @"disks": @[@64, @128, @256]}
+              @"scale": @2, @"memory": @4096, @"disks": @[@64, @128, @256]},
+            @{@"name": @"iPhone 14", @"machine": @"iPhone14,7", @"model": @"D27AP", @"width": @390, @"height": @844, @"nativeWidth": @1170, @"nativeHeight": @2532, @"scale": @3, @"memory": @6144, @"disks": @[@128,@256,@512]},
+            @{@"name": @"iPhone 14 Pro", @"machine": @"iPhone15,2", @"model": @"D73AP", @"width": @393, @"height": @852, @"nativeWidth": @1179, @"nativeHeight": @2556, @"scale": @3, @"memory": @6144, @"disks": @[@128,@256,@512,@1024]},
+            @{@"name": @"iPhone 14 Pro Max", @"machine": @"iPhone15,3", @"model": @"D74AP", @"width": @430, @"height": @932, @"nativeWidth": @1290, @"nativeHeight": @2796, @"scale": @3, @"memory": @6144, @"disks": @[@128,@256,@512,@1024]},
+            @{@"name": @"iPhone 14 Plus", @"machine": @"iPhone14,8", @"model": @"D28AP", @"width": @428, @"height": @926, @"nativeWidth": @1284, @"nativeHeight": @2778, @"scale": @3, @"memory": @6144, @"disks": @[@128,@256,@512]},
+            @{@"name": @"iPhone 15", @"machine": @"iPhone15,4", @"model": @"D37AP", @"width": @393, @"height": @852, @"nativeWidth": @1179, @"nativeHeight": @2556, @"scale": @3, @"memory": @6144, @"disks": @[@128,@256,@512]},
+            @{@"name": @"iPhone 15 Plus", @"machine": @"iPhone15,5", @"model": @"D38AP", @"width": @430, @"height": @932, @"nativeWidth": @1290, @"nativeHeight": @2796, @"scale": @3, @"memory": @6144, @"disks": @[@128,@256,@512]},
+            @{@"name": @"iPhone 15 Pro", @"machine": @"iPhone16,1", @"model": @"D83AP", @"width": @393, @"height": @852, @"nativeWidth": @1179, @"nativeHeight": @2556, @"scale": @3, @"memory": @8192, @"disks": @[@128,@256,@512,@1024]},
+            @{@"name": @"iPhone 15 Pro Max", @"machine": @"iPhone16,2", @"model": @"D84AP", @"width": @430, @"height": @932, @"nativeWidth": @1290, @"nativeHeight": @2796, @"scale": @3, @"memory": @8192, @"disks": @[@256,@512,@1024]},
+            @{@"name": @"iPhone 16", @"machine": @"iPhone17,3", @"model": @"D47AP", @"width": @393, @"height": @852, @"nativeWidth": @1179, @"nativeHeight": @2556, @"scale": @3, @"memory": @8192, @"disks": @[@128,@256,@512]},
+            @{@"name": @"iPhone 16 Plus", @"machine": @"iPhone17,4", @"model": @"D48AP", @"width": @430, @"height": @932, @"nativeWidth": @1290, @"nativeHeight": @2796, @"scale": @3, @"memory": @8192, @"disks": @[@128,@256,@512]},
+            @{@"name": @"iPhone 16 Pro", @"machine": @"iPhone17,1", @"model": @"D93AP", @"width": @402, @"height": @874, @"nativeWidth": @1206, @"nativeHeight": @2622, @"scale": @3, @"memory": @8192, @"disks": @[@128,@256,@512,@1024]},
+            @{@"name": @"iPhone 16 Pro Max", @"machine": @"iPhone17,2", @"model": @"D94AP", @"width": @440, @"height": @956, @"nativeWidth": @1320, @"nativeHeight": @2868, @"scale": @3, @"memory": @8192, @"disks": @[@256,@512,@1024]},
+            @{@"name": @"iPhone 16e", @"machine": @"iPhone17,5", @"model": @"V59AP", @"width": @390, @"height": @844, @"nativeWidth": @1170, @"nativeHeight": @2532, @"scale": @3, @"memory": @8192, @"disks": @[@128,@256,@512]},
+            @{@"name": @"iPhone 17", @"machine": @"iPhone18,3", @"model": @"V57AP", @"width": @402, @"height": @874, @"nativeWidth": @1206, @"nativeHeight": @2622, @"scale": @3, @"memory": @8192, @"disks": @[@256,@512]},
+            @{@"name": @"iPhone 17 Pro", @"machine": @"iPhone18,1", @"model": @"V53AP", @"width": @402, @"height": @874, @"nativeWidth": @1206, @"nativeHeight": @2622, @"scale": @3, @"memory": @12288, @"disks": @[@256,@512,@1024]},
+            @{@"name": @"iPhone 17 Pro Max", @"machine": @"iPhone18,2", @"model": @"V54AP", @"width": @440, @"height": @956, @"nativeWidth": @1320, @"nativeHeight": @2868, @"scale": @3, @"memory": @12288, @"disks": @[@256,@512,@1024]},
+            @{@"name": @"iPhone Air", @"machine": @"iPhone18,4", @"model": @"D23AP", @"width": @420, @"height": @912, @"nativeWidth": @1260, @"nativeHeight": @2736, @"scale": @3, @"memory": @12288, @"disks": @[@256,@512,@1024]},
+            @{@"name": @"iPhone 17e", @"machine": @"iPhone18,5", @"model": @"V159AP", @"width": @390, @"height": @844, @"nativeWidth": @1170, @"nativeHeight": @2532, @"scale": @3, @"memory": @8192, @"disks": @[@128,@256,@512]}
         ];
     });
     return profiles;
 }
 
-static NSString *BDSDeviceRangeName(void) {
-    return @"统一随机（10款，不含 SE2）";
-}
-
 static NSArray<NSDictionary *> *BDSUnifiedDeviceProfiles(void) {
-    // 1.8.0 统一机型池：SE2 保留在资料表中供旧配置读取，但不参与一键随机。
-    NSSet<NSString *> *machines = [NSSet setWithArray:@[
-        @"iPhone10,1", // iPhone 8
-        @"iPhone10,3", // iPhone X
-        @"iPhone11,8", // iPhone XR
-        @"iPhone11,2", // iPhone XS
-        @"iPhone12,1", // iPhone 11
-        @"iPhone12,3", // iPhone 11 Pro
-        @"iPhone13,1", // iPhone 12 mini
-        @"iPhone13,2", // iPhone 12
-        @"iPhone14,4", // iPhone 13 mini
-        @"iPhone14,6"  // iPhone SE3
-    ]];
+    // 与“卍解”统一：资料表保留 SE2 以兼容旧配置，但不参与一键随机。
     NSMutableArray<NSDictionary *> *filtered = [NSMutableArray array];
     for (NSDictionary *profile in BDSDeviceProfiles()) {
-        if ([machines containsObject:profile[@"machine"]]) [filtered addObject:profile];
+        if (![profile[@"machine"] isEqualToString:@"iPhone12,8"]) [filtered addObject:profile];
     }
     return filtered;
+}
+
+static NSString *BDSDeviceRangeName(void) {
+    return [NSString stringWithFormat:@"统一随机（%lu款）",
+            (unsigned long)BDSUnifiedDeviceProfiles().count];
+}
+
+static NSDictionary *BDSSystem(NSString *version, NSString *build) {
+    return @{@"version": version, @"build": build};
 }
 
 static NSArray<NSDictionary *> *BDSSystemProfiles(void) {
@@ -2345,44 +2356,87 @@ static NSArray<NSDictionary *> *BDSSystemProfiles(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         profiles = @[
-            @{@"version": @"15.4.1", @"build": @"19E258"},
-            @{@"version": @"15.5", @"build": @"19F77"},
-            @{@"version": @"15.6", @"build": @"19G71"},
-            @{@"version": @"15.6.1", @"build": @"19G82"},
-            @{@"version": @"15.7", @"build": @"19H12"},
-            @{@"version": @"16.0", @"build": @"20A362"},
-            @{@"version": @"16.1.2", @"build": @"20B110"},
-            @{@"version": @"16.3.1", @"build": @"20D67"},
-            @{@"version": @"16.5.1", @"build": @"20F75"},
-            @{@"version": @"16.7", @"build": @"20H19"},
-            @{@"version": @"17.0", @"build": @"21A329"},
-            @{@"version": @"17.2.1", @"build": @"21C66"},
-            @{@"version": @"17.3.1", @"build": @"21D61"},
-            @{@"version": @"17.4.1", @"build": @"21E236"},
-            @{@"version": @"17.5", @"build": @"21F79"},
-            @{@"version": @"18.0", @"build": @"22A3354"},
-            @{@"version": @"18.1.1", @"build": @"22B91"},
-            @{@"version": @"18.2.1", @"build": @"22C161"},
-            @{@"version": @"18.3.1", @"build": @"22D72"},
-            @{@"version": @"18.5", @"build": @"22F76"}
+            BDSSystem(@"15.0", @"19A346"), BDSSystem(@"15.0.2", @"19A404"),
+            BDSSystem(@"15.1.1", @"19B81"), BDSSystem(@"15.2.1", @"19C63"),
+            BDSSystem(@"15.3", @"19D50"), BDSSystem(@"15.3.1", @"19D52"),
+            BDSSystem(@"15.4", @"19E241"), BDSSystem(@"15.4.1", @"19E258"),
+            BDSSystem(@"15.5", @"19F77"), BDSSystem(@"15.6", @"19G71"),
+            BDSSystem(@"15.6.1", @"19G82"), BDSSystem(@"15.7", @"19H12"),
+            BDSSystem(@"15.7.1", @"19H117"),
+            BDSSystem(@"16.0", @"20A362"), BDSSystem(@"16.0.2", @"20A380"),
+            BDSSystem(@"16.0.3", @"20A392"), BDSSystem(@"16.1", @"20B82"),
+            BDSSystem(@"16.1.1", @"20B101"), BDSSystem(@"16.1.2", @"20B110"),
+            BDSSystem(@"16.2", @"20C65"), BDSSystem(@"16.3", @"20D47"),
+            BDSSystem(@"16.3.1", @"20D67"), BDSSystem(@"16.4", @"20E247"),
+            BDSSystem(@"16.4.1", @"20E252"), BDSSystem(@"16.5", @"20F66"),
+            BDSSystem(@"16.5.1", @"20F75"), BDSSystem(@"16.6", @"20G75"),
+            BDSSystem(@"16.6.1", @"20G81"), BDSSystem(@"16.7", @"20H19"),
+            BDSSystem(@"16.7.1", @"20H30"), BDSSystem(@"16.7.2", @"20H115"),
+            BDSSystem(@"16.7.15", @"20H380"), BDSSystem(@"16.7.16", @"20H392"),
+            BDSSystem(@"17.0", @"21A329"), BDSSystem(@"17.0.1", @"21A340"),
+            BDSSystem(@"17.0.2", @"21A351"), BDSSystem(@"17.0.3", @"21A360"),
+            BDSSystem(@"17.1", @"21B74"), BDSSystem(@"17.1.1", @"21B91"),
+            BDSSystem(@"17.1.2", @"21B101"), BDSSystem(@"17.2", @"21C62"),
+            BDSSystem(@"17.2.1", @"21C66"), BDSSystem(@"17.3", @"21D50"),
+            BDSSystem(@"17.3.1", @"21D61"), BDSSystem(@"17.4", @"21E219"),
+            BDSSystem(@"17.4.1", @"21E236"), BDSSystem(@"17.5", @"21F79"),
+            BDSSystem(@"17.5.1", @"21F90"), BDSSystem(@"17.6", @"21G80"),
+            BDSSystem(@"17.6.1", @"21G93"), BDSSystem(@"17.7", @"21H16"),
+            BDSSystem(@"17.7.1", @"21H216"), BDSSystem(@"17.7.2", @"21H221"),
+            BDSSystem(@"18.0", @"22A3354"), BDSSystem(@"18.0.1", @"22A3370"),
+            BDSSystem(@"18.1", @"22B83"), BDSSystem(@"18.1.1", @"22B91"),
+            BDSSystem(@"18.2", @"22C152"), BDSSystem(@"18.2.1", @"22C161"),
+            BDSSystem(@"18.3", @"22D63"), BDSSystem(@"18.3.1", @"22D72"),
+            BDSSystem(@"18.3.2", @"22D82"), BDSSystem(@"18.4", @"22E240"),
+            BDSSystem(@"18.4.1", @"22E252"), BDSSystem(@"18.5", @"22F76"),
+            BDSSystem(@"18.6", @"22G86"), BDSSystem(@"18.6.1", @"22G90"),
+            BDSSystem(@"18.6.2", @"22G100"), BDSSystem(@"18.7", @"22H20"),
+            BDSSystem(@"18.7.1", @"22H31"), BDSSystem(@"18.7.2", @"22H123"),
+            BDSSystem(@"18.7.9", @"22H355"), BDSSystem(@"18.7.10", @"22H374"),
+            BDSSystem(@"26.4.2", @"23E261"), BDSSystem(@"26.5", @"23F77"),
+            BDSSystem(@"26.5.2", @"23F84"), BDSSystem(@"26.6", @"23G71"),
+            BDSSystem(@"26.6.1", @"23G83")
         ];
     });
     return profiles;
 }
 
 static NSInteger BDSMaxRandomOSMajorForMachine(NSString *machine) {
-    // iPhone 8 / 8 Plus / X (iPhone10,*) officially stop at iOS 16.
-    // Every other model currently present in BDSDeviceProfiles supports iOS 18.
-    return [machine hasPrefix:@"iPhone10,"] ? 16 : 18;
+    if ([machine hasPrefix:@"iPhone10,"]) return 16;
+    if ([machine hasPrefix:@"iPhone11,"]) return 18;
+    return 26;
+}
+
+static NSString *BDSMinRandomOSForMachine(NSString *machine) {
+    if ([machine isEqualToString:@"iPhone14,6"]) return @"15.4";
+    if ([machine isEqualToString:@"iPhone14,7"] ||
+        [machine isEqualToString:@"iPhone15,2"] ||
+        [machine isEqualToString:@"iPhone15,3"]) return @"16.0";
+    if ([machine isEqualToString:@"iPhone14,8"]) return @"16.0.2";
+    if ([machine isEqualToString:@"iPhone15,4"] ||
+        [machine isEqualToString:@"iPhone15,5"] ||
+        [machine hasPrefix:@"iPhone16,"]) return @"17.0";
+    if ([machine isEqualToString:@"iPhone17,5"]) return @"18.3.1";
+    if ([machine hasPrefix:@"iPhone17,"]) return @"18.0";
+    if ([machine isEqualToString:@"iPhone18,5"]) return @"26.3.1";
+    if ([machine hasPrefix:@"iPhone18,"]) return @"26.0";
+    return @"15.0";
 }
 
 static NSArray<NSDictionary *> *BDSSystemProfilesForDevice(NSDictionary *device) {
     NSString *machine = [device[@"machine"] isKindOfClass:[NSString class]] ? device[@"machine"] : @"";
+    NSString *minimum = BDSMinRandomOSForMachine(machine);
     NSInteger maxMajor = BDSMaxRandomOSMajorForMachine(machine);
     NSMutableArray<NSDictionary *> *compatible = [NSMutableArray array];
     for (NSDictionary *profile in BDSSystemProfiles()) {
         NSString *version = [profile[@"version"] isKindOfClass:[NSString class]] ? profile[@"version"] : @"";
-        if (version.integerValue <= maxMajor) [compatible addObject:profile];
+        if ([version compare:minimum options:NSNumericSearch] == NSOrderedAscending) continue;
+        if (version.integerValue > maxMajor) continue;
+        if (([version hasPrefix:@"18.7.9"] || [version hasPrefix:@"18.7.10"]) &&
+            ![machine hasPrefix:@"iPhone11,"]) continue;
+        if (version.integerValue == 26 &&
+            ([machine hasPrefix:@"iPhone10,"] || [machine hasPrefix:@"iPhone11,"])) continue;
+        [compatible addObject:profile];
     }
     // Defensive fallback: a malformed/unknown profile must not make randomization crash.
     return compatible.count ? compatible : BDSSystemProfiles();
@@ -2402,6 +2456,15 @@ static NSDictionary *BDSRandomSystemProfileForDevice(NSDictionary *device) {
     NSNumber *major = majors[arc4random_uniform((uint32_t)majors.count)];
     NSArray<NSDictionary *> *versions = byMajor[major];
     return versions[arc4random_uniform((uint32_t)versions.count)];
+}
+
+static NSDictionary *BDSRandomCarrierValues(void) {
+    NSArray<NSDictionary *> *carriers = @[
+        @{@"carrierName": @"中国移动", @"mcc": @"460", @"mnc": @"00", @"isoCountryCode": @"cn"},
+        @{@"carrierName": @"中国联通", @"mcc": @"460", @"mnc": @"01", @"isoCountryCode": @"cn"},
+        @{@"carrierName": @"中国电信", @"mcc": @"460", @"mnc": @"03", @"isoCountryCode": @"cn"}
+    ];
+    return carriers[arc4random_uniform((uint32_t)carriers.count)];
 }
 
 static NSDictionary *BDSRandomBasicProfileValues(void) {
@@ -2457,6 +2520,13 @@ static NSDictionary *BDSRandomBasicProfileValues(void) {
     values[@"diskSize"] = disk;
     values[@"deviceName"] = deviceName;
     values[@"kernHostname"] = deviceName;
+    values[@"screenWidth"] = device[@"width"];
+    values[@"screenHeight"] = device[@"height"];
+    values[@"screenScale"] = device[@"scale"];
+    values[@"nativeScreenWidth"] = device[@"nativeWidth"];
+    values[@"nativeScreenHeight"] = device[@"nativeHeight"];
+    values[@"bootTimeOffsetSeconds"] = @(86400 + arc4random_uniform(7 * 86400));
+    [values addEntriesFromDictionary:BDSRandomCarrierValues()];
     return values;
 }
 
@@ -2626,9 +2696,14 @@ static NSString *BDSConfigSummary(void) {
 - (void)openPanel {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"百度设备隐私"
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"卍解"
                                                                    message:BDSConfigSummary()
                                                             preferredStyle:UIAlertControllerStyleAlert];
+    NSAttributedString *redTitle = [[NSAttributedString alloc]
+        initWithString:@"卍解"
+        attributes:@{NSForegroundColorAttributeName: UIColor.systemRedColor,
+                     NSFontAttributeName: [UIFont boldSystemFontOfSize:17.0]}];
+    [alert setValue:redTitle forKey:@"attributedTitle"];
     [alert addAction:[UIAlertAction actionWithTitle:@"一键随机整套基础参数" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         [self randomizeBasicProfile];
@@ -2659,7 +2734,7 @@ static NSString *BDSConfigSummary(void) {
         (void)action;
         [self showSelfTest];
     }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"恢复安全关闭状态" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+    [alert addAction:[UIAlertAction actionWithTitle:@"恢复安全关闭状态" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         NSDictionary *safe = @{
             @"enabled": @NO,
