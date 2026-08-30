@@ -69,6 +69,7 @@ jobs:
             -fblocks
             -framework Foundation
             -framework UIKit
+            -framework CoreGraphics
             -ldl
           )
           xcrun --sdk iphoneos clang -arch arm64 "${COMMON_FLAGS[@]}" \
