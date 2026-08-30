@@ -1,6 +1,6 @@
 //
 //  BDSpoofer.m
-//  BDS Global Spoofer 1.9.4（roothide / dopamine，ElleKit 全局注入 deb；亦可 TrollFools 单注入）
+//  BDS Global Spoofer 1.9.5（roothide / dopamine，ElleKit 全局注入 deb；亦可 TrollFools 单注入）
 //    - 全局共享一份虚拟身份：芒果 TV 与任意广告主 App 读取同一套设备参数，保证 CPA 归因一致。
 //    - 系统 App 与白名单（微信/QQ/支付宝/百度等）完全透传，不生成身份、不安装 hook。
 //    - 全局目录走 roothide jbroot 解析 + 真实可写探测；首发生成/迁移/保存用 flock 跨进程锁串行化。
@@ -1599,12 +1599,12 @@ static void bds_dipfy_try_method(Class cls, SEL sel, BDSDipfyKind kind, BOOL isC
     unsigned nargs = method_getNumberOfArguments(m);
     BOOL sigOK = NO;
     IMP replacement = NULL;
-    const char *suffix = NULL;
+    NSString *suffix = nil;
     switch (kind) {
         case BDSDipfyBoolNoArg:
             sigOK = (nargs == 2 && ret[0] == 'B');
             replacement = (IMP)new_dipfy_bool_noarg;
-            suffix = ".B0";
+            suffix = @".B0";
             break;
         case BDSDipfyBoolOneArg: {
             // 替换函数把第三个参数当 id；必须校验其类型编码确为对象(@/@?)，否则标量/结构体会 ABI 不匹配崩溃。
@@ -1612,13 +1612,13 @@ static void bds_dipfy_try_method(Class cls, SEL sel, BDSDipfyKind kind, BOOL isC
             method_getArgumentType(m, 2, argt, sizeof(argt));
             sigOK = (nargs == 3 && ret[0] == 'B' && argt[0] == '@');
             replacement = (IMP)new_dipfy_bool_onearg;
-            suffix = ".B1";
+            suffix = @".B1";
             break;
         }
         case BDSDipfyString:
             sigOK = (nargs == 2 && ret[0] == '@');
             replacement = (IMP)new_dipfy_string;
-            suffix = ".S";
+            suffix = @".S";
             break;
     }
     if (!sigOK || !replacement) return;
@@ -3223,7 +3223,7 @@ static NSString *BDSConfigSummary(void) {
 - (void)openPanel {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"BDS Global 1.9.4"
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"BDS Global 1.9.5"
                                                                    message:BDSConfigSummary()
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"换全新身份（全局）" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {

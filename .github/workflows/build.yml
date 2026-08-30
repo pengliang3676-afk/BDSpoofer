@@ -1,4 +1,4 @@
-name: Build BDS Global Spoofer 1.9.4
+name: Build BDS Global Spoofer 1.9.5
 
 # roothide 原生打包：载荷不带 /var/jb 前缀（jbroot 随机命名，安装时由 dpkg 映射）。
 # 任意分支 push 都触发，并保留手动触发。
@@ -6,7 +6,7 @@ on: [push, workflow_dispatch]
 
 env:
   LIB_NAME: BDSGlobalSpoofer
-  PKG_VER: 1.9.4
+  PKG_VER: 1.9.5
 
 jobs:
   build:
