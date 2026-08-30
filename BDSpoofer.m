@@ -1,10 +1,15 @@
 //
 //  BDSpoofer.m
-//  BDS Global Spoofer 1.9.5（roothide / dopamine，ElleKit 全局注入 deb；亦可 TrollFools 单注入）
+//  BDS Global Spoofer 1.9.6（roothide / dopamine，ElleKit 全局注入 deb；亦可 TrollFools 单注入）
 //    - 全局共享一份虚拟身份：芒果 TV 与任意广告主 App 读取同一套设备参数，保证 CPA 归因一致。
 //    - 系统 App 与白名单（微信/QQ/支付宝/百度等）完全透传，不生成身份、不安装 hook。
 //    - 全局目录走 roothide jbroot 解析 + 真实可写探测；首发生成/迁移/保存用 flock 跨进程锁串行化。
 //    - Dipfy 安全 SDK 专属 hook：越狱/代理/调试返回 NO，自产设备标识返回当前身份伪造值。
+//  1.9.6：
+//    V. 换号持久标识清理：iOS 卸载不删 Keychain，Dipfy 借此在重装后仍认出老设备/老账号。
+//       「换全新身份」可挂一次性标记，下次芒果启动、在所有业务 SDK 读取前清空自身 Keychain、
+//       NSUserDefaults 标识键、Foundation Cookie，以及自有容器/AppGroup 内的设备-ID 类文件，
+//       并重置 Dipfy 本地 ID，使每次换号等价于一台从未装过芒果的全新设备。
 //  1.8.0：
 //    S. 兼容/扩展随机池合并为统一 10 款机型，不再区分随机模式；SE2 不参与随机。
 //    T. 移除照片权限 Hook；相机权限继续不做 Hook，保留通讯录/日历保护。
@@ -99,6 +104,7 @@
 #pragma mark - 配置
 
 static NSDictionary *g_config = nil;
+static NSString *g_lastWipeReport = nil; // 1.9.6 最近一次持久标识清理结果（供界面展示）
 
 // C hook 使用的全局开关（原子读写，constructor 中从配置设置）
 static int g_enabledC = 0;
@@ -142,7 +148,7 @@ static NSDictionary *BDSDefaultConfig(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @181,
+            @"configVersion": @196,
             @"enabled": @NO,
             @"spoofAdvertisingIdentifiers": @NO,
             @"spoofProcessHardware": @NO,
@@ -188,6 +194,11 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"dipfyFakeUUID": @"",
             @"identityId": @"",
             @"macAddress": @"",
+            // 1.9.6 换号持久标识清理
+            @"wipePersistenceOnNextLaunch": @NO, // 一次性标记：下次芒果启动先清本机持久标识
+            @"autoWipeOnRotate": @YES,           // 点「换全新身份」时自动挂上一次性清理
+            @"lastWipeAt": @0,
+            @"lastWipeReport": @"",
             // 透传白名单：com.apple. 前缀始终透传，这里是用户额外选择的 App。
             // 以 "." 或 "*" 结尾表示前缀匹配，其余为精确匹配。
             @"passthroughBundles": @[
@@ -700,6 +711,15 @@ static void loadConfig() {
                 (unsigned)arc4random_uniform(256), (unsigned)arc4random_uniform(256),
                 (unsigned)arc4random_uniform(256), (unsigned)arc4random_uniform(256)];
         }
+        [merged writeToFile:p1 atomically:YES];
+    }
+    if (ver < 196) {
+        // 1.9.6 换号持久标识清理：补齐新键，默认换身份即挂一次性清理。
+        merged[@"configVersion"] = @196;
+        if (!loaded[@"autoWipeOnRotate"]) merged[@"autoWipeOnRotate"] = @YES;
+        if (!loaded[@"wipePersistenceOnNextLaunch"]) merged[@"wipePersistenceOnNextLaunch"] = @NO;
+        if (!loaded[@"lastWipeAt"]) merged[@"lastWipeAt"] = @0;
+        if (!loaded[@"lastWipeReport"]) merged[@"lastWipeReport"] = @"";
         [merged writeToFile:p1 atomically:YES];
     }
     g_config = [merged copy];
@@ -2664,6 +2684,9 @@ static const CGFloat BDSButtonCollapsedWidth = 18.0;
 static const CGFloat BDSButtonCollapsedVisibleWidth = 10.0;
 static const NSTimeInterval BDSButtonCollapseDelay = 2.0;
 
+// 1.9.6 换号持久标识清理（实现在 constructor 之前；此处前置声明供界面方法调用）。
+static NSString *bds_wipeMangoPersistence(BOOL *outSuccess);
+
 @interface BDSUIController : NSObject
 @property (nonatomic, assign) NSUInteger floatingButtonGeneration;
 + (instancetype)shared;
@@ -2682,6 +2705,7 @@ static const NSTimeInterval BDSButtonCollapseDelay = 2.0;
 - (void)showAdvancedSwitches;
 - (void)showAdvancedEditors;
 - (void)showAntiAssociation;
+- (void)wipePersistenceNow;
 - (void)showRiskTestSwitches;
 - (void)editWiFiSSID;
 - (void)editProcessHardware;
@@ -3223,7 +3247,7 @@ static NSString *BDSConfigSummary(void) {
 - (void)openPanel {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"BDS Global 1.9.5"
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"BDS Global 1.9.6"
                                                                    message:BDSConfigSummary()
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"换全新身份（全局）" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
@@ -3453,7 +3477,9 @@ static NSString *BDSConfigSummary(void) {
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"确认换新身份" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
         (void)action;
-        NSDictionary *values = BDSFullNewIdentityValues();
+        NSMutableDictionary *values = [BDSFullNewIdentityValues() mutableCopy];
+        // 1.9.6 默认在下次启动先清空 Keychain / 本地 Dipfy 等持久标识，避免重装仍被认成老设备。
+        if (cfgBool(@"autoWipeOnRotate", YES)) values[@"wipePersistenceOnNextLaunch"] = @YES;
         BOOL saved = saveConfigValues(values);
         if (!saved) {
             [self presentMessage:@"全局配置写入失败，请检查 /var/jb 全局目录是否可写。" title:@"保存失败"];
@@ -3465,11 +3491,14 @@ static NSString *BDSConfigSummary(void) {
             [[NSFileManager defaultManager] removeItemAtPath:
                 [bdsPDir stringByAppendingPathComponent:@"presence.plist"] error:nil];
         }
+        NSString *wipeHint = cfgBool(@"autoWipeOnRotate", YES)
+            ? @"\n\n已挂「持久标识清理」：彻底关闭芒果再打开时，会自动清空 Keychain/本地Dipfy（等于全新安装）。"
+            : @"";
         NSString *msg = [NSString stringWithFormat:
             @"新身份已写入全局配置：\n身份ID：%@\n机型：%@\niOS：%@ (%@)\n\n"
-             "请按顺序操作：\n1. 给芒果新建 Crane 干净容器，再登录 B 账号\n2. 卸载上一批广告主 App\n3. 切换 IP（飞行重拨/切流量卡/换代理节点）\n4. 彻底关闭并重启相关 App",
+             "请按顺序操作：\n1. 给芒果新建 Crane 干净容器，再登录 B 账号\n2. 卸载上一批广告主 App\n3. 切换 IP（飞行重拨/切流量卡/换代理节点）\n4. 彻底关闭并重启芒果（重启时自动清理持久标识）%@",
             values[@"identityId"], values[@"deviceProfileName"],
-            values[@"systemVersion"], values[@"systemBuild"]];
+            values[@"systemVersion"], values[@"systemBuild"], wipeHint];
         [self presentMessage:msg title:@"新身份已生成"];
     }]];
     [presenter presentViewController:alert animated:YES completion:nil];
@@ -3897,7 +3926,8 @@ static NSString *BDSConfigSummary(void) {
         @{@"key": @"spoofDlopen", @"name": @"dlopen 反检测"},
         @{@"key": @"spoofUbiquity", @"name": @"iCloud 容器隔离"},
         @{@"key": @"spoofPrivacyPermissions", @"name": @"通讯录/日历权限拒绝"},
-        @{@"key": @"spoofBattery", @"name": @"电池电量伪装"}
+        @{@"key": @"spoofBattery", @"name": @"电池电量伪装"},
+        @{@"key": @"autoWipeOnRotate", @"name": @"换身份时清空Keychain/本地ID"}
     ];
     for (NSDictionary *item in items) {
         NSString *key = item[@"key"];
@@ -3907,6 +3937,20 @@ static NSString *BDSConfigSummary(void) {
             [self showRestartNotice:saveConfigValues(@{key: @(!cfgBool(key, NO))})];
         }]];
     }
+    [sheet addAction:[UIAlertAction actionWithTitle:
+        [NSString stringWithFormat:@"下次启动清空持久标识：%@", BDSOnOff(cfgBool(@"wipePersistenceOnNextLaunch", NO))]
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        (void)action;
+        BOOL next = !cfgBool(@"wipePersistenceOnNextLaunch", NO);
+        [self showRestartNotice:saveConfigValues(@{@"wipePersistenceOnNextLaunch": @(next)})];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"立即清空本机持久标识（现在执行）"
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(UIAlertAction *action) {
+        (void)action;
+        [self wipePersistenceNow];
+    }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"编辑伪造 WiFi SSID"
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
@@ -3924,6 +3968,20 @@ static NSString *BDSConfigSummary(void) {
         sheet.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(presenter.view.bounds), CGRectGetMidY(presenter.view.bounds), 1, 1);
     }
     [presenter presentViewController:sheet animated:YES completion:nil];
+}
+
+// 立即执行一次持久标识清理（不杀进程，便于当场验证）；换号正式流程仍建议用「换全新身份」后重启。
+- (void)wipePersistenceNow {
+    BOOL complete = NO;
+    NSString *report = bds_wipeMangoPersistence(&complete);
+    saveConfigValues(@{@"lastWipeAt": @((long long)NSDate.date.timeIntervalSince1970),
+                       @"lastWipeReport": report ?: @"",
+                       // 运行中的 SDK 可能把内存缓存重新落盘；下一次冷启动必须再做最终清理。
+                       @"wipePersistenceOnNextLaunch": @YES});
+    [self presentMessage:[NSString stringWithFormat:
+        @"已执行第一遍清理：%@\n\n已保留下次启动清理标记。请立即彻底关闭芒果再重开；只有冷启动清理成功后标记才会自动复位。%@",
+        report, complete ? @"" : @"\n本次存在未完成项，下次启动会继续重试。"]
+                    title:@"持久标识清理"];
 }
 
 - (void)editWiFiSSID {
@@ -4461,6 +4519,263 @@ static void bds_recordPresence(void) {
     });
 }
 
+#pragma mark - 1.9.6 换号：清空芒果本机持久标识（Keychain / UserDefaults / Cookie / 容器与 AppGroup 内设备-ID 文件）
+
+// 文件名 / 键名是否属于“设备 / 安装 / 登录 / 风控标识”。
+// 仅接受精确标识名，或 Mango/Dipfy 厂商前缀与标识词同时出现；不再用 iid 等短子串模糊匹配。
+static BOOL bds_nameLooksLikePersistID(NSString *name) {
+    if (![name isKindOfClass:NSString.class] || name.length == 0) return NO;
+    NSString *lower = name.lowercaseString;
+    NSMutableString *n = [NSMutableString stringWithCapacity:lower.length];
+    NSString *stemLower = name.lastPathComponent.stringByDeletingPathExtension.lowercaseString;
+    NSMutableString *stem = [NSMutableString stringWithCapacity:stemLower.length];
+    NSCharacterSet *allowed = NSCharacterSet.alphanumericCharacterSet;
+    for (NSUInteger i = 0; i < lower.length; i++) {
+        unichar c = [lower characterAtIndex:i];
+        if ([allowed characterIsMember:c]) [n appendFormat:@"%C", c];
+    }
+    for (NSUInteger i = 0; i < stemLower.length; i++) {
+        unichar c = [stemLower characterAtIndex:i];
+        if ([allowed characterIsMember:c]) [stem appendFormat:@"%C", c];
+    }
+    static NSSet<NSString *> *exact;
+    static NSArray<NSString *> *vendors;
+    static NSArray<NSString *> *identityWords;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        exact = [NSSet setWithArray:@[@"dipfydeviceid", @"dipfydevicekey", @"dipfyuuid",
+                                      @"deviceid", @"deviceuuid", @"devicekey", @"installid",
+                                      @"utdid", @"umid", @"cuid", @"idfv", @"idfa", @"dfid",
+                                      @"mgtvuuid", @"mgtvtoken", @"serverdeviceid", @"localdeviceid",
+                                      @"devicetoken"]];
+        vendors = @[@"dipfy", @"mgtv", @"hunantv", @"imgotv"];
+        identityWords = @[@"deviceid", @"deviceuuid", @"devicekey", @"installid", @"utdid",
+                          @"umid", @"cuid", @"idfv", @"idfa", @"dfid", @"fingerprint",
+                          @"accesstoken", @"logintoken", @"sessionid", @"devicetoken", @"uuid"];
+    });
+    if ([exact containsObject:n] || [exact containsObject:stem]) return YES;
+    BOOL hasVendor = NO, hasIdentityWord = NO;
+    for (NSString *v in vendors) if ([n containsString:v]) { hasVendor = YES; break; }
+    for (NSString *w in identityWords) if ([n containsString:w]) { hasIdentityWord = YES; break; }
+    return hasVendor && hasIdentityWord;
+}
+
+static NSString *bds_keychainString(id value) {
+    if ([value isKindOfClass:NSString.class]) return value;
+    if ([value isKindOfClass:NSData.class]) return [[NSString alloc] initWithData:value encoding:NSUTF8StringEncoding];
+    return nil;
+}
+
+// 必须同时出现 Mango/Dipfy 厂商信息与设备/安装标识词，避免误删正常登录密码和共享凭据。
+static BOOL bds_isMangoPersistenceKeychainItem(NSDictionary *item) {
+    NSArray *keys = @[(__bridge id)kSecAttrAccessGroup, (__bridge id)kSecAttrService,
+                      (__bridge id)kSecAttrAccount, (__bridge id)kSecAttrLabel,
+                      (__bridge id)kSecAttrDescription, (__bridge id)kSecAttrComment,
+                      (__bridge id)kSecAttrServer, (__bridge id)kSecAttrPath,
+                      (__bridge id)kSecAttrApplicationTag];
+    NSMutableString *joined = [NSMutableString string];
+    for (id key in keys) {
+        NSString *s = bds_keychainString(item[key]);
+        if (s.length) [joined appendFormat:@" %@", s.lowercaseString];
+    }
+    BOOL hasVendor = [joined containsString:@"dipfy"] || [joined containsString:@"mgtv"] ||
+                     [joined containsString:@"hunantv"] || [joined containsString:@"imgotv"];
+    return hasVendor && bds_nameLooksLikePersistID(joined);
+}
+
+// 只枚举并删除明确属于 Mango/Dipfy 持久标识的密码项；不触碰证书、私钥、Identity 或普通登录项。
+static NSUInteger bds_wipeOwnKeychain(NSUInteger *scanned, NSUInteger *errors) {
+    NSArray *classes = @[(__bridge id)kSecClassGenericPassword,
+                         (__bridge id)kSecClassInternetPassword];
+    NSUInteger removed = 0;
+    for (id cls in classes) {
+        NSDictionary *q = @{(__bridge id)kSecClass: cls,
+                            (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitAll,
+                            (__bridge id)kSecReturnAttributes: @YES,
+                            (__bridge id)kSecReturnPersistentRef: @YES};
+        CFTypeRef raw = NULL;
+        OSStatus copyStatus = SecItemCopyMatching((__bridge CFDictionaryRef)q, &raw);
+        if (copyStatus == errSecItemNotFound) continue;
+        if (copyStatus != errSecSuccess || !raw) {
+            if (raw) CFRelease(raw);
+            if (errors) (*errors)++;
+            continue;
+        }
+        id result = CFBridgingRelease(raw);
+        NSArray *items = [result isKindOfClass:NSArray.class] ? result : @[result];
+        for (id obj in items) {
+            if (![obj isKindOfClass:NSDictionary.class]) continue;
+            NSDictionary *item = obj;
+            if (scanned) (*scanned)++;
+            if (!bds_isMangoPersistenceKeychainItem(item)) continue;
+            NSData *persistentRef = item[(__bridge id)kSecValuePersistentRef];
+            if (![persistentRef isKindOfClass:NSData.class]) {
+                if (errors) (*errors)++;
+                continue;
+            }
+            NSDictionary *deleteQuery = @{(__bridge id)kSecValuePersistentRef: persistentRef};
+            OSStatus deleteStatus = SecItemDelete((__bridge CFDictionaryRef)deleteQuery);
+            if (deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound) {
+                if (deleteStatus == errSecSuccess) removed++;
+            } else if (errors) {
+                (*errors)++;
+            }
+        }
+    }
+    return removed;
+}
+
+static BOOL bds_pathIsInsideRoot(NSString *path, NSString *root) {
+    if (!path.length || !root.length) return NO;
+    if ([path isEqualToString:root]) return YES;
+    return [path hasPrefix:[root stringByAppendingString:@"/"]];
+}
+
+// 在自有容器 / AppGroup 内做有界枚举；拒绝符号链接，并验证解析后的路径仍在原 root 内。
+static NSUInteger bds_wipeIDFilesInRoot(NSString *root, NSFileManager *fm, NSUInteger *scanned,
+                                        NSUInteger *errors, BOOL *complete) {
+    if (root.length == 0) return 0;
+    NSUInteger removed = 0;
+    NSString *canonicalRoot = [[root stringByStandardizingPath] stringByResolvingSymlinksInPath];
+    NSURL *rootURL = [NSURL fileURLWithPath:canonicalRoot isDirectory:YES];
+    NSArray *resourceKeys = @[NSURLIsDirectoryKey, NSURLIsRegularFileKey, NSURLIsSymbolicLinkKey];
+    __block NSUInteger enumerationErrors = 0;
+    NSDirectoryEnumerator<NSURL *> *enumerator = [fm enumeratorAtURL:rootURL
+                                           includingPropertiesForKeys:resourceKeys
+                                                              options:0
+                                                         errorHandler:^BOOL(NSURL *url, NSError *error) {
+        (void)url; (void)error;
+        enumerationErrors++;
+        return YES;
+    }];
+    NSUInteger visited = 0;
+    const NSUInteger maxVisited = 4096;
+    for (NSURL *url in enumerator) {
+        if (++visited > maxVisited) {
+            if (complete) *complete = NO;
+            break;
+        }
+        NSUInteger relativeDepth = url.pathComponents.count > rootURL.pathComponents.count
+            ? url.pathComponents.count - rootURL.pathComponents.count : 0;
+        if (relativeDepth > 4) {
+            [enumerator skipDescendants];
+            continue;
+        }
+        NSNumber *isDirectory = nil, *isRegular = nil, *isSymlink = nil;
+        NSError *resourceError = nil;
+        BOOL gotType = [url getResourceValue:&isSymlink forKey:NSURLIsSymbolicLinkKey error:&resourceError] &&
+                       [url getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:&resourceError] &&
+                       [url getResourceValue:&isRegular forKey:NSURLIsRegularFileKey error:&resourceError];
+        if (!gotType) {
+            if (errors) (*errors)++;
+            [enumerator skipDescendants];
+            continue;
+        }
+        if (isSymlink.boolValue) {
+            [enumerator skipDescendants];
+            continue;
+        }
+        NSString *resolved = [[url.path stringByStandardizingPath] stringByResolvingSymlinksInPath];
+        if (!bds_pathIsInsideRoot(resolved, canonicalRoot)) {
+            if (errors) (*errors)++;
+            [enumerator skipDescendants];
+            continue;
+        }
+        if (isDirectory.boolValue) continue;
+        if (!isRegular.boolValue) continue;
+        if (scanned) (*scanned)++;
+        if ([url.lastPathComponent isEqualToString:@"bdspoofer_config.plist"]) continue;
+        if (bds_nameLooksLikePersistID(url.lastPathComponent)) {
+            NSError *removeError = nil;
+            if ([fm removeItemAtURL:url error:&removeError]) removed++;
+            else if (errors) (*errors)++;
+        }
+    }
+    if (enumerationErrors && errors) *errors += enumerationErrors;
+    return removed;
+}
+
+// 总入口：返回人类可读的清理报告。全程 @try 保护，任何一步失败都不影响 App 启动。
+static NSString *bds_wipeMangoPersistence(BOOL *outSuccess) {
+    NSUInteger kc = 0, kcScanned = 0, ud = 0, ck = 0, files = 0, scanned = 0, errors = 0;
+    BOOL complete = YES;
+    if (outSuccess) *outSuccess = NO;
+    @try {
+        // 1) Keychain
+        kc = bds_wipeOwnKeychain(&kcScanned, &errors);
+
+        // 2) NSUserDefaults 标识类键
+        NSUserDefaults *defs = NSUserDefaults.standardUserDefaults;
+        NSDictionary *all = [defs dictionaryRepresentation];
+        for (NSString *key in all) {
+            if (bds_nameLooksLikePersistID(key)) {
+                [defs removeObjectForKey:key];
+                ud++;
+            }
+        }
+        [defs synchronize];
+
+        // 3) Foundation Cookie（WKWebView 的 Cookie 在容器内，Crane 新容器已隔离，此处尽力清理）
+        @try {
+            NSHTTPCookieStorage *store = NSHTTPCookieStorage.sharedHTTPCookieStorage;
+            NSArray<NSHTTPCookie *> *cookies = [store.cookies copy];
+            ck = 0;
+            for (NSHTTPCookie *c in cookies) {
+                NSString *domain = c.domain.lowercaseString ?: @"";
+                if ([domain containsString:@"mgtv.com"] || [domain containsString:@"hunantv.com"]) {
+                    [store deleteCookie:c];
+                    ck++;
+                }
+            }
+        } @catch (NSException *inner) {
+            (void)inner;
+            complete = NO;
+            errors++;
+        }
+
+        // 4) 自有 Documents/Library/Caches + 可解析到的 AppGroup 内标识类文件
+        NSFileManager *fm = NSFileManager.defaultManager;
+        NSMutableArray<NSString *> *roots = [NSMutableArray array];
+        NSArray<NSNumber *> *which = @[@(NSDocumentDirectory), @(NSLibraryDirectory), @(NSCachesDirectory)];
+        for (NSNumber *w in which) {
+            NSArray<NSURL *> *urls = [fm URLsForDirectory:w.unsignedIntegerValue inDomains:NSUserDomainMask];
+            for (NSURL *u in urls) if (u.path.length) [roots addObject:u.path];
+        }
+        NSString *bid = g_bundleID ?: @"";
+        NSMutableArray<NSString *> *groupIds = [NSMutableArray array];
+        if (bid.length) [groupIds addObject:[@"group." stringByAppendingString:bid]];
+        [groupIds addObject:@"group.com.hunantv.imgotv"];
+        for (NSString *gid in groupIds) {
+            NSURL *u = [fm containerURLForSecurityApplicationGroupIdentifier:gid];
+            if (u.path.length && ![roots containsObject:u.path]) [roots addObject:u.path];
+        }
+        NSMutableSet<NSString *> *seenRoot = [NSMutableSet set];
+        for (NSString *root in roots) {
+            NSString *canonical = [[root stringByStandardizingPath] stringByResolvingSymlinksInPath];
+            if (!canonical.length) continue;
+            BOOL covered = NO;
+            for (NSString *seen in seenRoot) {
+                if (bds_pathIsInsideRoot(canonical, seen)) { covered = YES; break; }
+            }
+            if (covered) continue;
+            [seenRoot addObject:canonical];
+            files += bds_wipeIDFilesInRoot(canonical, fm, &scanned, &errors, &complete);
+        }
+    } @catch (NSException *e) {
+        complete = NO;
+        errors++;
+        return [NSString stringWithFormat:@"清理异常：%@（Keychain:%lu/%lu 偏好键:%lu Cookie:%lu 标识文件:%lu/扫描%lu 错误:%lu）",
+                e.name ?: @"?", (unsigned long)kc, (unsigned long)kcScanned, (unsigned long)ud,
+                (unsigned long)ck, (unsigned long)files, (unsigned long)scanned, (unsigned long)errors];
+    }
+    complete = complete && errors == 0;
+    if (outSuccess) *outSuccess = complete;
+    return [NSString stringWithFormat:@"Keychain:%lu/%lu 偏好键:%lu Cookie:%lu 标识文件:%lu（扫描%lu） 错误:%lu%@",
+            (unsigned long)kc, (unsigned long)kcScanned, (unsigned long)ud, (unsigned long)ck,
+            (unsigned long)files, (unsigned long)scanned, (unsigned long)errors,
+            complete ? @"" : @"，未完成"];
+}
+
 __attribute__((constructor))
 static void bds_initialize() {
     @autoreleasepool {
@@ -4484,6 +4799,22 @@ static void bds_initialize() {
 
         // loadConfig 后以权威 g_config 再确认一次（白名单同样无条件透传）。
         if (bds_isPassthroughBundle(bundleID)) return;
+
+        // 1.9.6 换号：仅芒果主 App，且点过「换全新身份 / 下次启动清空」时，
+        // 在所有业务 SDK（含 Dipfy）读取前执行有界清理；仅在完整成功后复位标记。
+        if (g_isMango && cfgBool(@"wipePersistenceOnNextLaunch", NO)) {
+            @try {
+                BOOL wipeComplete = NO;
+                g_lastWipeReport = bds_wipeMangoPersistence(&wipeComplete);
+                saveConfigValues(@{@"wipePersistenceOnNextLaunch": @(!wipeComplete),
+                                   @"lastWipeAt": @((long long)NSDate.date.timeIntervalSince1970),
+                                   @"lastWipeReport": g_lastWipeReport ?: @""});
+            } @catch (NSException *wipeEx) {
+                (void)wipeEx;
+                // 清理异常时保留标记，避免一次失败后永久跳过。
+                saveConfigValues(@{@"wipePersistenceOnNextLaunch": @YES});
+            }
+        }
 
         // 配置浮窗只在芒果 TV 主 App 内显示；广告主 App 只静默应用同一套身份，不弹任何界面。
         if (g_isMango) BDSInstallUI();
