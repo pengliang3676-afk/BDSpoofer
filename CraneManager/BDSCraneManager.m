@@ -28,6 +28,11 @@ typedef NS_ENUM(NSInteger, BDSCraneContainerPathType) {
                             ofApplicationWithIdentifier:(NSString *)applicationID;
 @end
 
+@interface LSApplicationProxy : NSObject
++ (instancetype)applicationProxyForIdentifier:(NSString *)applicationIdentifier;
+@property(nonatomic, readonly) NSURL *dataContainerURL;
+@end
+
 static NSDictionary *BDSDevice(NSString *name, NSString *machine, NSString *model,
                                NSInteger width, NSInteger height,
                                NSInteger nativeWidth, NSInteger nativeHeight,
@@ -258,7 +263,7 @@ static NSMutableDictionary *BDSCreateRandomConfig(NSDictionary *existing) {
         @"nativeScreenHeight": device[@"nativeHeight"],
         @"bootTimeOffsetSeconds": @(86400 + arc4random_uniform(7 * 86400)),
         @"managerGeneratedAt": @([[NSDate date] timeIntervalSince1970]),
-        @"managerProfileVersion": @101,
+        @"managerProfileVersion": @102,
     }];
     [config addEntriesFromDictionary:BDSRandomCarrier()];
 
@@ -336,6 +341,7 @@ static void *BDSLoadCraneLibrary(void) {
 @property(nonatomic, strong) NSArray<NSDictionary *> *containers;
 @property(nonatomic, strong) NSMutableSet<NSString *> *selectedContainerIDs;
 @property(nonatomic, copy) NSString *activeContainerID;
+@property(nonatomic, copy) NSString *baiduBaseDataPath;
 @property(nonatomic, strong) UILabel *statusLabel;
 @property(nonatomic, strong) UIButton *randomizeButton;
 @end
@@ -411,14 +417,55 @@ static void *BDSLoadCraneLibrary(void) {
     return nil;
 }
 
+- (NSString *)resolvedBaiduBaseDataPath {
+    if (self.baiduBaseDataPath.length) return self.baiduBaseDataPath;
+
+    Class proxyClass = NSClassFromString(@"LSApplicationProxy");
+    if ([proxyClass respondsToSelector:@selector(applicationProxyForIdentifier:)]) {
+        LSApplicationProxy *proxy = [(id)proxyClass applicationProxyForIdentifier:BDSBaiduBundleID];
+        NSString *path = proxy.dataContainerURL.path;
+        if (path.length) self.baiduBaseDataPath = path;
+    }
+
+    // Crane 1.3.14 stores non-default app containers below the real app data
+    // root. Normalize a path returned by libCrane if LSApplicationProxy is not
+    // available in this process.
+    if (!self.baiduBaseDataPath.length) {
+        NSArray *identifiers = [self.crane containerIdentifiersOfApplicationWithIdentifier:BDSBaiduBundleID] ?: @[];
+        for (NSString *identifier in identifiers) {
+            if (![identifier isKindOfClass:NSString.class] || !identifier.length) continue;
+            NSString *candidate = [self appPathForContainerID:identifier];
+            if (!candidate.length) continue;
+            NSRange marker = [candidate rangeOfString:@"/Library/___Crane_Containers/"];
+            if (marker.location != NSNotFound) {
+                candidate = [candidate substringToIndex:marker.location];
+            }
+            if ([candidate containsString:@"/Containers/Data/Application/"]) {
+                self.baiduBaseDataPath = candidate;
+                break;
+            }
+        }
+    }
+    return self.baiduBaseDataPath;
+}
+
 - (NSString *)configPathForContainerID:(NSString *)containerID {
-    NSString *appPath = [self appPathForContainerID:containerID];
-    if (!appPath.length) return nil;
-    return [[appPath stringByAppendingPathComponent:@"Documents"] stringByAppendingPathComponent:BDSConfigFileName];
+    NSString *basePath = [self resolvedBaiduBaseDataPath];
+    if (!basePath.length || !containerID.length) return nil;
+
+    NSString *containerPath = basePath;
+    if (![containerID isEqualToString:@"DEFAULT"]) {
+        containerPath = [[[basePath stringByAppendingPathComponent:@"Library"]
+            stringByAppendingPathComponent:@"___Crane_Containers"]
+            stringByAppendingPathComponent:containerID];
+    }
+    return [[containerPath stringByAppendingPathComponent:@"Documents"]
+        stringByAppendingPathComponent:BDSConfigFileName];
 }
 
 - (void)reloadContainers {
     self.randomizeButton.enabled = NO;
+    self.baiduBaseDataPath = nil;
     void *handle = BDSLoadCraneLibrary();
     Class managerClass = NSClassFromString(@"CraneManager");
     if (!handle || !managerClass || ![managerClass respondsToSelector:@selector(sharedManager)]) {
@@ -522,6 +569,7 @@ static void *BDSLoadCraneLibrary(void) {
         NSDictionary *existing = [NSDictionary dictionaryWithContentsOfFile:configPath];
         NSMutableDictionary *config = BDSCreateRandomConfig(existing);
         config[@"managerContainerIdentifier"] = containerID;
+        config[@"managerResolvedPath"] = configPath;
         NSError *serializationError = nil;
         NSData *data = [NSPropertyListSerialization dataWithPropertyList:config
                                                                    format:NSPropertyListXMLFormat_v1_0
@@ -535,6 +583,16 @@ static void *BDSLoadCraneLibrary(void) {
         }
         [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions:@0644}
                                          ofItemAtPath:configPath error:nil];
+
+        NSDictionary *verified = [NSDictionary dictionaryWithContentsOfFile:configPath];
+        BOOL identifierMatches = [verified[@"managerContainerIdentifier"] isEqualToString:containerID];
+        BOOL versionMatches = [verified[@"systemVersion"] isEqualToString:config[@"systemVersion"]];
+        BOOL modelMatches = [verified[@"deviceProfileName"] isEqualToString:config[@"deviceProfileName"]];
+        if (!identifierMatches || !versionMatches || !modelMatches) {
+            [failures addObject:[NSString stringWithFormat:@"%@：写后回读校验失败\n%@",
+                row[@"name"], configPath]];
+            continue;
+        }
         [successes addObject:[NSString stringWithFormat:@"%@：%@ / iOS %@",
             row[@"name"], config[@"deviceProfileName"], config[@"systemVersion"]]];
     }

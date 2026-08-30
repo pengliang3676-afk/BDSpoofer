@@ -1,18 +1,20 @@
-# 卍解 1.0.1
+# 卍解 1.0.2
 
 这是 BDSpoofer 1.8.1 的外部容器配置器，不替代 TrollFools 已注入的
 `BDSpoofer_1.8.1.dylib`。
 
 ## 使用方式
 
-1. 用 Sileo 安装 `BDSpooferCraneManager_1.0.1_RootHide.deb`。
+1. 用 Sileo 安装 `BDSpooferCraneManager_1.0.2_RootHide.deb`。
 2. 保持 BDSpoofer dylib 只注入百度极速版。
 3. 从桌面打开“卍解”。
 4. 勾选需要配置的 Crane 容器，点击“为选中容器一键随机”。
 5. 尚未运行过的容器可直接首次打开；已经在后台运行的百度需要彻底结束后再打开。
 
-配置器通过 Crane 官方 `libCrane` 接口枚举容器，并把配置写到所选容器的
-`Documents/bdspoofer_config.plist`。每个容器单独保存，互不覆盖。
+配置器通过 Crane 的 `libCrane` 接口枚举容器，并按 Crane 1.3.14 的实际目录
+结构解析目标：`DEFAULT` 写入百度数据根目录，其他容器写入
+`Library/___Crane_Containers/<ID>`。配置保存到各自的
+`Documents/bdspoofer_config.plist`，写入后会立即回读核对容器 ID、机型和系统版本。
 
 一键随机从 36 个机型中选择一个兼容组合，iPhone SE（第 2 代）不在随机池中。
 基础 6 项和常规高级项随之开启；Keychain、App Group、WebKit Cookie、
