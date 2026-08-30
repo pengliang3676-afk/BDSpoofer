@@ -1,6 +1,8 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <dlfcn.h>
+#import <limits.h>
+#import <stdlib.h>
 
 static NSString * const BDSBaiduBundleID = @"com.baidu.BaiduMobileInfo";
 static NSString * const BDSConfigFileName = @"bdspoofer_config.plist";
@@ -256,7 +258,7 @@ static NSMutableDictionary *BDSCreateRandomConfig(NSDictionary *existing) {
         @"nativeScreenHeight": device[@"nativeHeight"],
         @"bootTimeOffsetSeconds": @(86400 + arc4random_uniform(7 * 86400)),
         @"managerGeneratedAt": @([[NSDate date] timeIntervalSince1970]),
-        @"managerProfileVersion": @100,
+        @"managerProfileVersion": @101,
     }];
     [config addEntriesFromDictionary:BDSRandomCarrier()];
 
@@ -271,18 +273,62 @@ static NSMutableDictionary *BDSCreateRandomConfig(NSDictionary *existing) {
     return config;
 }
 
+static NSString *gCraneLoadDetail;
+
+static void BDSAddCraneCandidate(NSMutableOrderedSet<NSString *> *candidates, NSString *path) {
+    if (path.length) [candidates addObject:path];
+}
+
+static void BDSAddCraneCandidateFromAppPath(NSMutableOrderedSet<NSString *> *candidates,
+                                            NSString *appPath) {
+    if (!appPath.length) return;
+    NSRange marker = [appPath rangeOfString:@"/Applications/" options:NSBackwardsSearch];
+    if (marker.location == NSNotFound) return;
+    NSString *jailbreakRoot = [appPath substringToIndex:marker.location];
+    BDSAddCraneCandidate(candidates,
+        [jailbreakRoot stringByAppendingPathComponent:@"usr/lib/libcrane.dylib"]);
+}
+
 static void *BDSLoadCraneLibrary(void) {
-    const char *candidates[] = {
-        "libcrane.dylib",
-        "/usr/lib/libcrane.dylib",
-        "/var/jb/usr/lib/libcrane.dylib",
-        NULL
-    };
-    for (NSUInteger i = 0; candidates[i]; i++) {
-        void *handle = dlopen(candidates[i], RTLD_NOW | RTLD_GLOBAL);
-        if (handle) return handle;
-    }
-    return NULL;
+    static void *cachedHandle;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSMutableOrderedSet<NSString *> *candidates = [NSMutableOrderedSet orderedSet];
+
+        // RootHide registers jailbreak apps using their randomized physical jbroot path.
+        // Derive the matching usr/lib from our own bundle before trying generic paths.
+        NSString *bundlePath = NSBundle.mainBundle.bundlePath;
+        BDSAddCraneCandidateFromAppPath(candidates, bundlePath);
+        char resolved[PATH_MAX] = {0};
+        if (realpath(bundlePath.fileSystemRepresentation, resolved)) {
+            BDSAddCraneCandidateFromAppPath(candidates, [NSString stringWithUTF8String:resolved]);
+        }
+
+        BDSAddCraneCandidate(candidates, @"@rpath/libcrane.dylib");
+        BDSAddCraneCandidate(candidates, @"libcrane.dylib");
+        BDSAddCraneCandidate(candidates, @"/usr/lib/libcrane.dylib");
+        BDSAddCraneCandidate(candidates, @"/var/jb/usr/lib/libcrane.dylib");
+        // The cracked RootHide build keeps a stable package mirror; use it only as a fallback.
+        BDSAddCraneCandidate(candidates, @"/var/mobile/Library/pkgmirror/usr/lib/libcrane.dylib");
+
+        NSMutableArray<NSString *> *errors = [NSMutableArray array];
+        for (NSString *candidate in candidates) {
+            dlerror();
+            void *handle = dlopen(candidate.fileSystemRepresentation, RTLD_NOW | RTLD_GLOBAL);
+            if (handle) {
+                cachedHandle = handle;
+                gCraneLoadDetail = [NSString stringWithFormat:@"已加载：%@", candidate];
+                break;
+            }
+            const char *error = dlerror();
+            if (error) [errors addObject:[NSString stringWithFormat:@"%@：%s", candidate, error]];
+        }
+        if (!cachedHandle) {
+            NSString *lastError = errors.lastObject ?: @"dlopen 没有返回具体错误";
+            gCraneLoadDetail = [NSString stringWithFormat:@"App：%@\n%@", bundlePath, lastError];
+        }
+    });
+    return cachedHandle;
 }
 
 @interface BDSManagerViewController : UITableViewController
@@ -298,7 +344,7 @@ static void *BDSLoadCraneLibrary(void) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"百度 Crane 参数配置";
+    self.title = @"卍解";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
@@ -378,7 +424,10 @@ static void *BDSLoadCraneLibrary(void) {
     if (!handle || !managerClass || ![managerClass respondsToSelector:@selector(sharedManager)]) {
         self.containers = @[];
         [self.tableView reloadData];
-        [self showMessage:@"无法加载 Crane" detail:@"没有找到兼容的 libcrane.dylib。请确认 Crane 1.3.14-6 已安装并已启用。"];
+        NSString *detail = [NSString stringWithFormat:
+            @"没有找到兼容的 libcrane.dylib。请确认 Crane 1.3.14-6 已安装并已启用。\n\n%@",
+            gCraneLoadDetail ?: @"没有加载诊断"];
+        [self showMessage:@"无法加载 Crane" detail:detail];
         return;
     }
 

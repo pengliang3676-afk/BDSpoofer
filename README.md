@@ -107,8 +107,8 @@ lipo -create BDSpoofer_1.8.1_arm64.dylib BDSpoofer_1.8.1_arm64e.dylib -output BD
 ### 外部配置 Crane 容器（可选）
 
 1. 保持上面的 dylib 注入不变。
-2. 用 Sileo 安装 `BDSpooferCraneManager_1.0.0_RootHide.deb`。
-3. 从桌面打开“百度容器配置”，勾选一个或多个 Crane 容器并执行一键随机。
+2. 用 Sileo 安装 `BDSpooferCraneManager_1.0.1_RootHide.deb`。
+3. 从桌面打开“卍解”，勾选一个或多个 Crane 容器并执行一键随机。
 4. 配置会直接写入各容器自己的 `Documents/bdspoofer_config.plist`。尚未运行的容器可直接首次打开；已在后台运行的百度需要彻底结束后再打开。
 
 详细说明见 `CraneManager/README.md`。

@@ -87,6 +87,8 @@ jobs:
           cp BDSCraneManager "$APP/BDSCraneManager"
           cp CraneManager/Info.plist "$APP/Info.plist"
           cp bdspoofer_config.plist "$APP/bdspoofer_config.plist"
+          cp CraneManager/AppIcon60x60@2x.png "$APP/AppIcon60x60@2x.png"
+          cp CraneManager/AppIcon60x60@3x.png "$APP/AppIcon60x60@3x.png"
           cp CraneManager/BDSCraneManager.libSandy.plist \
             package-root/Library/libSandy/BDSCraneManager.plist
           cp CraneManager/control package-root/DEBIAN/control
@@ -104,9 +106,9 @@ jobs:
           printf '2.0\n' > deb-build/debian-binary
           COPYFILE_DISABLE=1 tar -C package-root/DEBIAN -czf deb-build/control.tar.gz .
           COPYFILE_DISABLE=1 tar -C package-root --exclude='./DEBIAN' -czf deb-build/data.tar.gz .
-          (cd deb-build && ar -rc ../dist/BDSpooferCraneManager_1.0.0_RootHide.deb \
+          (cd deb-build && ar -rc ../dist/BDSpooferCraneManager_1.0.1_RootHide.deb \
             debian-binary control.tar.gz data.tar.gz)
-          ar -t dist/BDSpooferCraneManager_1.0.0_RootHide.deb
+          ar -t dist/BDSpooferCraneManager_1.0.1_RootHide.deb
           tar -tzf deb-build/data.tar.gz
           lipo -info package-root/Applications/BDSCraneManager.app/BDSCraneManager
           codesign -d --entitlements :- package-root/Applications/BDSCraneManager.app
@@ -122,8 +124,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: BDSpoofer-CraneManager-1.0.0
+          name: BDSpoofer-CraneManager-1.0.1
           path: |
-            dist/BDSpooferCraneManager_1.0.0_RootHide.deb
+            dist/BDSpooferCraneManager_1.0.1_RootHide.deb
             BDSpoofer_1.8.1.dylib
             bdspoofer_config.plist
