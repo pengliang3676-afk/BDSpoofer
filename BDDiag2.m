@@ -1,9 +1,9 @@
 //
-//  BDDiag2.m —— 百度极速版 定向设备信息方法 只读探针 v3
+//  BDDiag2.m —— 百度极速版 定向设备信息方法 只读探针 v4
 //
-//  v3 变更（仅两处，其余与 v2 一致、仍全程只读不改值）：
-//   a. getScreenResolution 返回 {CGSize=dd}：新增只读 CGSize trampoline，调原实现→记录 .width/.height→原值返回；
-//   b. 字典内 NSNumber 字段直接带出真实数值（width/height/scale 等，非敏感），用于确认点/像素单位与一致性。
+//  v4 变更（仅摘要/脱敏规则，Hook 安装和原值透传逻辑不变）：
+//   a. 字典内非敏感 NSString 输出经手机号/UUID/token 正则脱敏后的值；
+//   b. phoneModel/model/brand/manufacturer 不再因包含 phone/mobile 被误脱敏，真正号码字段仍脱敏。
 //  原则（发现方法 → 记录真实签名 → 白名单才 Hook → 调原实现 → 安全摘要返回值 → 原值返回）：
 //   1. 运行时确认 类/selector 真实存在，记录 +/-、完整 type encoding、返回类型、参数数量与类型；
 //   2. 仅当【返回对象 且 0~2 个对象参数】才安装 Hook；结构体/浮点/指针/复杂参数一律“未 Hook”，绝不按 id 强调；
@@ -11,7 +11,7 @@
 //   4. 每个方法只采 1 次返回样本 + 1 次短栈，之后仅累计次数；
 //   5. _Thread_local 递归抑制，摘要/description 触发的二次调用不进入探针；
 //   6. 类可能晚加载：每 0.5s 重试、最多 30s；未找到只记录，不影响 App 启动；
-//   7. 字典只记“键/值类型/数组数量”，Cookie/Token/账号/手机号脱敏；NSString 前 300 字，NSData 只记长度。
+//   7. 字典记录安全基础类型值与容器摘要；Cookie/Token/账号/手机号脱敏，NSString 最多 300 字，NSData 只记长度。
 //
 //  本文件只读、不改任何返回值。编译：arm64 + arm64e 通用 dylib，TrollFools 注入。
 //
@@ -81,9 +81,17 @@ static void bdd_ensureRx(void) {
 }
 static BOOL bdd_sensitiveKey(NSString *k) {
     NSString *x = k.lowercaseString;
+    NSString *compact = [[[x stringByReplacingOccurrencesOfString:@"_" withString:@""]
+                            stringByReplacingOccurrencesOfString:@"-" withString:@""]
+                            stringByReplacingOccurrencesOfString:@" " withString:@""];
     NSArray *bad = @[@"cookie",@"token",@"session",@"pass",@"pwd",@"secret",
-                     @"phone",@"mobile",@"account",@"idfa",@"idfv",@"auth",@"ticket"];
+                     @"account",@"idfa",@"idfv",@"auth",@"ticket"];
     for (NSString *b in bad) if ([x containsString:b]) return YES;
+    NSArray *phoneKeys = @[@"phonenumber", @"mobilephonenumber", @"mobilenumber",
+                           @"telephonenumber", @"telnumber", @"msisdn"];
+    for (NSString *b in phoneKeys) if ([compact containsString:b]) return YES;
+    if ([compact isEqualToString:@"phone"] || [compact isEqualToString:@"mobile"] ||
+        [compact isEqualToString:@"telephone"] || [compact isEqualToString:@"tel"]) return YES;
     return NO;
 }
 static NSString *bdd_maskString(NSString *s) {
@@ -136,6 +144,7 @@ static NSString *bdd_summary(id v, int depth, NSString *keyHint) {
             NSString *vs;
             if (bdd_sensitiveKey(ks)) vs = [NSString stringWithFormat:@"<%@ 已脱敏>", NSStringFromClass([val class])];
             else if ([val isKindOfClass:NSDictionary.class] || [val isKindOfClass:NSArray.class]) vs = bdd_summary(val, depth+1, ks);
+            else if ([val isKindOfClass:NSString.class]) vs = [NSString stringWithFormat:@"NSString(值=%@)", bdd_maskString((NSString*)val)]; // v4: 非敏感字符串带出脱敏后值
             else if ([val isKindOfClass:NSNumber.class]) vs = [NSString stringWithFormat:@"%@(值=%@)", NSStringFromClass([val class]), val]; // v3: 数字字段带出真实数值（非敏感）
             else vs = NSStringFromClass([val class]) ?: @"?";
             [parts addObject:[NSString stringWithFormat:@"%@=%@", ks, vs]];
