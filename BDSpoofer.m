@@ -2583,7 +2583,7 @@ static const void *BDSButtonKey = &BDSButtonKey;
 static const CGFloat BDSButtonFullSize = 42.0;
 static const CGFloat BDSButtonCollapsedWidth = 18.0;
 static const CGFloat BDSButtonCollapsedVisibleWidth = 10.0;
-static const NSTimeInterval BDSButtonCollapseDelay = 5.0;
+static const NSTimeInterval BDSButtonCollapseDelay = 10.0;
 
 @interface BDSUIController : NSObject
 @property (nonatomic, assign) NSUInteger floatingButtonGeneration;
@@ -2978,6 +2978,40 @@ static NSString *BDSConfigSummary(void) {
         BDSDeviceRangeName()];
 }
 
+// The system alert title reserves a large bottom inset.  Use a compact custom
+// header so all five lines remain unchanged while the first action moves up.
+static BOOL BDSInstallCompactAlertHeader(UIAlertController *alert,
+                                         NSAttributedString *header) {
+    if (!alert || !header.length) return NO;
+
+    UIViewController *headerController = [UIViewController new];
+    UILabel *label = [UILabel new];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    label.numberOfLines = 0;
+    label.textAlignment = NSTextAlignmentCenter;
+    label.attributedText = header;
+    [headerController.view addSubview:label];
+    [NSLayoutConstraint activateConstraints:@[
+        [label.topAnchor constraintEqualToAnchor:headerController.view.topAnchor constant:3.0],
+        [label.bottomAnchor constraintEqualToAnchor:headerController.view.bottomAnchor constant:-4.0],
+        [label.leadingAnchor constraintEqualToAnchor:headerController.view.leadingAnchor constant:8.0],
+        [label.trailingAnchor constraintEqualToAnchor:headerController.view.trailingAnchor constant:-8.0]
+    ]];
+
+    CGRect measured = [header boundingRectWithSize:CGSizeMake(240.0, CGFLOAT_MAX)
+                                            options:(NSStringDrawingUsesLineFragmentOrigin |
+                                                     NSStringDrawingUsesFontLeading)
+                                            context:nil];
+    headerController.preferredContentSize = CGSizeMake(240.0,
+                                                        ceil(CGRectGetHeight(measured)) + 7.0);
+    @try {
+        [alert setValue:headerController forKey:@"contentViewController"];
+        return YES;
+    } @catch (__unused NSException *exception) {
+        return NO;
+    }
+}
+
 @implementation BDSUIController
 
 + (instancetype)shared {
@@ -3140,19 +3174,19 @@ static NSString *BDSConfigSummary(void) {
     NSString *compactHeaderText = [NSString stringWithFormat:@"卍解\n%@", BDSConfigSummary()];
     NSMutableParagraphStyle *compactParagraph = [[NSMutableParagraphStyle alloc] init];
     compactParagraph.alignment = NSTextAlignmentCenter;
-    compactParagraph.lineSpacing = -2.0;
+    compactParagraph.lineSpacing = -1.0;
     compactParagraph.paragraphSpacing = 0.0;
     NSMutableAttributedString *compactHeader = [[NSMutableAttributedString alloc]
         initWithString:compactHeaderText
         attributes:@{NSForegroundColorAttributeName: UIColor.labelColor,
-                      NSFontAttributeName: [UIFont systemFontOfSize:11.0],
-                      NSBaselineOffsetAttributeName: @(-1.0),
+                      NSFontAttributeName: [UIFont systemFontOfSize:12.0],
                       NSParagraphStyleAttributeName: compactParagraph}];
     [compactHeader addAttributes:@{NSForegroundColorAttributeName: UIColor.systemRedColor,
-                                   NSFontAttributeName: [UIFont boldSystemFontOfSize:16.0],
-                                   NSBaselineOffsetAttributeName: @0}
+                                   NSFontAttributeName: [UIFont boldSystemFontOfSize:17.0]}
                            range:NSMakeRange(0, [@"卍解" length])];
-    [alert setValue:compactHeader forKey:@"attributedTitle"];
+    if (!BDSInstallCompactAlertHeader(alert, compactHeader)) {
+        [alert setValue:compactHeader forKey:@"attributedTitle"];
+    }
     [alert addAction:[UIAlertAction actionWithTitle:@"从机型池套用机型iOS  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
