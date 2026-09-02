@@ -208,20 +208,19 @@ static NSDictionary *BDSRandomCarrier(void) {
     return carriers[arc4random_uniform((uint32_t)carriers.count)];
 }
 
-static NSMutableDictionary *BDSCreateRandomConfig(NSDictionary *existing) {
+static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing, NSDictionary *device) {
+    if (![device isKindOfClass:NSDictionary.class]) return nil;
     BOOL hadExistingConfig = existing.count > 0;
     NSMutableDictionary *config = [BDSDefaultConfig() mutableCopy];
     if (hadExistingConfig) [config addEntriesFromDictionary:existing];
 
-    NSArray *devices = BDSDeviceProfiles();
-    NSDictionary *device = devices[arc4random_uniform((uint32_t)devices.count)];
     NSDictionary *system = BDSRandomSystemForDevice(device);
     NSArray *disks = device[@"disks"];
     NSNumber *disk = disks[arc4random_uniform((uint32_t)disks.count)];
     NSString *deviceName = [NSString stringWithFormat:@"iPhone-%@", [BDSRandomHex(6, YES) uppercaseString]];
 
     [config addEntriesFromDictionary:@{
-        @"configVersion": @181,
+        @"configVersion": @182,
         @"enabled": @YES,
         @"spoofAdvertisingIdentifiers": @YES,
         @"spoofProcessHardware": @YES,
@@ -230,6 +229,7 @@ static NSMutableDictionary *BDSCreateRandomConfig(NSDictionary *existing) {
         @"spoofScreen": @NO,
         @"spoofStorage": @YES,
         @"spoofBaiduSDK": @YES,
+        @"spoofBaiduTargeted": @YES,
         @"spoofSysctl": @YES,
         @"bypassJailbreakDetect": @YES,
         @"spoofWiFi": @YES,
@@ -263,7 +263,7 @@ static NSMutableDictionary *BDSCreateRandomConfig(NSDictionary *existing) {
         @"nativeScreenHeight": device[@"nativeHeight"],
         @"bootTimeOffsetSeconds": @(86400 + arc4random_uniform(7 * 86400)),
         @"managerGeneratedAt": @([[NSDate date] timeIntervalSince1970]),
-        @"managerProfileVersion": @102,
+        @"managerProfileVersion": @103,
     }];
     [config addEntriesFromDictionary:BDSRandomCarrier()];
 
@@ -276,6 +276,13 @@ static NSMutableDictionary *BDSCreateRandomConfig(NSDictionary *existing) {
         config[@"utdid"] = BDSRandomHex(32, NO);
     }
     return config;
+}
+
+static NSMutableDictionary *BDSCreateRandomConfig(NSDictionary *existing) {
+    NSArray<NSDictionary *> *devices = BDSDeviceProfiles();
+    if (!devices.count) return nil;
+    NSDictionary *device = devices[arc4random_uniform((uint32_t)devices.count)];
+    return BDSCreateConfigForDevice(existing, device);
 }
 
 static NSString *gCraneLoadDetail;
@@ -344,6 +351,9 @@ static void *BDSLoadCraneLibrary(void) {
 @property(nonatomic, copy) NSString *baiduBaseDataPath;
 @property(nonatomic, strong) UILabel *statusLabel;
 @property(nonatomic, strong) UIButton *randomizeButton;
+@property(nonatomic, strong) UIButton *poolButton;
+- (void)showDevicePoolPicker;
+- (void)applySelectedContainersWithDevice:(NSDictionary *)forcedDevice;
 @end
 
 @implementation BDSManagerViewController
@@ -367,11 +377,11 @@ static void *BDSLoadCraneLibrary(void) {
     label.numberOfLines = 0;
     label.font = [UIFont systemFontOfSize:14];
     label.textColor = UIColor.secondaryLabelColor;
-    label.text = @"选择一个或多个百度 Crane 容器，再点击一键随机。配置会提前写入各自 Documents；首次打开未运行容器即可生效。SE2 已排除。";
+    label.text = @"选择一个或多个百度 Crane 容器，再一键随机整套基础参数。配置会提前写入各自 Documents；首次打开未运行容器即可生效。36 款机型，SE2 已排除。";
     [header addSubview:label];
     self.tableView.tableHeaderView = header;
 
-    UIView *footer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 96)];
+    UIView *footer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 154)];
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
     button.frame = CGRectMake(18, 18, width - 36, 52);
     button.autoresizingMask = UIViewAutoresizingFlexibleWidth;
@@ -379,10 +389,25 @@ static void *BDSLoadCraneLibrary(void) {
     button.backgroundColor = UIColor.systemBlueColor;
     [button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
     button.titleLabel.font = [UIFont boldSystemFontOfSize:17];
-    [button setTitle:@"为选中容器一键随机" forState:UIControlStateNormal];
+    button.titleLabel.adjustsFontSizeToFitWidth = YES;
+    button.titleLabel.minimumScaleFactor = 0.78;
+    [button setTitle:@"为选中容器一键随机整套基础参数" forState:UIControlStateNormal];
     [button addTarget:self action:@selector(randomizeSelectedContainers) forControlEvents:UIControlEventTouchUpInside];
     [footer addSubview:button];
     self.randomizeButton = button;
+
+    UIButton *poolButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    poolButton.frame = CGRectMake(18, 82, width - 36, 48);
+    poolButton.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    poolButton.layer.cornerRadius = 12;
+    poolButton.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+    poolButton.titleLabel.font = [UIFont systemFontOfSize:16];
+    poolButton.titleLabel.adjustsFontSizeToFitWidth = YES;
+    poolButton.titleLabel.minimumScaleFactor = 0.85;
+    [poolButton setTitle:@"从机型池套用机型iOS  ›" forState:UIControlStateNormal];
+    [poolButton addTarget:self action:@selector(showDevicePoolPicker) forControlEvents:UIControlEventTouchUpInside];
+    [footer addSubview:poolButton];
+    self.poolButton = poolButton;
     self.tableView.tableFooterView = footer;
 }
 
@@ -465,6 +490,7 @@ static void *BDSLoadCraneLibrary(void) {
 
 - (void)reloadContainers {
     self.randomizeButton.enabled = NO;
+    self.poolButton.enabled = NO;
     self.baiduBaseDataPath = nil;
     void *handle = BDSLoadCraneLibrary();
     Class managerClass = NSClassFromString(@"CraneManager");
@@ -508,6 +534,7 @@ static void *BDSLoadCraneLibrary(void) {
     self.containers = rows;
     [self.selectedContainerIDs intersectSet:[NSSet setWithArray:[rows valueForKey:@"id"]]];
     self.randomizeButton.enabled = rows.count > 0;
+    self.poolButton.enabled = rows.count > 0;
     [self.tableView reloadData];
 }
 
@@ -539,6 +566,45 @@ static void *BDSLoadCraneLibrary(void) {
 }
 
 - (void)randomizeSelectedContainers {
+    [self applySelectedContainersWithDevice:nil];
+}
+
+- (void)showDevicePoolPicker {
+    if (!self.selectedContainerIDs.count) {
+        [self showMessage:@"尚未选择容器" detail:@"请先点击需要配置的 Crane 容器。"];
+        return;
+    }
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"从机型池套用机型iOS"
+                                                                   message:@"顶部随机执行整套基础随机；手动选定机型后，iOS/Build 仍按兼容范围自动匹配。配置写入当前选中的 Crane 容器。"
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    [sheet addAction:[UIAlertAction actionWithTitle:@"随机一款并生成整套基础参数（排除 SE2）"
+                                              style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        (void)action;
+        __strong typeof(weakSelf) self = weakSelf; if (!self) return;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self applySelectedContainersWithDevice:nil]; });
+    }]];
+    for (NSDictionary *device in BDSDeviceProfiles()) {
+        NSString *title = [NSString stringWithFormat:@"%@  %@  %@×%@",
+                           device[@"name"], device[@"machine"], device[@"width"], device[@"height"]];
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            (void)action;
+            __strong typeof(weakSelf) self = weakSelf; if (!self) return;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ [self applySelectedContainersWithDevice:device]; });
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    if (sheet.popoverPresentationController) {
+        sheet.popoverPresentationController.sourceView = self.view;
+        sheet.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds),
+                                                                     CGRectGetMidY(self.view.bounds), 1, 1);
+    }
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)applySelectedContainersWithDevice:(NSDictionary *)forcedDevice {
     if (!self.selectedContainerIDs.count) {
         [self showMessage:@"尚未选择容器" detail:@"请先点击需要配置的 Crane 容器。"];
         return;
@@ -567,7 +633,13 @@ static void *BDSLoadCraneLibrary(void) {
         }
 
         NSDictionary *existing = [NSDictionary dictionaryWithContentsOfFile:configPath];
-        NSMutableDictionary *config = BDSCreateRandomConfig(existing);
+        NSMutableDictionary *config = forcedDevice
+            ? BDSCreateConfigForDevice(existing, forcedDevice)
+            : BDSCreateRandomConfig(existing);
+        if (!config.count) {
+            [failures addObject:[NSString stringWithFormat:@"%@：没有生成有效配置", row[@"name"]]];
+            continue;
+        }
         config[@"managerContainerIdentifier"] = containerID;
         config[@"managerResolvedPath"] = configPath;
         NSError *serializationError = nil;

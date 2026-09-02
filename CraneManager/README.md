@@ -1,14 +1,14 @@
-# 卍解 1.0.2
+# 卍解 1.0.3
 
-这是 BDSpoofer 1.8.1 的外部容器配置器，不替代 TrollFools 已注入的
-`BDSpoofer_1.8.1.dylib`。
+这是 BDSpoofer 1.9.0 的外部容器配置器，不替代 TrollFools 已注入的
+`BDSpoofer_1.9.0.dylib`。
 
 ## 使用方式
 
-1. 用 Sileo 安装 `BDSpooferCraneManager_1.0.2_RootHide.deb`。
+1. 用 Sileo 安装 `BDSpooferCraneManager_1.0.3_RootHide.deb`。
 2. 保持 BDSpoofer dylib 只注入百度极速版。
 3. 从桌面打开“卍解”。
-4. 勾选需要配置的 Crane 容器，点击“为选中容器一键随机”。
+4. 勾选需要配置的 Crane 容器，点击“为选中容器一键随机整套基础参数”。
 5. 尚未运行过的容器可直接首次打开；已经在后台运行的百度需要彻底结束后再打开。
 
 配置器通过 Crane 的 `libCrane` 接口枚举容器，并按 Crane 1.3.14 的实际目录

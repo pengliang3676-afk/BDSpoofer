@@ -1225,12 +1225,24 @@ static BOOL tg_is_dynamic_island(void) {
     });
     return [island containsObject:tg_machine()];
 }
-// 非刘海 20；灵动岛 54；其余刘海按点高 44/47
+// 状态栏按硬件代际映射，不能只按屏幕高度判断：XR/XS Max/11 系列虽高达 896pt，顶部仍是 44pt。
 static NSInteger tg_status_bar(void) {
     if (!tg_notch()) return 20;
     if (tg_is_dynamic_island()) return 54;
-    NSInteger h = tg_pt_h();
-    return h >= 844 ? 47 : 44;
+    static NSSet *legacyNotch44, *miniNotch50;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        legacyNotch44 = [NSSet setWithArray:@[
+            @"iPhone10,3", @"iPhone10,6",                              // X
+            @"iPhone11,2", @"iPhone11,4", @"iPhone11,6", @"iPhone11,8", // XS/XS Max/XR
+            @"iPhone12,1", @"iPhone12,3", @"iPhone12,5"              // 11/11 Pro/11 Pro Max
+        ]];
+        miniNotch50 = [NSSet setWithArray:@[@"iPhone13,1", @"iPhone14,4"]]; // 12 mini / 13 mini
+    });
+    NSString *machine = tg_machine();
+    if ([legacyNotch44 containsObject:machine]) return 44;
+    if ([miniNotch50 containsObject:machine]) return 50;
+    return 47;
 }
 static NSInteger tg_safe_bottom(void){ return tg_notch() ? 34 : 0; }
 static NSString *tg_bbasm_model(void){ return [NSString stringWithFormat:@"%@ <%@>", tg_marketing(), tg_machine()]; }
@@ -2899,13 +2911,8 @@ static NSDictionary *BDSRandomCarrierValues(void) {
 
 static NSDictionary *BDSRandomBasicProfileValues(void) {
     NSArray<NSDictionary *> *allDevices = BDSUnifiedDeviceProfiles();
-    NSString *currentMachine = cfgStr(@"hwMachine", @"");
-    NSMutableArray<NSDictionary *> *candidates = [NSMutableArray array];
-    for (NSDictionary *profile in allDevices) {
-        if (![profile[@"machine"] isEqualToString:currentMachine]) [candidates addObject:profile];
-    }
-    if (!candidates.count) [candidates addObjectsFromArray:allDevices];
-    NSDictionary *device = candidates[arc4random_uniform((uint32_t)candidates.count)];
+    if (!allDevices.count) return @{};
+    NSDictionary *device = allDevices[arc4random_uniform((uint32_t)allDevices.count)];
     NSDictionary *system = BDSRandomSystemProfileForDevice(device);
     NSArray<NSNumber *> *disks = device[@"disks"];
     NSNumber *disk = disks[arc4random_uniform((uint32_t)disks.count)];
@@ -3133,17 +3140,23 @@ static NSString *BDSConfigSummary(void) {
     NSString *compactHeaderText = [NSString stringWithFormat:@"卍解\n%@", BDSConfigSummary()];
     NSMutableParagraphStyle *compactParagraph = [[NSMutableParagraphStyle alloc] init];
     compactParagraph.alignment = NSTextAlignmentCenter;
-    compactParagraph.lineSpacing = 0.0;
+    compactParagraph.lineSpacing = -1.0;
     compactParagraph.paragraphSpacing = 0.0;
     NSMutableAttributedString *compactHeader = [[NSMutableAttributedString alloc]
         initWithString:compactHeaderText
         attributes:@{NSForegroundColorAttributeName: UIColor.labelColor,
-                     NSFontAttributeName: [UIFont systemFontOfSize:13.0],
+                      NSFontAttributeName: [UIFont systemFontOfSize:12.0],
                      NSParagraphStyleAttributeName: compactParagraph}];
     [compactHeader addAttributes:@{NSForegroundColorAttributeName: UIColor.systemRedColor,
                                    NSFontAttributeName: [UIFont boldSystemFontOfSize:17.0]}
                            range:NSMakeRange(0, [@"卍解" length])];
     [alert setValue:compactHeader forKey:@"attributedTitle"];
+    [alert addAction:[UIAlertAction actionWithTitle:@"从机型池套用机型iOS  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self showDevicePoolPicker];
+        });
+    }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"一键随机整套基础参数" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         [self randomizeBasicProfile];
@@ -3151,12 +3164,6 @@ static NSString *BDSConfigSummary(void) {
     [alert addAction:[UIAlertAction actionWithTitle:@"一键随机整套高级参数" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         [self randomizeAdvancedProfile];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"从机型池套用机型/iOS  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        (void)action;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self showDevicePoolPicker];
-        });
     }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"基础功能设置  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
@@ -3180,7 +3187,7 @@ static NSString *BDSConfigSummary(void) {
         (void)action;
         [self showSelfTest];
     }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"恢复安全关闭状态" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [alert addAction:[UIAlertAction actionWithTitle:@"恢复安全" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         NSDictionary *safe = @{
             @"enabled": @NO,
@@ -3358,13 +3365,11 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
                                                                    message:@"选定机型后自动配套兼容的 iOS 版本/Build、点分辨率与物理像素，并打开百度定向指纹。其他开关不变，保存后请彻底重启百度极速版。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     __weak typeof(self) weakSelf = self;
-    [sheet addAction:[UIAlertAction actionWithTitle:@"随机一款（排除本机 SE2）"
-                                              style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+    [sheet addAction:[UIAlertAction actionWithTitle:@"随机一款并生成整套基础参数（排除 SE2）"
+                                               style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
         (void)action;
         __strong typeof(weakSelf) self = weakSelf; if (!self) return;
-        NSArray<NSDictionary *> *pool = BDSUnifiedDeviceProfiles();
-        if (!pool.count) return;
-        [self applyChosenDeviceProfile:pool[arc4random_uniform((uint32_t)pool.count)]];
+        [self randomizeBasicProfile];
     }]];
     for (NSDictionary *device in BDSUnifiedDeviceProfiles()) {
         NSString *title = [NSString stringWithFormat:@"%@  %@  %@×%@",
