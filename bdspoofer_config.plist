@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>configVersion</key>
-	<integer>181</integer>
+	<integer>182</integer>
 	<key>enabled</key>
 	<false/>
 	<key>spoofScreen</key>
@@ -56,6 +56,8 @@
 	<false/>
 	<key>spoofBattery</key>
 	<false/>
+	<key>spoofBaiduTargeted</key>
+	<true/>
 	<key>wifiSSID</key>
 	<string></string>
 	<key>bootTimeOffsetSeconds</key>

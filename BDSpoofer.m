@@ -4,6 +4,11 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  1.9.0：
+//    Y. 新增“百度定向指纹”：只 hook BDDiag2 已确认真实签名的百度自有设备指纹出口
+//       （getScreenResolution/bp_resolution/Talos/BBASM/DMDeviceInfoWrapper/BDPDeviceUtility/BDPUserAgent/BPush），
+//       UIScreen 等 UIKit 布局接口保持真值，不再全局改屏导致界面异常。
+//    Z. 主面板新增“从机型池套用机型/iOS”，复用统一机型池并配套兼容 iOS、点/像素分辨率。
 //  1.8.1：
 //    V. 基础与高级功能默认关闭；高级身份随机仍保持独立、手动触发。
 //    W. 基础随机会开启基础 6 项和常规高级功能，并按当前 Crane 容器持久保存。
@@ -91,6 +96,8 @@
 #import <dlfcn.h>
 #import <Contacts/Contacts.h>
 #import <EventKit/EventKit.h>
+#import <os/lock.h>
+#import <math.h>
 
 #pragma mark - 原子操作
 
@@ -143,7 +150,8 @@ static NSDictionary *BDSDefaultConfig(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @181,
+            @"configVersion": @182,
+            @"spoofBaiduTargeted": @YES,   // v1.9.0 百度定向指纹默认开启
             @"enabled": @NO,
             @"spoofAdvertisingIdentifiers": @NO,
             @"spoofProcessHardware": @NO,
@@ -392,6 +400,12 @@ static void loadConfig() {
         }];
         [merged writeToFile:p1 atomically:YES];
     }
+    if (ver < 182) {
+        // 1.9.0：新增百度定向指纹开关，默认开启；只补齐缺失键，不覆盖用户已保存选择。
+        merged[@"configVersion"] = @182;
+        if (!loaded[@"spoofBaiduTargeted"]) merged[@"spoofBaiduTargeted"] = @YES;
+        [merged writeToFile:p1 atomically:YES];
+    }
     g_config = [merged copy];
     bds_update_c_cache();
 }
@@ -464,6 +478,7 @@ static BDSDiagCounter g_diagUbiquity;
 static BDSDiagCounter g_diagPrivacy;
 static BDSDiagCounter g_diagWebKitCookie;
 static BDSDiagCounter g_diagBattery;
+static BDSDiagCounter g_diagBaiduTargeted;   // v1.9.0 百度定向指纹
 
 #define BDS_DIAG_RECORD(counter, state) do { \
     __atomic_fetch_add(&(counter).hits, 1, __ATOMIC_RELAXED); \
@@ -503,7 +518,8 @@ static void bds_diag_reset_all(void) {
         &g_diagBootTime, &g_diagCPU, &g_diagLocation, &g_diagProxy,
         &g_diagStatfs, &g_diagDlopen, &g_diagUbiquity, &g_diagPrivacy,
         &g_diagWebKitCookie,
-        &g_diagBattery
+        &g_diagBattery,
+        &g_diagBaiduTargeted
     };
     for (size_t i = 0; i < sizeof(counters) / sizeof(counters[0]); i++) {
         bds_diag_reset_counter(counters[i]);
@@ -1170,6 +1186,418 @@ static void bds_dyld_add_image_cb(const struct mach_header *mh, intptr_t vmaddr_
 static void installBaiduSDKHooks(void) {
     bds_scanBaiduSDKClasses();
     _dyld_register_func_for_add_image(bds_dyld_add_image_cb);
+}
+
+#pragma mark - 百度定向指纹 Hook（v1.9.0，P1 修复版）
+// 只改探针 BDDiag2 已确认真实签名的“百度自有设备指纹出口”，UIKit(UIScreen 等)全部放行真值。
+// 每个方法安装前都用 method_getTypeEncoding 验签：返回类型/参数个数/参数类型不符则跳过，绝不强 hook。
+// 类方法走 metaclass；继承自父类的方法先 class_addMethod 落地本类再替换，避免改到父类。
+// 所有安装只在主队列串行执行（dyld 回调仅投递到主队列），并加 os_unfair_lock，杜绝并发把 newImp 当原 IMP 的递归。
+// 单一 profile 驱动：systemVersion/systemBuild/hwMachine/deviceProfileName/screen*(点)/nativeScreen*(像素)。
+
+// ---- 统一 profile 取值（全部来自现有配置键，缺省给 SE2 安全兜底）----
+static NSString *tg_ios_version(void) { return cfgStr(@"systemVersion", @"15.7.1"); }
+static NSString *tg_ios_under(void)   { return [tg_ios_version() stringByReplacingOccurrencesOfString:@"." withString:@"_"]; }
+static NSString *tg_machine(void)     { return cfgStr(@"hwMachine", @"iPhone12,8"); }
+static NSString *tg_marketing(void) {
+    NSString *n = cfgStr(@"deviceProfileName", @"");
+    if (n.length) return n;
+    return cfgStr(@"marketingModel", @"iPhone");
+}
+static NSInteger tg_pt_w(void)    { NSInteger v = cfgInt(@"screenWidth", 375);  return v > 0 ? v : 375; }
+static NSInteger tg_pt_h(void)    { NSInteger v = cfgInt(@"screenHeight", 667); return v > 0 ? v : 667; }
+static NSInteger tg_scale_i(void) { NSInteger s = cfgInt(@"screenScale", 2);    return (s == 2 || s == 3) ? s : 2; }
+static NSInteger tg_px_w(void)    { NSInteger d = tg_pt_w() * tg_scale_i(); NSInteger v = cfgInt(@"nativeScreenWidth", d);  return v > 0 ? v : d; }
+static NSInteger tg_px_h(void)    { NSInteger d = tg_pt_h() * tg_scale_i(); NSInteger v = cfgInt(@"nativeScreenHeight", d); return v > 0 ? v : d; }
+static BOOL tg_notch(void)        { return tg_pt_h() >= 812; }
+// 灵动岛不能用屏幕高度判断（XR/XS Max/11/12-13 PM/14 Plus 点高也>852 但不是灵动岛），必须按硬件机型号识别
+static BOOL tg_is_dynamic_island(void) {
+    static NSSet *island;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        island = [NSSet setWithArray:@[
+            @"iPhone15,2", @"iPhone15,3",                               // 14 Pro / Pro Max
+            @"iPhone15,4", @"iPhone15,5",                               // 15 / 15 Plus
+            @"iPhone16,1", @"iPhone16,2",                               // 15 Pro / Pro Max
+            @"iPhone17,1", @"iPhone17,2", @"iPhone17,3", @"iPhone17,4", // 16 Pro/PM/16/16 Plus
+            @"iPhone18,1", @"iPhone18,2", @"iPhone18,3", @"iPhone18,4"  // 17 Pro/PM/17/Air
+        ]]; // iPhone17,5(16e)、iPhone18,5(17e) 非灵动岛，故意不列入
+    });
+    return [island containsObject:tg_machine()];
+}
+// 非刘海 20；灵动岛 54；其余刘海按点高 44/47
+static NSInteger tg_status_bar(void) {
+    if (!tg_notch()) return 20;
+    if (tg_is_dynamic_island()) return 54;
+    NSInteger h = tg_pt_h();
+    return h >= 844 ? 47 : 44;
+}
+static NSInteger tg_safe_bottom(void){ return tg_notch() ? 34 : 0; }
+static NSString *tg_bbasm_model(void){ return [NSString stringWithFormat:@"%@ <%@>", tg_marketing(), tg_machine()]; }
+
+// 仅当字典里已存在该键时才覆盖，避免凭空注入百度不认识的字段
+static void tg_set_if_key(NSMutableDictionary *m, NSString *k, id v) {
+    if (m && k && v && m[k] != nil) m[k] = v;
+}
+static void tg_set_first_present(NSMutableDictionary *m, NSArray<NSString *> *keys, id v) {
+    for (NSString *k in keys) { if (m[k] != nil) { m[k] = v; return; } }
+}
+
+// 正则替换模板转义：用 Apple 官方 API 正确压制 $n、\ 等模板特殊序列（手工 $$ 仍会残留 $n）
+static NSString *tg_tpl_escape(NSString *s) {
+    return [NSRegularExpression escapedTemplateForString:s];
+}
+
+// ---- UA 定向改写：只动 iOS 系统版本/下划线版本；不碰 Mobile/<WebKit train>、baiduboxapp App 版本、Talos/SDK 版本 ----
+// 说明：UA 里的 Mobile/15E148 是 WebKit 发行列车号，不是 systemBuild（iOS15.3 真机也仍是 15E148），改成 19Hxxx 反而非法，故不处理。
+static NSString *tg_rewrite_ua(NSString *ua) {
+    if (![ua isKindOfClass:NSString.class] || !ua.length) return ua;
+    static NSRegularExpression *rxOS, *rxP2;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        rxOS = [NSRegularExpression regularExpressionWithPattern:@"CPU iPhone OS [0-9_]+ like" options:0 error:nil];
+        rxP2 = [NSRegularExpression regularExpressionWithPattern:@"\\(Baidu; P2 [0-9.]+\\)" options:0 error:nil];
+    });
+    NSString *out = ua;
+    NSRange r = NSMakeRange(0, out.length);
+    out = [rxOS stringByReplacingMatchesInString:out options:0 range:r
+                                    withTemplate:tg_tpl_escape([NSString stringWithFormat:@"CPU iPhone OS %@ like", tg_ios_under()])];
+    r = NSMakeRange(0, out.length);
+    out = [rxP2 stringByReplacingMatchesInString:out options:0 range:r
+                                    withTemplate:tg_tpl_escape([NSString stringWithFormat:@"(Baidu; P2 %@)", tg_ios_version()])];
+    return out;
+}
+
+// ---- Talos platformInfo / getBasicPlatformInfo 字典改写 ----
+static NSDictionary *tg_rewrite_talos(NSDictionary *orig) {
+    if (![orig isKindOfClass:NSDictionary.class]) return orig;
+    NSMutableDictionary *m = [orig mutableCopy];
+    tg_set_if_key(m, @"osVersion", tg_ios_version());
+    tg_set_if_key(m, @"phoneModel", tg_machine());
+    id ua = m[@"userAgent"];
+    if ([ua isKindOfClass:NSString.class]) m[@"userAgent"] = tg_rewrite_ua(ua);
+    id si = m[@"screenInfo"];
+    if ([si isKindOfClass:NSDictionary.class]) {
+        NSMutableDictionary *s = [si mutableCopy];
+        tg_set_if_key(s, @"width", @(tg_pt_w()));
+        tg_set_if_key(s, @"height", @(tg_pt_h()));
+        tg_set_if_key(s, @"scale", @(tg_scale_i()));
+        tg_set_first_present(s, @[@"statusBarHeight"], @(tg_status_bar()));
+        tg_set_first_present(s, @[@"safeAreaTopMagrin", @"safeAreaTopMargin", @"safeTop"], @(tg_notch() ? tg_status_bar() : 0));
+        tg_set_first_present(s, @[@"safeAreaBottomMagrin", @"safeAreaBottomMargin", @"safeBottom"], @(tg_safe_bottom()));
+        tg_set_first_present(s, @[@"safeAreaLeftMagrin", @"safeAreaLeftMargin", @"safeLeft"], @0);
+        tg_set_first_present(s, @[@"safeAreaRightMagrin", @"safeAreaRightMargin", @"safeRight"], @0);
+        m[@"screenInfo"] = s;
+    }
+    id wi = m[@"windowInfo"];
+    if ([wi isKindOfClass:NSDictionary.class]) {
+        NSMutableDictionary *w = [wi mutableCopy];
+        tg_set_if_key(w, @"width", @(tg_pt_w()));
+        tg_set_if_key(w, @"height", @(tg_pt_h()));
+        m[@"windowInfo"] = w;
+    }
+    // 明确保留：hostVersion(App版本)/talosVersion(SDK版本)/hostName(包名)/os/manufacturer/brand/deviceScore/videoScore/environment/pad
+    return m;
+}
+
+// ---- BBASM 小程序系统信息字典改写 ----
+static NSDictionary *tg_rewrite_bbasm(NSDictionary *orig) {
+    if (![orig isKindOfClass:NSDictionary.class]) return orig;
+    NSMutableDictionary *m = [orig mutableCopy];
+    tg_set_if_key(m, @"system", [NSString stringWithFormat:@"iOS %@", tg_ios_version()]);
+    tg_set_if_key(m, @"model", tg_bbasm_model());
+    tg_set_if_key(m, @"pixelRatio", @(tg_scale_i()));
+    tg_set_if_key(m, @"devicePixelRatio", @(tg_scale_i()));
+    tg_set_if_key(m, @"screenWidth", @(tg_pt_w()));
+    tg_set_if_key(m, @"screenHeight", @(tg_pt_h()));
+    tg_set_if_key(m, @"windowWidth", @(tg_pt_w()));
+    // windowHeight 只有在原值≈真机全屏点高（即它上报的是整屏）时才改成假机型整屏高；其他内容高度原样保留，避免造错值
+    NSNumber *wh = m[@"windowHeight"];
+    if ([wh isKindOfClass:NSNumber.class] && wh.doubleValue > 0) {
+        CGFloat realFullH = [UIScreen mainScreen].bounds.size.height;
+        if (fabs(wh.doubleValue - (double)realFullH) < 0.5) m[@"windowHeight"] = @(tg_pt_h());
+    }
+    tg_set_if_key(m, @"statusBarHeight", @(tg_status_bar()));
+    // 保留：version(App版本)/host/brand=iPhone/platform=ios/SDKVersion/swanNativeVersion/language/各 *Authorized/电量/方向等
+    return m;
+}
+
+// 按正则在原文上一次性、从后往前做字面量替换，替换文本不再参与匹配，避免级联二次改写
+static NSString *tg_replace_literal(NSString *src, NSRegularExpression *rx, NSString *repl) {
+    if (!src.length || !rx) return src;
+    NSArray<NSTextCheckingResult *> *matches = [rx matchesInString:src options:0 range:NSMakeRange(0, src.length)];
+    if (!matches.count) return src;
+    NSMutableString *ms = [src mutableCopy];
+    for (NSInteger i = (NSInteger)matches.count - 1; i >= 0; i--) {
+        [ms replaceCharactersInRange:matches[(NSUInteger)i].range withString:repl ?: @""];
+    }
+    return ms;
+}
+
+// ---- BPush 字符串安全替换：只替换硬件机型号与营销名；机型号加边界，营销名多候选单遍匹配，杜绝 SE2->SE3 级联 ----
+static NSString *tg_rewrite_push(NSString *s) {
+    if (![s isKindOfClass:NSString.class] || !s.length) return s;
+    static NSRegularExpression *rxMachine, *rxName;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        rxMachine = [NSRegularExpression regularExpressionWithPattern:@"(?<![A-Za-z0-9_])iPhone[0-9]+,[0-9]+(?![A-Za-z0-9_])" options:0 error:nil];
+        // 长候选在前；裸 iPhone SE 后不能是字母数字，也不能是“可选空格+(”（即 (nth generation)），避免吞掉 SE2/SE(2nd)/SE(3rd)
+        rxName = [NSRegularExpression regularExpressionWithPattern:@"iPhone SE \\(3rd generation\\)|iPhone SE \\(2nd generation\\)|iPhone SE2(?![A-Za-z0-9_])|iPhone SE(?![A-Za-z0-9_]|\\s*\\()" options:0 error:nil];
+    });
+    NSString *out = tg_replace_literal(s, rxMachine, tg_machine());
+    out = tg_replace_literal(out, rxName, tg_marketing());
+    return out;
+}
+
+// useagent_getDeviceInfo 字典分支只允许改这些承载 UA/系统/机型的键，其余字符串字段一律不碰
+static NSSet<NSString *> *tg_ua_dict_keys(void) {
+    static NSSet *set;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        set = [NSSet setWithArray:@[@"userAgent", @"ua", @"UA"]]; // 只处理 UA 形态字段；纯版本/机型值不含 UA 片段，改了也无效
+    });
+    return set;
+}
+
+// ---- 原始 IMP 保存 ----
+static IMP tg_o_getScreenResolution = NULL;
+static IMP tg_o_bp_resolution = NULL;
+static IMP tg_o_talos_platform = NULL;
+static IMP tg_o_talos_basic = NULL;
+static IMP tg_o_bbasm_const = NULL;
+static IMP tg_o_bbasm_sys = NULL;
+static IMP tg_o_bdp_sysver = NULL;
+static IMP tg_o_bdp_idfv = NULL;
+static IMP tg_o_dm_sysver = NULL;
+static IMP tg_o_ua_get = NULL;
+static IMP tg_o_ua_compose = NULL;
+static IMP tg_o_push_general = NULL;
+static IMP tg_o_push_body = NULL;
+
+// 安装结果计数（与“运行时命中”分开，不污染诊断 hits）
+static volatile int g_tgInstalled = 0;
+static volatile int g_tgBlocked = 0;
+
+// ---- trampoline（这里的 BDS_DIAG_RECORD 才代表 App 真实读取了一次）----
+// BaiduMobStatDeviceInfo +getScreenResolution -> CGSize 物理像素 {nativeW, nativeH}
+static CGSize tg_getScreenResolution(id self, SEL _cmd) {
+    if (tg_o_getScreenResolution) {
+        CGSize r = ((CGSize (*)(id, SEL))tg_o_getScreenResolution)(self, _cmd);
+        BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
+        r.width = (CGFloat)tg_px_w();
+        r.height = (CGFloat)tg_px_h();
+        return r;
+    }
+    return CGSizeMake((CGFloat)tg_px_w(), (CGFloat)tg_px_h());
+}
+// UIDevice +bp_resolution -> NSString 像素 "高_宽"
+static NSString *tg_bp_resolution(id self, SEL _cmd) {
+    if (tg_o_bp_resolution) ((id (*)(id, SEL))tg_o_bp_resolution)(self, _cmd);
+    BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
+    return [NSString stringWithFormat:@"%ld_%ld", (long)tg_px_h(), (long)tg_px_w()];
+}
+// BDPTalosBaseInfo +platformInfo / +getBasicPlatformInfo
+static id tg_talos(id self, SEL _cmd) {
+    IMP o = [NSStringFromSelector(_cmd) isEqualToString:@"getBasicPlatformInfo"] ? tg_o_talos_basic : tg_o_talos_platform;
+    id orig = o ? ((id (*)(id, SEL))o)(self, _cmd) : nil;
+    BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
+    return tg_rewrite_talos(orig);
+}
+// BBASMPlugin +getConstantSystemInfoDictionary
+static id tg_bbasm_const(id self, SEL _cmd) {
+    id orig = tg_o_bbasm_const ? ((id (*)(id, SEL))tg_o_bbasm_const)(self, _cmd) : nil;
+    BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
+    return tg_rewrite_bbasm(orig);
+}
+// BBASMPlugin +getSystemInfoWithAppID:cardID:（两对象参数）
+static id tg_bbasm_sys2(id self, SEL _cmd, id a, id b) {
+    id orig = tg_o_bbasm_sys ? ((id (*)(id, SEL, id, id))tg_o_bbasm_sys)(self, _cmd, a, b) : nil;
+    BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
+    return tg_rewrite_bbasm(orig);
+}
+// BDPDeviceUtility +getSystemVersion
+static id tg_bdp_sysver(id self, SEL _cmd) {
+    if (tg_o_bdp_sysver) ((id (*)(id, SEL))tg_o_bdp_sysver)(self, _cmd);
+    BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
+    return tg_ios_version();
+}
+// BDPDeviceUtility +getIDFV：只在能确认原类型时替换；原方法返回 nil 时保持 nil，绝不凭空造对象
+static id tg_bdp_idfv(id self, SEL _cmd) {
+    id orig = tg_o_bdp_idfv ? ((id (*)(id, SEL))tg_o_bdp_idfv)(self, _cmd) : nil;
+    NSString *u = cfgStr(@"idfv", @"");
+    if ([orig isKindOfClass:NSUUID.class]) {
+        BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
+        NSUUID *fu = u.length ? [[NSUUID alloc] initWithUUIDString:u] : nil;
+        return fu ?: orig;
+    }
+    if ([orig isKindOfClass:NSString.class]) {
+        BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
+        return u.length ? u : orig;
+    }
+    return orig;   // nil 或其他未知类型：原样返回，避免调用方按 NSUUID 用时类型不符崩溃
+}
+// DMDeviceInfoWrapper +systemVersion（补上公共 UIDevice hook 漏掉的内部读取路径）
+static id tg_dm_sysver(id self, SEL _cmd) {
+    if (tg_o_dm_sysver) ((id (*)(id, SEL))tg_o_dm_sysver)(self, _cmd);
+    BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
+    return tg_ios_version();
+}
+// BDPUserAgent -useagent_getDeviceInfo（0 参；字符串整体改，字典只改白名单键）
+static id tg_ua_get(id self, SEL _cmd) {
+    id o = tg_o_ua_get ? ((id (*)(id, SEL))tg_o_ua_get)(self, _cmd) : nil;
+    if ([o isKindOfClass:NSString.class]) {
+        BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
+        return tg_rewrite_ua(o);
+    }
+    if ([o isKindOfClass:NSDictionary.class]) {
+        NSMutableDictionary *m = [o mutableCopy];
+        BOOL changed = NO;
+        for (NSString *k in [m.allKeys copy]) {
+            id v = m[k];
+            if ([tg_ua_dict_keys() containsObject:k] && [v isKindOfClass:NSString.class]) {
+                NSString *nv = tg_rewrite_ua(v);
+                if (![nv isEqualToString:v]) { m[k] = nv; changed = YES; }
+            }
+        }
+        if (changed) BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
+        return m;
+    }
+    return o;
+}
+// BDPUserAgent -composeUserAgentParameterWithOrigin:shouldEncodeURI:（对象 + BOOL）
+static id tg_ua_compose(id self, SEL _cmd, id origin, BOOL encode) {
+    id o = tg_o_ua_compose ? ((id (*)(id, SEL, id, BOOL))tg_o_ua_compose)(self, _cmd, origin, encode) : nil;
+    if ([o isKindOfClass:NSString.class]) {
+        BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
+        return tg_rewrite_ua(o);
+    }
+    return o;
+}
+// BPushRequest -generalParamString / BPushBindRequest -HttpBody
+static id tg_push(id self, SEL _cmd) {
+    IMP o = [NSStringFromSelector(_cmd) isEqualToString:@"HttpBody"] ? tg_o_push_body : tg_o_push_general;
+    id orig = o ? ((id (*)(id, SEL))o)(self, _cmd) : nil;
+    if ([orig isKindOfClass:NSString.class]) {
+        BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
+        return tg_rewrite_push(orig);
+    }
+    return orig;
+}
+
+// ---- 安全安装器：先验签（结构体精确匹配整段编码），类方法走 metaclass，继承方法先落地本类，orig 已存则跳过 ----
+static BOOL tg_encoding_ok(Method m, char expectRetFirst, const char *expectRetFull,
+                           int expectArgc, const char *expectArgKinds) {
+    if (!m) return NO;
+    char rb[96] = {0};
+    method_getReturnType(m, rb, sizeof(rb));
+    if (expectRetFull) {
+        if (strcmp(rb, expectRetFull) != 0) return NO;      // 结构体必须整段编码一致，例如 {CGSize=dd}
+    } else {
+        if (rb[0] != expectRetFirst) return NO;
+    }
+    unsigned n = method_getNumberOfArguments(m);
+    if ((int)(n - 2) != expectArgc) return NO;
+    for (int i = 0; i < expectArgc; i++) {
+        char ab[16] = {0};
+        method_getArgumentType(m, (unsigned)i + 2, ab, sizeof(ab));
+        if (ab[0] != expectArgKinds[i]) return NO;
+    }
+    return YES;
+}
+static os_unfair_lock g_tgInstallLock = OS_UNFAIR_LOCK_INIT;
+static void tg_install_one(NSString *clsName, SEL sel, BOOL isClass,
+                           char expectRetFirst, const char *expectRetFull,
+                           int argc, const char *argKinds,
+                           IMP newImp, IMP *outOrig) {
+    if (!outOrig || *outOrig) return;                 // 已安装/已核验，幂等
+    Class cls = objc_getClass(clsName.UTF8String);
+    if (!cls) return;                                 // 类尚未加载，等主队列重试
+    Class hookCls = isClass ? object_getClass(cls) : cls;
+    Method m = class_getInstanceMethod(hookCls, sel);
+    if (!m) return;
+    if (!tg_encoding_ok(m, expectRetFirst, expectRetFull, argc, argKinds)) {
+        g_tgBlocked++;                                // 只记安装结果，不写进“运行时命中”计数
+        *outOrig = (IMP)~(uintptr_t)0;               // 标记“已核验但不匹配”，避免反复尝试
+        return;
+    }
+    IMP orig = method_getImplementation(m);
+    class_addMethod(hookCls, sel, orig, method_getTypeEncoding(m)); // 继承方法落地本类，不改父类
+    Method own = class_getInstanceMethod(hookCls, sel);
+    *outOrig = method_getImplementation(own);
+    method_setImplementation(own, newImp);
+    g_tgInstalled++;
+}
+
+static int g_tgRetryCount = 0;
+static void tg_install_all(void) {
+    os_unfair_lock_lock(&g_tgInstallLock);            // 与 dyld/重试串行，check-and-set 原子化，杜绝把 newImp 当 orig
+    tg_install_one(@"BaiduMobStatDeviceInfo", NSSelectorFromString(@"getScreenResolution"), YES,
+                   '{', "{CGSize=dd}", 0, "", (IMP)tg_getScreenResolution, &tg_o_getScreenResolution);
+    tg_install_one(@"UIDevice", NSSelectorFromString(@"bp_resolution"), YES,
+                   '@', NULL, 0, "", (IMP)tg_bp_resolution, &tg_o_bp_resolution);
+    tg_install_one(@"BDPTalosBaseInfo", NSSelectorFromString(@"platformInfo"), YES,
+                   '@', NULL, 0, "", (IMP)tg_talos, &tg_o_talos_platform);
+    tg_install_one(@"BDPTalosBaseInfo", NSSelectorFromString(@"getBasicPlatformInfo"), YES,
+                   '@', NULL, 0, "", (IMP)tg_talos, &tg_o_talos_basic);
+    tg_install_one(@"BBASMPlugin", NSSelectorFromString(@"getConstantSystemInfoDictionary"), YES,
+                   '@', NULL, 0, "", (IMP)tg_bbasm_const, &tg_o_bbasm_const);
+    tg_install_one(@"BBASMPlugin", NSSelectorFromString(@"getSystemInfoWithAppID:cardID:"), YES,
+                   '@', NULL, 2, "@@", (IMP)tg_bbasm_sys2, &tg_o_bbasm_sys);
+    tg_install_one(@"BDPDeviceUtility", NSSelectorFromString(@"getSystemVersion"), YES,
+                   '@', NULL, 0, "", (IMP)tg_bdp_sysver, &tg_o_bdp_sysver);
+    tg_install_one(@"BDPDeviceUtility", NSSelectorFromString(@"getIDFV"), YES,
+                   '@', NULL, 0, "", (IMP)tg_bdp_idfv, &tg_o_bdp_idfv);
+    tg_install_one(@"DMDeviceInfoWrapper", NSSelectorFromString(@"systemVersion"), YES,
+                   '@', NULL, 0, "", (IMP)tg_dm_sysver, &tg_o_dm_sysver);
+    tg_install_one(@"BDPUserAgent", NSSelectorFromString(@"useagent_getDeviceInfo"), NO,
+                   '@', NULL, 0, "", (IMP)tg_ua_get, &tg_o_ua_get);
+    tg_install_one(@"BDPUserAgent", NSSelectorFromString(@"composeUserAgentParameterWithOrigin:shouldEncodeURI:"), NO,
+                   '@', NULL, 2, "@B", (IMP)tg_ua_compose, &tg_o_ua_compose);
+    tg_install_one(@"BPushRequest", NSSelectorFromString(@"generalParamString"), NO,
+                   '@', NULL, 0, "", (IMP)tg_push, &tg_o_push_general);
+    tg_install_one(@"BPushBindRequest", NSSelectorFromString(@"HttpBody"), NO,
+                   '@', NULL, 0, "", (IMP)tg_push, &tg_o_push_body);
+    os_unfair_lock_unlock(&g_tgInstallLock);
+}
+static BOOL tg_all_resolved(void) {
+    IMP *all[] = {
+        &tg_o_getScreenResolution, &tg_o_bp_resolution, &tg_o_talos_platform, &tg_o_talos_basic,
+        &tg_o_bbasm_const, &tg_o_bbasm_sys, &tg_o_bdp_sysver, &tg_o_bdp_idfv, &tg_o_dm_sysver,
+        &tg_o_ua_get, &tg_o_ua_compose, &tg_o_push_general, &tg_o_push_body
+    };
+    os_unfair_lock_lock(&g_tgInstallLock);   // 与安装写入同一把锁，避免无同步读取 IMP 指针
+    BOOL ok = YES;
+    for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
+        if (!*all[i]) { ok = NO; break; }
+    }
+    os_unfair_lock_unlock(&g_tgInstallLock);
+    return ok;
+}
+// dyld 镜像回调里不直接执行 ObjC swizzle，只投递到主队列，与定时重试同一条串行队列
+static volatile int g_tgDrainQueued = 0;
+static void tg_add_image_cb(const struct mach_header *mh, intptr_t slide) {
+    (void)mh; (void)slide;
+    // dyld 会对现有镜像集中回调，合并为主队列上的一次安装，避免启动队列短时堆积
+    if (__sync_lock_test_and_set(&g_tgDrainQueued, 1)) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        __sync_lock_release(&g_tgDrainQueued);  // 与 test_and_set 配对的原子释放复位，杜绝普通跨线程写竞争
+        tg_install_all();
+    });
+}
+static void tg_schedule_retry(void);
+static void installBaiduTargetedHooks(void) {
+    tg_install_all();
+    _dyld_register_func_for_add_image(tg_add_image_cb);   // 晚加载的 framework 在主队列补 hook
+    if (!tg_all_resolved()) tg_schedule_retry();          // 每 0.5s 重试，最多 30 次（约 15s）
+}
+static void tg_schedule_retry(void) {
+    if (g_tgRetryCount >= 30) return;
+    g_tgRetryCount++;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        tg_install_all();
+        if (!tg_all_resolved()) tg_schedule_retry();
+    });
 }
 
 #pragma mark - sysctlbyname Hook（fishhook，纯 C）
@@ -2155,6 +2583,8 @@ static const NSTimeInterval BDSButtonCollapseDelay = 5.0;
 - (void)editIdentifiers;
 - (void)randomizeBasicProfile;
 - (void)randomizeAdvancedProfile;
+- (void)showDevicePoolPicker;
+- (void)applyChosenDeviceProfile:(NSDictionary *)device;
 - (void)showOptionalSwitches;
 - (void)showOptionalEditors;
 - (void)showAdvancedSwitches;
@@ -2493,6 +2923,7 @@ static NSDictionary *BDSRandomBasicProfileValues(void) {
     values[@"spoofStorage"] = @YES;
     // 常规高级功能随基础随机一起开启；高级身份值本身不在这里重新生成。
     values[@"spoofBaiduSDK"] = @YES;
+    values[@"spoofBaiduTargeted"] = @YES;   // 基础随机重新打开百度定向指纹
     values[@"spoofSysctl"] = @YES;
     values[@"bypassJailbreakDetect"] = @YES;
     values[@"spoofWiFi"] = @YES;
@@ -2721,6 +3152,12 @@ static NSString *BDSConfigSummary(void) {
         (void)action;
         [self randomizeAdvancedProfile];
     }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"从机型池套用机型/iOS  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self showDevicePoolPicker];
+        });
+    }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"基础功能设置  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -2770,7 +3207,8 @@ static NSString *BDSConfigSummary(void) {
             @"spoofUbiquity": @NO,
             @"spoofPrivacyPermissions": @NO,
             @"spoofWebKitCookie": @NO,
-            @"spoofBattery": @NO
+            @"spoofBattery": @NO,
+            @"spoofBaiduTargeted": @NO
         };
         [self showRestartNotice:saveConfigValues(safe)];
     }]];
@@ -2879,6 +3317,93 @@ static NSString *BDSConfigSummary(void) {
         values[@"memorySize"], values[@"diskSize"], values[@"deviceName"]];
     [self presentMessage:message title:@"基础参数已更换"];
 }
+#pragma mark - 从机型池一键套用（v1.9.0，复用统一 36 款机型池 + 兼容 iOS 匹配）
+
+static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
+    if (![device isKindOfClass:NSDictionary.class]) return nil;
+    NSDictionary *system = BDSRandomSystemProfileForDevice(device);
+    NSArray<NSNumber *> *disks = device[@"disks"];
+    NSNumber *disk = [disks isKindOfClass:NSArray.class] && disks.count
+        ? disks[arc4random_uniform((uint32_t)disks.count)] : @64;
+    NSMutableDictionary *v = [NSMutableDictionary dictionary];
+    v[@"enabled"] = @YES;              // 定向 Hook 受基础总开关门控，套用时一并打开
+    v[@"spoofBaiduTargeted"] = @YES;   // 套用时自动打开百度定向指纹
+    v[@"spoofProcessHardware"] = @YES; // 机型/内存/主机名等硬件出口
+    v[@"spoofStorage"] = @YES;         // 磁盘容量
+    v[@"spoofSysctl"] = @YES;          // hw.machine 等 C 层机型
+    v[@"spoofCPU"] = @YES;             // CPU 核数
+    v[@"deviceProfileName"] = device[@"name"];
+    v[@"deviceModel"] = @"iPhone";
+    v[@"marketingModel"] = @"iPhone";
+    v[@"systemVersion"] = system[@"version"];
+    v[@"systemBuild"] = system[@"build"];
+    v[@"kernOSVersion"] = system[@"build"];
+    v[@"hwMachine"] = device[@"machine"];
+    v[@"hwModel"] = device[@"model"];
+    v[@"memorySize"] = device[@"memory"];
+    v[@"diskSize"] = disk;
+    // 点分辨率（Talos/BBASM）与物理像素（getScreenResolution/bp_resolution）成对写入
+    v[@"screenWidth"] = device[@"width"];
+    v[@"screenHeight"] = device[@"height"];
+    v[@"screenScale"] = device[@"scale"];
+    v[@"nativeScreenWidth"] = device[@"nativeWidth"];
+    v[@"nativeScreenHeight"] = device[@"nativeHeight"];
+    return v;
+}
+
+- (void)showDevicePoolPicker {
+    UIViewController *presenter = BDSTopController();
+    if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"从机型池一键套用"
+                                                                   message:@"选定机型后自动配套兼容的 iOS 版本/Build、点分辨率与物理像素，并打开百度定向指纹。其他开关不变，保存后请彻底重启百度极速版。"
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    [sheet addAction:[UIAlertAction actionWithTitle:@"随机一款（排除本机 SE2）"
+                                              style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        (void)action;
+        __strong typeof(weakSelf) self = weakSelf; if (!self) return;
+        NSArray<NSDictionary *> *pool = BDSUnifiedDeviceProfiles();
+        if (!pool.count) return;
+        [self applyChosenDeviceProfile:pool[arc4random_uniform((uint32_t)pool.count)]];
+    }]];
+    for (NSDictionary *device in BDSUnifiedDeviceProfiles()) {
+        NSString *title = [NSString stringWithFormat:@"%@  %@  %@×%@",
+                           device[@"name"], device[@"machine"], device[@"width"], device[@"height"]];
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            (void)action;
+            __strong typeof(weakSelf) self = weakSelf; if (!self) return;
+            [self applyChosenDeviceProfile:device];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    if (sheet.popoverPresentationController) {
+        sheet.popoverPresentationController.sourceView = presenter.view;
+        sheet.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(presenter.view.bounds), CGRectGetMidY(presenter.view.bounds), 1, 1);
+    }
+    [presenter presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)applyChosenDeviceProfile:(NSDictionary *)device {
+    NSDictionary *values = BDSProfileApplyValues(device);
+    if (!values.count) {
+        [self presentMessage:@"机型参数不完整，未保存。" title:@"套用失败"];
+        return;
+    }
+    BOOL saved = saveConfigValues(values);
+    if (!saved) {
+        [self presentMessage:@"配置文件写入失败，机型没有更换。" title:@"保存失败"];
+        return;
+    }
+    NSString *msg = [NSString stringWithFormat:
+        @"已套用并保存。\n请彻底关闭 App 后重新打开。\n\n"
+         "机型：%@（%@）\n系统：iOS %@ (%@)\n点分辨率：%@×%@ @%@x\n物理像素：%@×%@\n"
+         "百度定向指纹：已开启",
+        values[@"deviceProfileName"], values[@"hwMachine"],
+        values[@"systemVersion"], values[@"systemBuild"],
+        values[@"screenWidth"], values[@"screenHeight"], values[@"screenScale"],
+        values[@"nativeScreenWidth"], values[@"nativeScreenHeight"]];
+    [self presentMessage:msg title:@"机型已套用"];
+}
 
 - (void)randomizeAdvancedProfile {
     NSDictionary *values = BDSRandomIdentityValues();
@@ -2983,7 +3508,8 @@ static NSString *BDSConfigSummary(void) {
     NSArray<NSDictionary *> *items = @[
         @{@"key": @"spoofBaiduSDK", @"name": @"高级身份（IDFV/CUID/UTDID/DeviceID）"},
         @{@"key": @"spoofSysctl", @"name": @"sysctlbyname（hw.machine 等）"},
-        @{@"key": @"bypassJailbreakDetect", @"name": @"越狱检测绕过（含镜像名/C函数/NSBundle）"}
+        @{@"key": @"bypassJailbreakDetect", @"name": @"越狱检测绕过（含镜像名/C函数/NSBundle）"},
+        @{@"key": @"spoofBaiduTargeted", @"name": @"百度定向指纹（自有方法，不动UI布局）"}
     ];
     for (NSDictionary *item in items) {
         NSString *key = item[@"key"];
@@ -3470,6 +3996,7 @@ static NSString *BDSConfigSummary(void) {
     BDSAppendDiagLine(message, @"语言 / 运营商", &g_diagLocaleCarrier);
     BDSAppendDiagLine(message, @"屏幕 / 磁盘", &g_diagScreenStorage);
     BDSAppendDiagLine(message, @"百度 SDK 标识", &g_diagBaiduSDK);
+    BDSAppendDiagLine(message, @"百度定向指纹", &g_diagBaiduTargeted);
     BDSAppendDiagLine(message, @"sysctlbyname", &g_diagSysctl);
     BDSAppendDiagLine(message, @"Keychain", &g_diagKeychain);
     BDSAppendDiagLine(message, @"User-Agent", &g_diagUserAgent);
@@ -3848,6 +4375,11 @@ static void bds_initialize() {
         // 百度 SDK 设备标识 hook
         if (cfgBool(@"spoofBaiduSDK", NO)) {
             installBaiduSDKHooks();
+        }
+
+        // v1.9.0 百度定向指纹：只改百度自有设备指纹出口，UIScreen 等 UIKit 全部放行真值；跟随基础总开关
+        if (basicEnabled && cfgBool(@"spoofBaiduTargeted", YES)) {
+            installBaiduTargetedHooks();
         }
 
         // User-Agent hook
