@@ -3140,15 +3140,17 @@ static NSString *BDSConfigSummary(void) {
     NSString *compactHeaderText = [NSString stringWithFormat:@"卍解\n%@", BDSConfigSummary()];
     NSMutableParagraphStyle *compactParagraph = [[NSMutableParagraphStyle alloc] init];
     compactParagraph.alignment = NSTextAlignmentCenter;
-    compactParagraph.lineSpacing = -1.0;
+    compactParagraph.lineSpacing = -2.0;
     compactParagraph.paragraphSpacing = 0.0;
     NSMutableAttributedString *compactHeader = [[NSMutableAttributedString alloc]
         initWithString:compactHeaderText
         attributes:@{NSForegroundColorAttributeName: UIColor.labelColor,
-                      NSFontAttributeName: [UIFont systemFontOfSize:12.0],
-                     NSParagraphStyleAttributeName: compactParagraph}];
+                      NSFontAttributeName: [UIFont systemFontOfSize:11.0],
+                      NSBaselineOffsetAttributeName: @(-1.0),
+                      NSParagraphStyleAttributeName: compactParagraph}];
     [compactHeader addAttributes:@{NSForegroundColorAttributeName: UIColor.systemRedColor,
-                                   NSFontAttributeName: [UIFont boldSystemFontOfSize:17.0]}
+                                   NSFontAttributeName: [UIFont boldSystemFontOfSize:16.0],
+                                   NSBaselineOffsetAttributeName: @0}
                            range:NSMakeRange(0, [@"卍解" length])];
     [alert setValue:compactHeader forKey:@"attributedTitle"];
     [alert addAction:[UIAlertAction actionWithTitle:@"从机型池套用机型iOS  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
