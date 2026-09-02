@@ -1,86 +1,43 @@
-name: Build BDSpoofer
+name: Build BDDiag (read-only diagnostic dylib)
 
 on:
   push:
-    branches: [main, master]
+    branches: ["**"]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: macos-14
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Show Xcode and SDK info
+      - name: Build universal dylib (arm64 + arm64e)
         run: |
-          xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-path
-          xcrun --sdk iphoneos --show-sdk-version
+          set -e
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          SRC=$(find . -name 'BDDiag.m' -not -path '*/.*' | head -1)
+          echo "SDK=$SDK"; echo "SRC=$SRC"; test -n "$SRC"
+          for ARCH in arm64 arm64e; do
+            xcrun clang -arch $ARCH -isysroot "$SDK" -target $ARCH-apple-ios15.0 \
+              -fobjc-arc -fno-inline \
+              -dynamiclib \
+              -framework Foundation -framework UIKit -framework CoreGraphics \
+              -O2 -Wno-unused -Wno-unused-function \
+              -o BDDiag-$ARCH.dylib "$SRC"
+          done
+          xcrun lipo -create BDDiag-arm64.dylib BDDiag-arm64e.dylib -output BDDiag.dylib
+          codesign --force --sign - --timestamp=none BDDiag.dylib
+          echo "---- arch ----"; xcrun lipo -info BDDiag.dylib
+          echo "---- deps ----"; otool -L BDDiag.dylib | head -20
+          echo "---- file ----"; file BDDiag.dylib
 
-      - name: Build arm64
+      - name: Verify artifact exists
         run: |
-          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-          xcrun --sdk iphoneos clang \
-            -arch arm64 \
-            -isysroot "$SDK_PATH" \
-            -miphoneos-version-min=15.0 \
-            -fobjc-arc \
-            -dynamiclib \
-            -framework Foundation \
-            -framework UIKit \
-            -framework CoreGraphics \
-            -framework AdSupport \
-            -framework CoreTelephony \
-            -framework Security \
-            -framework WebKit \
-            -framework SystemConfiguration \
-            -framework CoreLocation \
-            -framework Contacts \
-            -framework EventKit \
-            -install_name @rpath/BDSpoofer_1.8.0.dylib \
-            -o BDSpoofer_1.8.0_arm64.dylib \
-            BDSpoofer.m
+          test -f BDDiag.dylib
+          ls -la BDDiag.dylib
 
-      - name: Build arm64e
-        run: |
-          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-          xcrun --sdk iphoneos clang \
-            -arch arm64e \
-            -isysroot "$SDK_PATH" \
-            -miphoneos-version-min=15.0 \
-            -fobjc-arc \
-            -dynamiclib \
-            -framework Foundation \
-            -framework UIKit \
-            -framework CoreGraphics \
-            -framework AdSupport \
-            -framework CoreTelephony \
-            -framework Security \
-            -framework WebKit \
-            -framework SystemConfiguration \
-            -framework CoreLocation \
-            -framework Contacts \
-            -framework EventKit \
-            -install_name @rpath/BDSpoofer_1.8.0.dylib \
-            -o BDSpoofer_1.8.0_arm64e.dylib \
-            BDSpoofer.m
-
-      - name: Create fat binary and verify
-        run: |
-          lipo -create BDSpoofer_1.8.0_arm64.dylib BDSpoofer_1.8.0_arm64e.dylib -output BDSpoofer_1.8.0.dylib
-          echo "=== file type ==="
-          file BDSpoofer_1.8.0.dylib
-          echo "=== dependencies ==="
-          otool -L BDSpoofer_1.8.0.dylib
-          echo "=== platform ==="
-          otool -l BDSpoofer_1.8.0.dylib | grep -A5 LC_BUILD_VERSION
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: BDSpoofer-1.8.0
-          path: |
-            BDSpoofer_1.8.0.dylib
-            bdspoofer_config.plist
+          name: BDDiag-dylib
+          path: BDDiag.dylib
+          if-no-files-found: error
