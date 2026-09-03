@@ -107,7 +107,7 @@ static NSString *b4_safeShortString(NSString *value) {
     NSUInteger limit = MIN(value.length, (NSUInteger)180);
     for (NSUInteger i = 0; i < limit; i++) {
         unichar c = [value characterAtIndex:i];
-        [out appendFormat:@"%C", (c < 0x20 && c != '\t') ? ' ' : c];
+        [out appendFormat:@"%C", (unichar)((c < 0x20 && c != '\t') ? ' ' : c)];
     }
     if (value.length > limit) [out appendString:@"…"];
     return out;
