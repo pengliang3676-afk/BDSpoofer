@@ -1,4 +1,4 @@
-name: Build BDDiag5 (login DI model probe)
+name: Build BDDiag6 (login device record probe)
 
 on:
   push:
@@ -15,34 +15,34 @@ jobs:
         run: |
           set -e
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          SRC=BDDiag5.m
+          SRC=BDDiag6.m
           echo "SDK=$SDK"; echo "SRC=$SRC"; test -n "$SRC"
           test -f "$SRC"
           for ARCH in arm64 arm64e; do
             xcrun clang -arch $ARCH -isysroot "$SDK" -target $ARCH-apple-ios15.0 \
               -fobjc-arc -fno-inline \
               -dynamiclib \
-              -install_name @rpath/BDDiag5.dylib \
-              -framework Foundation -framework UIKit -framework CoreGraphics \
+              -install_name @rpath/BDDiag6.dylib \
+              -framework Foundation -framework UIKit -framework CoreGraphics -framework WebKit \
               -O2 -Wno-unused -Wno-unused-function \
-              -o BDDiag5-$ARCH.dylib "$SRC"
+              -o BDDiag6-$ARCH.dylib "$SRC"
           done
-          xcrun lipo -create BDDiag5-arm64.dylib BDDiag5-arm64e.dylib -output BDDiag5.dylib
-          xcrun lipo BDDiag5.dylib -verify_arch arm64 arm64e
-          codesign --force --sign - --timestamp=none BDDiag5.dylib
-          codesign --verify --strict --verbose=2 BDDiag5.dylib
-          echo "---- arch ----"; xcrun lipo -info BDDiag5.dylib
-          echo "---- id ----"; otool -D BDDiag5.dylib
-          echo "---- deps ----"; otool -L BDDiag5.dylib | head -20
-          echo "---- file ----"; file BDDiag5.dylib
+          xcrun lipo -create BDDiag6-arm64.dylib BDDiag6-arm64e.dylib -output BDDiag6.dylib
+          xcrun lipo BDDiag6.dylib -verify_arch arm64 arm64e
+          codesign --force --sign - --timestamp=none BDDiag6.dylib
+          codesign --verify --strict --verbose=2 BDDiag6.dylib
+          echo "---- arch ----"; xcrun lipo -info BDDiag6.dylib
+          echo "---- id ----"; otool -D BDDiag6.dylib
+          echo "---- deps ----"; otool -L BDDiag6.dylib | head -20
+          echo "---- file ----"; file BDDiag6.dylib
 
       - name: Verify artifact exists
         run: |
-          test -f BDDiag5.dylib
-          ls -la BDDiag5.dylib
+          test -f BDDiag6.dylib
+          ls -la BDDiag6.dylib
 
       - uses: actions/upload-artifact@v4
         with:
-          name: BDDiag5-dylib
-          path: BDDiag5.dylib
+          name: BDDiag6-dylib
+          path: BDDiag6.dylib
           if-no-files-found: error
