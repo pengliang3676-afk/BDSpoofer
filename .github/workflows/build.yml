@@ -29,13 +29,15 @@ jobs:
           grep -q '统一随机（%lu款）' BDSpoofer.m
           test "$(grep -o 'BDSSystem(@"' BDSpoofer.m | wc -l | tr -d ' ')" -eq 78
           test "$(grep -o 'BDSSystem(@"' CraneManager/BDSCraneManager.m | wc -l | tr -d ' ')" -eq 78
-          grep -q '@"configVersion": @182' CraneManager/BDSCraneManager.m
+          grep -q '@"configVersion": @184' CraneManager/BDSCraneManager.m
           grep -q '@"spoofBaiduTargeted": @YES' CraneManager/BDSCraneManager.m
           grep -q '@"spoofScreen": @NO' CraneManager/BDSCraneManager.m
           ! grep -q '从机型池套用机型iOS' BDSpoofer.m
           grep -q '一键随机定向指纹参数' BDSpoofer.m
           grep -q '@"configVersion": @184' BDSpoofer.m
-          grep -q '从机型池套用机型iOS' CraneManager/BDSCraneManager.m
+          ! grep -q '从机型池套用机型iOS' CraneManager/BDSCraneManager.m
+          grep -q '一键随机整套高级参数' CraneManager/BDSCraneManager.m
+          grep -q '一键随机定向指纹参数' CraneManager/BDSCraneManager.m
           grep -q '___Crane_Containers' CraneManager/BDSCraneManager.m
           grep -q 'managerResolvedPath' CraneManager/BDSCraneManager.m
           plutil -lint bdspoofer_config.plist
@@ -121,9 +123,9 @@ jobs:
           printf '2.0\n' > deb-build/debian-binary
           COPYFILE_DISABLE=1 tar -C package-root/DEBIAN -czf deb-build/control.tar.gz .
           COPYFILE_DISABLE=1 tar -C package-root --exclude='./DEBIAN' -czf deb-build/data.tar.gz .
-          (cd deb-build && ar -rc ../dist/BDSpooferCraneManager_1.0.3_RootHide.deb \
+          (cd deb-build && ar -rc ../dist/BDSpooferCraneManager_1.0.4_RootHide.deb \
             debian-binary control.tar.gz data.tar.gz)
-          ar -t dist/BDSpooferCraneManager_1.0.3_RootHide.deb
+          ar -t dist/BDSpooferCraneManager_1.0.4_RootHide.deb
           tar -tzf deb-build/data.tar.gz
           lipo -info package-root/Applications/BDSCraneManager.app/BDSCraneManager
           codesign -d --entitlements :- package-root/Applications/BDSCraneManager.app
@@ -139,8 +141,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: BDSpoofer-CraneManager-1.0.3
+          name: BDSpoofer-CraneManager-1.0.4
           path: |
-            dist/BDSpooferCraneManager_1.0.3_RootHide.deb
+            dist/BDSpooferCraneManager_1.0.4_RootHide.deb
             BDSpoofer_1.9.0.dylib
             bdspoofer_config.plist
