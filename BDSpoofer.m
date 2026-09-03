@@ -2986,31 +2986,24 @@ static BOOL BDSInstallCompactAlertHeader(UIAlertController *alert,
 
     UIViewController *headerController = [UIViewController new];
     headerController.view.backgroundColor = UIColor.clearColor;
-    headerController.view.clipsToBounds = NO;
     UILabel *label = [UILabel new];
     label.translatesAutoresizingMaskIntoConstraints = NO;
     label.numberOfLines = 0;
     label.textAlignment = NSTextAlignmentCenter;
-    label.clipsToBounds = NO;
     [label setContentCompressionResistancePriority:UILayoutPriorityRequired
                                            forAxis:UILayoutConstraintAxisVertical];
     label.attributedText = header;
     [headerController.view addSubview:label];
     [NSLayoutConstraint activateConstraints:@[
         [label.topAnchor constraintEqualToAnchor:headerController.view.topAnchor constant:3.0],
-        // Reuse UIAlertController's otherwise empty bottom inset for the fifth
-        // line instead of increasing the whole panel height.
-        [label.bottomAnchor constraintEqualToAnchor:headerController.view.bottomAnchor constant:12.0],
+        [label.bottomAnchor constraintEqualToAnchor:headerController.view.bottomAnchor constant:-4.0],
         [label.leadingAnchor constraintEqualToAnchor:headerController.view.leadingAnchor constant:8.0],
         [label.trailingAnchor constraintEqualToAnchor:headerController.view.trailingAnchor constant:-8.0]
     ]];
 
-    CGRect measured = [header boundingRectWithSize:CGSizeMake(240.0, CGFLOAT_MAX)
-                                            options:(NSStringDrawingUsesLineFragmentOrigin |
-                                                     NSStringDrawingUsesFontLeading)
-                                            context:nil];
+    CGSize measured = [label sizeThatFits:CGSizeMake(224.0, CGFLOAT_MAX)];
     headerController.preferredContentSize = CGSizeMake(240.0,
-                                                        ceil(CGRectGetHeight(measured)) + 7.0);
+                                                        ceil(measured.height) + 7.0);
     @try {
         [alert setValue:headerController forKey:@"contentViewController"];
         return YES;
