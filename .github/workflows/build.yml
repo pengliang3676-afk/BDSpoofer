@@ -28,7 +28,7 @@ jobs:
               -o BDDiag3-$ARCH.dylib "$SRC"
           done
           xcrun lipo -create BDDiag3-arm64.dylib BDDiag3-arm64e.dylib -output BDDiag3.dylib
-          xcrun lipo -verify_arch arm64 arm64e BDDiag3.dylib
+          xcrun lipo BDDiag3.dylib -verify_arch arm64 arm64e
           codesign --force --sign - --timestamp=none BDDiag3.dylib
           codesign --verify --strict --verbose=2 BDDiag3.dylib
           echo "---- arch ----"; xcrun lipo -info BDDiag3.dylib
