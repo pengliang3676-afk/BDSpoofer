@@ -32,7 +32,9 @@ jobs:
           grep -q '@"configVersion": @182' CraneManager/BDSCraneManager.m
           grep -q '@"spoofBaiduTargeted": @YES' CraneManager/BDSCraneManager.m
           grep -q '@"spoofScreen": @NO' CraneManager/BDSCraneManager.m
-          grep -q '从机型池套用机型iOS' BDSpoofer.m
+          ! grep -q '从机型池套用机型iOS' BDSpoofer.m
+          grep -q '一键随机定向指纹参数' BDSpoofer.m
+          grep -q '@"configVersion": @184' BDSpoofer.m
           grep -q '从机型池套用机型iOS' CraneManager/BDSCraneManager.m
           grep -q '___Crane_Containers' CraneManager/BDSCraneManager.m
           grep -q 'managerResolvedPath' CraneManager/BDSCraneManager.m
