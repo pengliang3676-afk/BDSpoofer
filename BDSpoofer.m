@@ -3245,12 +3245,17 @@ static NSDictionary *BDSRandomCarrierValues(void) {
     return carriers[arc4random_uniform((uint32_t)carriers.count)];
 }
 
-static NSDictionary *BDSRandomBasicProfileValues(void) {
-    NSArray<NSDictionary *> *allDevices = BDSUnifiedDeviceProfiles();
-    if (!allDevices.count) return @{};
-    NSDictionary *device = allDevices[arc4random_uniform((uint32_t)allDevices.count)];
-    NSDictionary *system = BDSRandomSystemProfileForDevice(device);
+// 为已经选定的机型/iOS 组合生成一套基础参数。
+// enableCommonAdvanced=YES 仅用于“整套基础参数”，保持旧版自动开启 3 项常规高级功能的行为；
+// 定向随机只同步基础参数并开启基础/反关联开关，不改高级设置的现有状态。
+static NSMutableDictionary *BDSRandomBaseValuesForPair(NSDictionary *device,
+                                                       NSDictionary *system,
+                                                       BOOL enableCommonAdvanced) {
+    if (![device isKindOfClass:NSDictionary.class] || ![system isKindOfClass:NSDictionary.class]) {
+        return nil;
+    }
     NSArray<NSNumber *> *disks = device[@"disks"];
+    if (![disks isKindOfClass:NSArray.class] || !disks.count) return nil;
     NSNumber *disk = disks[arc4random_uniform((uint32_t)disks.count)];
 
     NSMutableDictionary *values = [NSMutableDictionary dictionary];
@@ -3264,10 +3269,12 @@ static NSDictionary *BDSRandomBasicProfileValues(void) {
     // 保持本机真实屏幕，避免随机到大屏机型后界面被放大或缩小。
     values[@"spoofScreen"] = @NO;
     values[@"spoofStorage"] = @YES;
-    // 常规高级功能随基础随机一起开启；高级身份值本身不在这里重新生成。
-    values[@"spoofBaiduSDK"] = @YES;
-    values[@"spoofSysctl"] = @YES;
-    values[@"bypassJailbreakDetect"] = @YES;
+    if (enableCommonAdvanced) {
+        // 保持旧版基础随机行为；只开功能，不重新生成高级身份值。
+        values[@"spoofBaiduSDK"] = @YES;
+        values[@"spoofSysctl"] = @YES;
+        values[@"bypassJailbreakDetect"] = @YES;
+    }
     values[@"spoofWiFi"] = @YES;
     values[@"spoofLocalIP"] = @YES;
     values[@"spoofPasteboard"] = @YES;
@@ -3303,15 +3310,44 @@ static NSDictionary *BDSRandomBasicProfileValues(void) {
     return values;
 }
 
-// 定向指纹专用随机：只写定向机型/iOS/屏幕仓库，不碰基础参数、高级身份值和子开关。
+static NSDictionary *BDSRandomBasicProfileValues(void) {
+    NSArray<NSDictionary *> *allDevices = BDSUnifiedDeviceProfiles();
+    if (!allDevices.count) return @{};
+    NSDictionary *device = allDevices[arc4random_uniform((uint32_t)allDevices.count)];
+    NSDictionary *system = BDSRandomSystemProfileForDevice(device);
+    NSMutableDictionary *values = BDSRandomBaseValuesForPair(device, system, YES);
+    if (!values.count) return @{};
+
+    // 两种模式明确互斥：基础随机后，保留定向参数值但关闭全部定向开关。
+    [values addEntriesFromDictionary:@{
+        @"spoofBaiduTargeted": @NO,
+        @"spoofBaiduTargetedSystem": @NO,
+        @"spoofBaiduTargetedModel": @NO,
+        @"spoofBaiduTargetedScreen": @NO,
+        @"spoofBaiduTargetedUA": @NO,
+        @"spoofBaiduTargetedPush": @NO
+    }];
+    return values;
+}
+
+// 定向随机只抽取一次机型/iOS：同一组合同时写入基础与定向参数；
+// 开启基础、反关联及全部定向开关，不改长期身份值、兼容风险项和高级设置现有状态。
 static NSDictionary *BDSRandomTargetedProfileValues(void) {
     NSArray<NSDictionary *> *allDevices = BDSUnifiedDeviceProfiles();
     if (!allDevices.count) return @{};
     NSDictionary *device = allDevices[arc4random_uniform((uint32_t)allDevices.count)];
     NSDictionary *system = BDSRandomSystemProfileForDevice(device);
     if (!system.count) return @{};
-    return @{
+
+    NSMutableDictionary *values = BDSRandomBaseValuesForPair(device, system, NO);
+    if (!values.count) return @{};
+    [values addEntriesFromDictionary:@{
         @"spoofBaiduTargeted": @YES,
+        @"spoofBaiduTargetedSystem": @YES,
+        @"spoofBaiduTargetedModel": @YES,
+        @"spoofBaiduTargetedScreen": @YES,
+        @"spoofBaiduTargetedUA": @YES,
+        @"spoofBaiduTargetedPush": @YES,
         @"targetedDeviceProfileName": device[@"name"] ?: @"iPhone",
         @"targetedSystemVersion": system[@"version"] ?: @"15.4.1",
         @"targetedSystemBuild": system[@"build"] ?: @"19E258",
@@ -3323,7 +3359,8 @@ static NSDictionary *BDSRandomTargetedProfileValues(void) {
         @"targetedNativeScreenWidth": device[@"nativeWidth"] ?: @750,
         @"targetedNativeScreenHeight": device[@"nativeHeight"] ?: @1334,
         @"targetedGeneratedAt": @((long long)NSDate.date.timeIntervalSince1970)
-    };
+    }];
+    return values;
 }
 
 static NSString *BDSConfigSummary(void) {
@@ -3717,7 +3754,7 @@ static BOOL BDSInstallCompactAlertHeader(UIAlertController *alert,
     }
     NSString *message = [NSString stringWithFormat:
         @"已随机并保存基础参数；基础功能和常规高级功能已开启。\n"
-         "一键定向指纹的参数和开关保持原状态。\n"
+         "一键定向指纹总开关和 5 个子开关已全部关闭；已保存的定向参数保留但不生效。\n"
          "高级身份参数没有改动；兼容风险测试 4 项保持原状态。\n"
          "请彻底关闭 App 后重新打开。\n\n"
          "随机范围：%@\n机型：%@\n系统：%@ (%@)\n"
@@ -3822,8 +3859,8 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
         return;
     }
     NSString *message = [NSString stringWithFormat:
-        @"已随机并保存定向指纹专用参数；总开关已开启，5 个子开关保持原状态。\n"
-         "基础参数和高级身份值均未改变。请彻底关闭百度极速版后重新打开。\n\n"
+        @"已用同一组机型/iOS 同步保存基础与定向参数；基础功能、反关联增强、定向总开关和 5 个子开关已全部开启。\n"
+         "高级设置、长期身份值和兼容风险测试 4 项保持原状态。请彻底关闭百度极速版后重新打开。\n\n"
          "随机范围：%@\n机型：%@（%@）\n系统：iOS %@ (%@)\n"
          "点分辨率：%@×%@ @%@x\n物理像素：%@×%@",
         BDSDeviceRangeName(),
@@ -3980,7 +4017,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     NSString *summary = [NSString stringWithFormat:
         @"当前：%@（%@）\niOS %@ (%@) · %ld×%ld @%ldx\n"
-         "本页使用独立参数，不依赖或覆盖基础随机。IDFV 跟随高级身份设置。修改后请彻底重启百度极速版。",
+         "一键定向随机会将同一机型/iOS 同步写入基础与定向参数，并开启基础、反关联和定向开关；不重置长期身份值。IDFV 跟随高级身份设置。修改后请彻底重启百度极速版。",
         cfgStr(@"targetedDeviceProfileName", @"未设置"), cfgStr(@"targetedHwMachine", @""),
         cfgStr(@"targetedSystemVersion", @""), cfgStr(@"targetedSystemBuild", @""),
         (long)cfgInt(@"targetedScreenWidth", 0), (long)cfgInt(@"targetedScreenHeight", 0),
