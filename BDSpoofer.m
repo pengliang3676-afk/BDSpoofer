@@ -2985,15 +2985,22 @@ static BOOL BDSInstallCompactAlertHeader(UIAlertController *alert,
     if (!alert || !header.length) return NO;
 
     UIViewController *headerController = [UIViewController new];
+    headerController.view.backgroundColor = UIColor.clearColor;
+    headerController.view.clipsToBounds = NO;
     UILabel *label = [UILabel new];
     label.translatesAutoresizingMaskIntoConstraints = NO;
     label.numberOfLines = 0;
     label.textAlignment = NSTextAlignmentCenter;
+    label.clipsToBounds = NO;
+    [label setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                           forAxis:UILayoutConstraintAxisVertical];
     label.attributedText = header;
     [headerController.view addSubview:label];
     [NSLayoutConstraint activateConstraints:@[
         [label.topAnchor constraintEqualToAnchor:headerController.view.topAnchor constant:3.0],
-        [label.bottomAnchor constraintEqualToAnchor:headerController.view.bottomAnchor constant:-4.0],
+        // Reuse UIAlertController's otherwise empty bottom inset for the fifth
+        // line instead of increasing the whole panel height.
+        [label.bottomAnchor constraintEqualToAnchor:headerController.view.bottomAnchor constant:12.0],
         [label.leadingAnchor constraintEqualToAnchor:headerController.view.leadingAnchor constant:8.0],
         [label.trailingAnchor constraintEqualToAnchor:headerController.view.trailingAnchor constant:-8.0]
     ]];
