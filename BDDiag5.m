@@ -1,5 +1,5 @@
 //
-//  BDDiag4.m —— 百度极速版 7.14.0 短信登录请求定点只读探针
+//  BDDiag5.m —— 百度极速版 7.14.0 登录 DI 型号定点只读探针
 //
 //  仅挂接已由 7.14.0 解密主程序确认存在的 SAPI 短信登录入口、基础参数构造和
 //  SAPIHTTPRequest 请求构造边界。探针不修改参数、返回值、请求或响应。
@@ -35,6 +35,7 @@ static _Atomic(BOOL) g_b4EventCapReached = NO;
 static _Atomic(BOOL) g_b4InstallPending = NO;
 static _Thread_local int t_b4Suppress = 0;
 static _Thread_local int t_b4LoginDepth = 0;
+static _Thread_local int t_b4DIDepth = 0;
 static NSTimeInterval g_b4StartAt = 0;
 static uintptr_t g_b4OwnLow = 0, g_b4OwnHigh = 0;
 static UILabel *g_b4StatusLabel = nil;
@@ -286,6 +287,16 @@ static NSString *b4_privateArgument(NSString *name, id value) {
     return [NSString stringWithFormat:@"%@=<redacted %@>", name, b4_shape(value)];
 }
 
+static NSUInteger b4_textLength(id value) {
+    return [value isKindOfClass:NSString.class] ? [(NSString *)value length] : 0;
+}
+
+static id b4_originalDeviceModel(id helperClass) {
+    SEL alias = sel_registerName("bd5orig_deviceModel");
+    if (![helperClass respondsToSelector:alias]) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(helperClass, alias);
+}
+
 // ---- exact SAPI service/manager entry wrappers ----
 static void b4_sendSms(id self, SEL command, id country, id phone, id captcha, id extra,
                        id success, id failure) {
@@ -301,7 +312,7 @@ static void b4_sendSms(id self, SEL command, id country, id phone, id captcha, i
         t_b4LoginDepth++;
     }
     @try {
-        SEL alias = sel_registerName("bd4orig_sendSmsCodeWithCountryCode:phoneNumber:captcha:extraParams:success:failure:");
+        SEL alias = sel_registerName("bd5orig_sendSmsCodeWithCountryCode:phoneNumber:captcha:extraParams:success:failure:");
         ((void (*)(id, SEL, id, id, id, id, id, id))objc_msgSend)
             (self, alias, country, phone, captcha, extra, success, failure);
     } @finally { if (active) t_b4LoginDepth--; }
@@ -322,7 +333,7 @@ static void b4_smsLogin(id self, SEL command, id country, id phone, id smsCode, 
         t_b4LoginDepth++;
     }
     @try {
-        SEL alias = sel_registerName("bd4orig_smsLoginWithCountryCode:phoneNumber:smsCode:encryptedId:extraParams:success:verify:failure:");
+        SEL alias = sel_registerName("bd5orig_smsLoginWithCountryCode:phoneNumber:smsCode:encryptedId:extraParams:success:verify:failure:");
         ((void (*)(id, SEL, id, id, id, id, id, id, id, id))objc_msgSend)
             (self, alias, country, phone, smsCode, encryptedId, extra, success, verify, failure);
     } @finally { if (active) t_b4LoginDepth--; }
@@ -340,7 +351,7 @@ static void b4_getDpass(id self, SEL command, id mobile, id captcha, id extra, i
         t_b4LoginDepth++;
     }
     @try {
-        SEL alias = sel_registerName("bd4orig_getDpassWithMobile:captcha:extraParams:success:failure:");
+        SEL alias = sel_registerName("bd5orig_getDpassWithMobile:captcha:extraParams:success:failure:");
         ((void (*)(id, SEL, id, id, id, id, id))objc_msgSend)
             (self, alias, mobile, captcha, extra, success, failure);
     } @finally { if (active) t_b4LoginDepth--; }
@@ -358,20 +369,121 @@ static void b4_loginWithMobile(id self, SEL command, id mobile, id dpass, id ext
         t_b4LoginDepth++;
     }
     @try {
-        SEL alias = sel_registerName("bd4orig_loginWithMobile:dpass:extraParams:success:failure:");
+        SEL alias = sel_registerName("bd5orig_loginWithMobile:dpass:extraParams:success:failure:");
         ((void (*)(id, SEL, id, id, id, id, id))objc_msgSend)
             (self, alias, mobile, dpass, extra, success, failure);
     } @finally { if (active) t_b4LoginDepth--; }
 }
 
 static id b4_baseParams(id self, SEL command, id interfaceName) {
-    SEL alias = sel_registerName("bd4orig_baseParamsForSMSLoginWithInterface:");
+    SEL alias = sel_registerName("bd5orig_baseParamsForSMSLoginWithInterface:");
     id result = ((id (*)(id, SEL, id))objc_msgSend)(self, alias, interfaceName);
     if (b4_isCapturing()) @try {
         b4_recordNoThrow(@"SMS_BASE_PARAMS", b4_source(self, command),
             [NSString stringWithFormat:@"interface=%@; result=%@",
              [interfaceName isKindOfClass:NSString.class] ? b4_safeShortString(interfaceName) : b4_shape(interfaceName),
              b4_dictionarySummary(result, 0)]);
+    } @catch (__unused NSException *e) { }
+    return result;
+}
+
+// ---- exact SAPI device-info pipeline wrappers ----
+// The plaintext DI is never emitted.  We only compare it with the independently
+// returned deviceModel string and record lengths/booleans.
+static id b5_deviceModel(id self, SEL command) {
+    SEL alias = sel_registerName("bd5orig_deviceModel");
+    id result = ((id (*)(id, SEL))objc_msgSend)(self, alias);
+    if (b4_isCapturing() && t_b4DIDepth > 0) @try {
+        NSString *shown = [result isKindOfClass:NSString.class] ? b4_safeShortString(result) : b4_shape(result);
+        b4_recordNoThrow(@"DI_DEVICE_MODEL", b4_source(self, command),
+                         [NSString stringWithFormat:@"value=%@; DIdepth=%d", shown, t_b4DIDepth]);
+    } @catch (__unused NSException *e) { }
+    return result;
+}
+
+static BOOL b5_notAllowedGetDI(id self, SEL command, NSUInteger index) {
+    SEL alias = sel_registerName("bd5orig_notAllowedGetDI:");
+    BOOL result = ((BOOL (*)(id, SEL, NSUInteger))objc_msgSend)(self, alias, index);
+    if (b4_isCapturing() && t_b4DIDepth > 0 && index == 3) @try {
+        b4_recordNoThrow(@"DI_MODEL_EXCLUSION", b4_source(self, command),
+                         [NSString stringWithFormat:@"index=3(deviceModel); excluded=%@", result ? @"YES" : @"NO"]);
+    } @catch (__unused NSException *e) { }
+    return result;
+}
+
+static id b5_plainDeviceInfo(id self, SEL command, id interfaceName) {
+    BOOL active = b4_isCapturing();
+    if (active) t_b4DIDepth++;
+    id result = nil;
+    @try {
+        SEL alias = sel_registerName("bd5orig_plainDeviceInfoWithInterface:");
+        result = ((id (*)(id, SEL, id))objc_msgSend)(self, alias, interfaceName);
+    } @finally { if (active) t_b4DIDepth--; }
+    if (active) @try {
+        id model = b4_originalDeviceModel(self);
+        BOOL comparable = [result isKindOfClass:NSString.class] && [model isKindOfClass:NSString.class] &&
+                          [(NSString *)model length] > 0;
+        BOOL contains = comparable && [(NSString *)result rangeOfString:(NSString *)model].location != NSNotFound;
+        b4_recordNoThrow(@"DI_PLAIN_MODEL_CHECK", b4_source(self, command),
+            [NSString stringWithFormat:@"interface=%@; plainLen=%lu; model=%@; comparable=%@; containsModel=%@; plaintext=<not logged>",
+             [interfaceName isKindOfClass:NSString.class] ? b4_safeShortString(interfaceName) : b4_shape(interfaceName),
+             (unsigned long)b4_textLength(result),
+             [model isKindOfClass:NSString.class] ? b4_safeShortString(model) : b4_shape(model),
+             comparable ? @"YES" : @"NO", contains ? @"YES" : @"NO"]);
+    } @catch (__unused NSException *e) { }
+    return result;
+}
+
+static id b5_generateDeviceInfo(id self, SEL command, id plainString) {
+    SEL alias = sel_registerName("bd5orig_generateDeviceInfoWithPlainString:");
+    id result = ((id (*)(id, SEL, id))objc_msgSend)(self, alias, plainString);
+    if (b4_isCapturing()) @try {
+        id model = b4_originalDeviceModel(self);
+        BOOL comparable = [plainString isKindOfClass:NSString.class] && [model isKindOfClass:NSString.class] &&
+                          [(NSString *)model length] > 0;
+        BOOL contains = comparable && [(NSString *)plainString rangeOfString:(NSString *)model].location != NSNotFound;
+        b4_recordNoThrow(@"DI_PRE_ENCRYPT", b4_source(self, command),
+            [NSString stringWithFormat:@"plainLen=%lu; model=%@; containsModel=%@; encodedLen=%lu; plaintext=<not logged>",
+             (unsigned long)b4_textLength(plainString),
+             [model isKindOfClass:NSString.class] ? b4_safeShortString(model) : b4_shape(model),
+             contains ? @"YES" : @"NO", (unsigned long)b4_textLength(result)]);
+    } @catch (__unused NSException *e) { }
+    return result;
+}
+
+static id b5_deviceInfoString(id self, SEL command, id interfaceName) {
+    BOOL active = b4_isCapturing();
+    if (active) t_b4DIDepth++;
+    id result = nil;
+    @try {
+        SEL alias = sel_registerName("bd5orig_deviceInfoStringWithInterface:");
+        result = ((id (*)(id, SEL, id))objc_msgSend)(self, alias, interfaceName);
+    } @finally { if (active) t_b4DIDepth--; }
+    if (active) @try {
+        b4_recordNoThrow(@"DI_ENCODED", b4_source(self, command),
+            [NSString stringWithFormat:@"interface=%@; encodedLen=%lu; value=<not logged>",
+             [interfaceName isKindOfClass:NSString.class] ? b4_safeShortString(interfaceName) : b4_shape(interfaceName),
+             (unsigned long)b4_textLength(result)]);
+    } @catch (__unused NSException *e) { }
+    return result;
+}
+
+static id b5_interfaceForLogin(id self, SEL command) {
+    SEL alias = sel_registerName("bd5orig_interfaceForLogin");
+    id result = ((id (*)(id, SEL))objc_msgSend)(self, alias);
+    if (b4_isCapturing()) @try {
+        b4_recordNoThrow(@"DI_LOGIN_INTERFACE", b4_source(self, command),
+            [result isKindOfClass:NSString.class] ? b4_safeShortString(result) : b4_shape(result));
+    } @catch (__unused NSException *e) { }
+    return result;
+}
+
+static id b5_deviceInfoForLogin(id self, SEL command) {
+    SEL alias = sel_registerName("bd5orig_deviceInfoForLogin");
+    id result = ((id (*)(id, SEL))objc_msgSend)(self, alias);
+    if (b4_isCapturing()) @try {
+        b4_recordNoThrow(@"DI_FOR_LOGIN", b4_source(self, command),
+            [NSString stringWithFormat:@"encodedLen=%lu; value=<not logged>", (unsigned long)b4_textLength(result)]);
     } @catch (__unused NSException *e) { }
     return result;
 }
@@ -389,7 +501,7 @@ static id b4_request3(id self, SEL command, id method, id path, id parameters) {
         } @catch (__unused NSException *e) { before = @"<pre-summary-failed>"; }
           @finally { t_b4Suppress--; }
     }
-    SEL alias = sel_registerName("bd4orig_requestWithMethod:path:parameters:");
+    SEL alias = sel_registerName("bd5orig_requestWithMethod:path:parameters:");
     id result = ((id (*)(id, SEL, id, id, id))objc_msgSend)(self, alias, method, path, parameters);
     if (relevant)
         @try { b4_recordNoThrow(@"REQUEST_PRE_ENCODE", b4_source(self, command),
@@ -410,7 +522,7 @@ static id b4_request4(id self, SEL command, id method, id path, double timeout, 
         } @catch (__unused NSException *e) { before = @"<pre-summary-failed>"; }
           @finally { t_b4Suppress--; }
     }
-    SEL alias = sel_registerName("bd4orig_requestWithMethod:path:timeout:parameters:");
+    SEL alias = sel_registerName("bd5orig_requestWithMethod:path:timeout:parameters:");
     id result = ((id (*)(id, SEL, id, id, double, id))objc_msgSend)
         (self, alias, method, path, timeout, parameters);
     if (relevant)
@@ -421,7 +533,7 @@ static id b4_request4(id self, SEL command, id method, id path, double timeout, 
 }
 
 static id b4_smsLoginURL(id self, SEL command) {
-    SEL alias = sel_registerName("bd4orig_smsLoginURLString");
+    SEL alias = sel_registerName("bd5orig_smsLoginURLString");
     id result = ((id (*)(id, SEL))objc_msgSend)(self, alias);
     if (b4_isCapturing()) @try {
         b4_recordNoThrow(@"SMS_URL", b4_source(self, command), b4_urlSummary(result));
@@ -430,7 +542,7 @@ static id b4_smsLoginURL(id self, SEL command) {
 }
 
 static id b4_smsGetLoginURL(id self, SEL command) {
-    SEL alias = sel_registerName("bd4orig_smsGetLoginURL");
+    SEL alias = sel_registerName("bd5orig_smsGetLoginURL");
     id result = ((id (*)(id, SEL))objc_msgSend)(self, alias);
     if (b4_isCapturing()) @try {
         b4_recordNoThrow(@"SMS_URL", b4_source(self, command), b4_urlSummary(result));
@@ -498,35 +610,50 @@ static BOOL b4_installExact(const char *className, BOOL classMethod, const char 
 static void b4_installAll(void) {
     b4_installExact("SAPILoginService", NO,
         "sendSmsCodeWithCountryCode:phoneNumber:captcha:extraParams:success:failure:",
-        "bd4orig_sendSmsCodeWithCountryCode:phoneNumber:captcha:extraParams:success:failure:",
+        "bd5orig_sendSmsCodeWithCountryCode:phoneNumber:captcha:extraParams:success:failure:",
         (IMP)b4_sendSms, 'v', "@@@@@@");
     b4_installExact("SAPILoginService", NO,
         "smsLoginWithCountryCode:phoneNumber:smsCode:encryptedId:extraParams:success:verify:failure:",
-        "bd4orig_smsLoginWithCountryCode:phoneNumber:smsCode:encryptedId:extraParams:success:verify:failure:",
+        "bd5orig_smsLoginWithCountryCode:phoneNumber:smsCode:encryptedId:extraParams:success:verify:failure:",
         (IMP)b4_smsLogin, 'v', "@@@@@@@@");
     b4_installExact("SAPILoginService", NO,
-        "baseParamsForSMSLoginWithInterface:", "bd4orig_baseParamsForSMSLoginWithInterface:",
+        "baseParamsForSMSLoginWithInterface:", "bd5orig_baseParamsForSMSLoginWithInterface:",
         (IMP)b4_baseParams, '@', "@");
 
     const char *loginClasses[] = {"SAPILoginService", "SAPILoginManager"};
     for (size_t i = 0; i < sizeof(loginClasses) / sizeof(loginClasses[0]); i++) {
         const char *name = loginClasses[i];
         b4_installExact(name, NO, "getDpassWithMobile:captcha:extraParams:success:failure:",
-            "bd4orig_getDpassWithMobile:captcha:extraParams:success:failure:",
+            "bd5orig_getDpassWithMobile:captcha:extraParams:success:failure:",
             (IMP)b4_getDpass, 'v', "@@@@@");
         b4_installExact(name, NO, "loginWithMobile:dpass:extraParams:success:failure:",
-            "bd4orig_loginWithMobile:dpass:extraParams:success:failure:",
+            "bd5orig_loginWithMobile:dpass:extraParams:success:failure:",
             (IMP)b4_loginWithMobile, 'v', "@@@@@");
     }
 
     b4_installExact("SAPIHTTPRequest", YES, "requestWithMethod:path:parameters:",
-        "bd4orig_requestWithMethod:path:parameters:", (IMP)b4_request3, '@', "@@@");
+        "bd5orig_requestWithMethod:path:parameters:", (IMP)b4_request3, '@', "@@@");
     b4_installExact("SAPIHTTPRequest", YES, "requestWithMethod:path:timeout:parameters:",
-        "bd4orig_requestWithMethod:path:timeout:parameters:", (IMP)b4_request4, '@', "@@d@");
-    b4_installExact("SAPIURLHelper", YES, "smsLoginURLString", "bd4orig_smsLoginURLString",
+        "bd5orig_requestWithMethod:path:timeout:parameters:", (IMP)b4_request4, '@', "@@d@");
+    b4_installExact("SAPIURLHelper", YES, "smsLoginURLString", "bd5orig_smsLoginURLString",
         (IMP)b4_smsLoginURL, '@', "");
-    b4_installExact("SAPIURLHelper", YES, "smsGetLoginURL", "bd4orig_smsGetLoginURL",
+    b4_installExact("SAPIURLHelper", YES, "smsGetLoginURL", "bd5orig_smsGetLoginURL",
         (IMP)b4_smsGetLoginURL, '@', "");
+
+    b4_installExact("SAPIDeviceInfoHelper", YES, "deviceModel", "bd5orig_deviceModel",
+        (IMP)b5_deviceModel, '@', "");
+    b4_installExact("SAPIDeviceInfoHelper", YES, "notAllowedGetDI:", "bd5orig_notAllowedGetDI:",
+        (IMP)b5_notAllowedGetDI, 'B', "Q");
+    b4_installExact("SAPIDeviceInfoHelper", YES, "plainDeviceInfoWithInterface:",
+        "bd5orig_plainDeviceInfoWithInterface:", (IMP)b5_plainDeviceInfo, '@', "@");
+    b4_installExact("SAPIDeviceInfoHelper", YES, "generateDeviceInfoWithPlainString:",
+        "bd5orig_generateDeviceInfoWithPlainString:", (IMP)b5_generateDeviceInfo, '@', "@");
+    b4_installExact("SAPIDeviceInfoHelper", YES, "deviceInfoStringWithInterface:",
+        "bd5orig_deviceInfoStringWithInterface:", (IMP)b5_deviceInfoString, '@', "@");
+    b4_installExact("SAPIDeviceInfoHelper", YES, "interfaceForLogin", "bd5orig_interfaceForLogin",
+        (IMP)b5_interfaceForLogin, '@', "");
+    b4_installExact("SAPIDeviceInfoHelper", YES, "deviceInfoForLogin", "bd5orig_deviceInfoForLogin",
+        (IMP)b5_deviceInfoForLogin, '@', "");
 }
 
 static void b4_imageAdded(const struct mach_header *header, intptr_t slide) {
@@ -559,22 +686,22 @@ static NSString *b4_mainExecutableUUID(void) {
     return @"unknown";
 }
 
-@interface BDDiag4Store : NSObject
+@interface BDDiag5Store : NSObject
 + (void)startCapture;
 + (void)stopCapture;
 + (void)exportReport;
 + (NSString *)buildReport;
 @end
 
-@interface BDDiag4Window : UIWindow @end
-@implementation BDDiag4Window
+@interface BDDiag5Window : UIWindow @end
+@implementation BDDiag5Window
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *hit = [super hitTest:point withEvent:event];
     return (hit == self || hit == self.rootViewController.view) ? nil : hit;
 }
 @end
 
-@implementation BDDiag4Store
+@implementation BDDiag5Store
 + (void)startCapture {
     dispatch_async(dispatch_get_main_queue(), ^{
         b4_installAll();
@@ -624,7 +751,7 @@ static NSString *b4_mainExecutableUUID(void) {
 
     NSBundle *bundle = NSBundle.mainBundle;
     NSMutableString *out = [NSMutableString string];
-    [out appendString:@"BDDiag4 百度极速版短信登录请求定点只读探针报告\n"];
+    [out appendString:@"BDDiag5 百度极速版登录 DI 型号定点只读探针报告\n"];
     [out appendFormat:@"生成时间: %@\n", [NSDate date]];
     [out appendFormat:@"Bundle ID: %@\n", bundle.bundleIdentifier ?: @""];
     [out appendFormat:@"App 版本: %@ (build %@)\n",
@@ -634,7 +761,7 @@ static NSString *b4_mainExecutableUUID(void) {
     [out appendFormat:@"已安装精确 Hook: %lu | 采集事件: %lu | 事件封顶: %@\n",
         (unsigned long)g_b4Installed.count, (unsigned long)events.count,
         atomic_load_explicit(&g_b4EventCapReached, memory_order_acquire) ? @"是" : @"否"];
-    [out appendString:@"隐私说明: 手机号/验证码/captcha/Cookie/BDUSS/token/签名/设备ID均不记录明文。\n\n"];
+    [out appendString:@"隐私说明: 手机号/验证码/captcha/Cookie/BDUSS/token/签名/设备ID和 DI 明文均不记录。\n\n"];
     [out appendString:@"========== Hook 安装结果 ==========\n"];
     for (NSString *note in installNotes) [out appendFormat:@"%@\n", note];
     [out appendString:@"\n========== 采集事件（按时间顺序） ==========\n"];
@@ -660,7 +787,7 @@ static NSString *b4_mainExecutableUUID(void) {
         NSDateFormatter *formatter = [NSDateFormatter new];
         formatter.dateFormat = @"yyyy-MM-dd_HH_mm_ss_ZZZ";
         NSString *path = [docs stringByAppendingPathComponent:
-            [NSString stringWithFormat:@"BDDiag4_log_%@.txt", [formatter stringFromDate:[NSDate date]]]];
+            [NSString stringWithFormat:@"BDDiag5_log_%@.txt", [formatter stringFromDate:[NSDate date]]]];
         NSError *error = nil;
         [report writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:&error];
 
@@ -682,7 +809,7 @@ static NSString *b4_mainExecutableUUID(void) {
 }
 @end
 
-static BDDiag4Window *g_b4Window = nil;
+static BDDiag5Window *g_b4Window = nil;
 static int g_b4FloatTries = 0;
 
 @interface UIView (BD4Drag)
@@ -712,7 +839,7 @@ static void b4_float(void) {
         }
         t_b4Suppress++;
         @try {
-            BDDiag4Window *window = [[BDDiag4Window alloc] initWithWindowScene:windowScene];
+            BDDiag5Window *window = [[BDDiag5Window alloc] initWithWindowScene:windowScene];
             window.frame = UIScreen.mainScreen.bounds;
             window.windowLevel = UIWindowLevelAlert + 100;
             UIViewController *controller = [UIViewController new];
@@ -725,7 +852,7 @@ static void b4_float(void) {
             UILabel *status = [[UILabel alloc] initWithFrame:CGRectMake(8, 6, 162, 20)];
             status.textColor = UIColor.whiteColor;
             status.font = [UIFont systemFontOfSize:11];
-            status.text = [NSString stringWithFormat:@"BDDiag4 待采集 已挂%lu", (unsigned long)g_b4Installed.count];
+            status.text = [NSString stringWithFormat:@"BDDiag5 待采集 已挂%lu", (unsigned long)g_b4Installed.count];
             g_b4StatusLabel = status;
             [panel addSubview:status];
 
@@ -736,7 +863,7 @@ static void b4_float(void) {
             [start setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
             start.titleLabel.font = [UIFont boldSystemFontOfSize:13];
             start.layer.cornerRadius = 7;
-            [start addTarget:BDDiag4Store.class action:@selector(startCapture) forControlEvents:UIControlEventTouchUpInside];
+            [start addTarget:BDDiag5Store.class action:@selector(startCapture) forControlEvents:UIControlEventTouchUpInside];
 
             UIButton *export = [UIButton buttonWithType:UIButtonTypeSystem];
             export.frame = CGRectMake(92, 30, 78, 34);
@@ -745,7 +872,7 @@ static void b4_float(void) {
             [export setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
             export.titleLabel.font = [UIFont boldSystemFontOfSize:13];
             export.layer.cornerRadius = 7;
-            [export addTarget:BDDiag4Store.class action:@selector(exportReport) forControlEvents:UIControlEventTouchUpInside];
+            [export addTarget:BDDiag5Store.class action:@selector(exportReport) forControlEvents:UIControlEventTouchUpInside];
 
             UILabel *tip = [[UILabel alloc] initWithFrame:CGRectMake(8, 68, 162, 34)];
             tip.textColor = [[UIColor whiteColor] colorWithAlphaComponent:0.82];
@@ -763,7 +890,7 @@ static void b4_float(void) {
     });
 }
 
-__attribute__((constructor)) static void bddiag4_entry(void) {
+__attribute__((constructor)) static void bddiag5_entry(void) {
     @autoreleasepool {
         NSBundle *bundle = NSBundle.mainBundle;
         NSString *bundleID = bundle.bundleIdentifier ?: @"";
@@ -772,7 +899,7 @@ __attribute__((constructor)) static void bddiag4_entry(void) {
 
         Dl_info info;
         memset(&info, 0, sizeof(info));
-        if (dladdr((void *)&bddiag4_entry, &info) && info.dli_fbase) {
+        if (dladdr((void *)&bddiag5_entry, &info) && info.dli_fbase) {
             const struct mach_header_64 *header = (const struct mach_header_64 *)info.dli_fbase;
             uintptr_t base = (uintptr_t)info.dli_fbase;
             const struct load_command *command = (const struct load_command *)((const uint8_t *)header + sizeof(*header));
