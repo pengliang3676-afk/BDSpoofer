@@ -435,6 +435,10 @@ static BOOL saveConfigValues(NSDictionary *values) {
 
 #pragma mark - 1.7.1 只读诊断计数
 
+// 奖励页会话探针只在已有 Hook 命中时增加原子计数，不修改任何返回值。
+static volatile int g_rewardProbeActive = 0;
+static NSTimeInterval g_rewardProbeStartedAt = 0;
+
 typedef NS_ENUM(int, BDSDiagState) {
     BDSDiagStateNever = 0,
     BDSDiagStatePassed = 1,
@@ -448,6 +452,11 @@ typedef struct {
     volatile uint64_t changed;
     volatile uint64_t blocked;
     volatile int lastState;
+    volatile uint64_t rewardHits;
+    volatile uint64_t rewardPassed;
+    volatile uint64_t rewardChanged;
+    volatile uint64_t rewardBlocked;
+    volatile int rewardLastState;
 } BDSDiagCounter;
 
 static BDSDiagCounter g_diagUIDevice;
@@ -490,6 +499,17 @@ static BDSDiagCounter g_diagBaiduTargeted;   // v1.9.0 百度定向指纹
         __atomic_fetch_add(&(counter).changed, 1, __ATOMIC_RELAXED); \
     } \
     __atomic_store_n(&(counter).lastState, (int)(state), __ATOMIC_RELAXED); \
+    if (BDS_ATOMIC_GET(g_rewardProbeActive)) { \
+        __atomic_fetch_add(&(counter).rewardHits, 1, __ATOMIC_RELAXED); \
+        if ((state) == BDSDiagStatePassed) { \
+            __atomic_fetch_add(&(counter).rewardPassed, 1, __ATOMIC_RELAXED); \
+        } else if ((state) == BDSDiagStateBlocked) { \
+            __atomic_fetch_add(&(counter).rewardBlocked, 1, __ATOMIC_RELAXED); \
+        } else { \
+            __atomic_fetch_add(&(counter).rewardChanged, 1, __ATOMIC_RELAXED); \
+        } \
+        __atomic_store_n(&(counter).rewardLastState, (int)(state), __ATOMIC_RELAXED); \
+    } \
 } while (0)
 
 static uint64_t bds_diag_load64(volatile uint64_t *value) {
@@ -508,22 +528,71 @@ static void bds_diag_reset_counter(BDSDiagCounter *counter) {
     __atomic_store_n(&counter->lastState, BDSDiagStateNever, __ATOMIC_RELAXED);
 }
 
+static BDSDiagCounter * const g_allDiagCounters[] = {
+    &g_diagUIDevice, &g_diagIDFV, &g_diagAdvertising, &g_diagProcess,
+    &g_diagLocaleCarrier, &g_diagScreenStorage, &g_diagBaiduSDK,
+    &g_diagSysctl, &g_diagKeychain, &g_diagUserAgent, &g_diagDyld,
+    &g_diagCFiles, &g_diagObjCJailbreak, &g_diagBundles,
+    &g_diagWiFi, &g_diagLocalIP, &g_diagAppGroup, &g_diagPasteboard,
+    &g_diagBootTime, &g_diagCPU, &g_diagLocation, &g_diagProxy,
+    &g_diagStatfs, &g_diagDlopen, &g_diagUbiquity, &g_diagPrivacy,
+    &g_diagWebKitCookie, &g_diagBattery, &g_diagBaiduTargeted
+};
+
+static const size_t g_allDiagCounterCount = sizeof(g_allDiagCounters) / sizeof(g_allDiagCounters[0]);
+
 static void bds_diag_reset_all(void) {
-    BDSDiagCounter *counters[] = {
-        &g_diagUIDevice, &g_diagIDFV, &g_diagAdvertising, &g_diagProcess,
-        &g_diagLocaleCarrier, &g_diagScreenStorage, &g_diagBaiduSDK,
-        &g_diagSysctl, &g_diagKeychain, &g_diagUserAgent, &g_diagDyld,
-        &g_diagCFiles, &g_diagObjCJailbreak, &g_diagBundles,
-        &g_diagWiFi, &g_diagLocalIP, &g_diagAppGroup, &g_diagPasteboard,
-        &g_diagBootTime, &g_diagCPU, &g_diagLocation, &g_diagProxy,
-        &g_diagStatfs, &g_diagDlopen, &g_diagUbiquity, &g_diagPrivacy,
-        &g_diagWebKitCookie,
-        &g_diagBattery,
-        &g_diagBaiduTargeted
-    };
-    for (size_t i = 0; i < sizeof(counters) / sizeof(counters[0]); i++) {
-        bds_diag_reset_counter(counters[i]);
+    for (size_t i = 0; i < g_allDiagCounterCount; i++) {
+        bds_diag_reset_counter(g_allDiagCounters[i]);
     }
+}
+
+static void bds_reward_reset_counter(BDSDiagCounter *counter) {
+    __atomic_store_n(&counter->rewardHits, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&counter->rewardPassed, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&counter->rewardChanged, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&counter->rewardBlocked, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&counter->rewardLastState, BDSDiagStateNever, __ATOMIC_RELAXED);
+}
+
+typedef NS_ENUM(NSUInteger, BDSRewardTargetSelector) {
+    BDSRewardTargetScreenResolution = 0,
+    BDSRewardTargetBPResolution,
+    BDSRewardTargetTalosPlatform,
+    BDSRewardTargetTalosBasic,
+    BDSRewardTargetBBASMConstant,
+    BDSRewardTargetBBASMSystem,
+    BDSRewardTargetBDPSystemVersion,
+    BDSRewardTargetBDPIDFV,
+    BDSRewardTargetDMSystemVersion,
+    BDSRewardTargetUADeviceInfo,
+    BDSRewardTargetUACompose,
+    BDSRewardTargetPushGeneral,
+    BDSRewardTargetPushBody,
+    BDSRewardTargetSelectorCount
+};
+
+static volatile uint64_t g_rewardTargetHits[BDSRewardTargetSelectorCount];
+
+static inline void bds_reward_target_hit(BDSRewardTargetSelector selector) {
+    if (selector >= BDSRewardTargetSelectorCount || !BDS_ATOMIC_GET(g_rewardProbeActive)) return;
+    __atomic_fetch_add(&g_rewardTargetHits[selector], 1, __ATOMIC_RELAXED);
+}
+
+static void bds_reward_probe_start(void) {
+    BDS_ATOMIC_SET(g_rewardProbeActive, 0);
+    for (size_t i = 0; i < g_allDiagCounterCount; i++) {
+        bds_reward_reset_counter(g_allDiagCounters[i]);
+    }
+    for (NSUInteger i = 0; i < BDSRewardTargetSelectorCount; i++) {
+        __atomic_store_n(&g_rewardTargetHits[i], 0, __ATOMIC_RELAXED);
+    }
+    g_rewardProbeStartedAt = NSDate.date.timeIntervalSince1970;
+    BDS_ATOMIC_SET(g_rewardProbeActive, 1);
+}
+
+static void bds_reward_probe_stop(void) {
+    BDS_ATOMIC_SET(g_rewardProbeActive, 0);
 }
 
 #pragma mark - Hook 工具
@@ -1393,6 +1462,7 @@ static volatile int g_tgBlocked = 0;
 // ---- trampoline（这里的 BDS_DIAG_RECORD 才代表 App 真实读取了一次）----
 // BaiduMobStatDeviceInfo +getScreenResolution -> CGSize 物理像素 {nativeW, nativeH}
 static CGSize tg_getScreenResolution(id self, SEL _cmd) {
+    bds_reward_target_hit(BDSRewardTargetScreenResolution);
     if (tg_o_getScreenResolution) {
         CGSize r = ((CGSize (*)(id, SEL))tg_o_getScreenResolution)(self, _cmd);
         BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
@@ -1404,12 +1474,15 @@ static CGSize tg_getScreenResolution(id self, SEL _cmd) {
 }
 // UIDevice +bp_resolution -> NSString 像素 "高_宽"
 static NSString *tg_bp_resolution(id self, SEL _cmd) {
+    bds_reward_target_hit(BDSRewardTargetBPResolution);
     if (tg_o_bp_resolution) ((id (*)(id, SEL))tg_o_bp_resolution)(self, _cmd);
     BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
     return [NSString stringWithFormat:@"%ld_%ld", (long)tg_px_h(), (long)tg_px_w()];
 }
 // BDPTalosBaseInfo +platformInfo / +getBasicPlatformInfo
 static id tg_talos(id self, SEL _cmd) {
+    bds_reward_target_hit([NSStringFromSelector(_cmd) isEqualToString:@"getBasicPlatformInfo"]
+                              ? BDSRewardTargetTalosBasic : BDSRewardTargetTalosPlatform);
     IMP o = [NSStringFromSelector(_cmd) isEqualToString:@"getBasicPlatformInfo"] ? tg_o_talos_basic : tg_o_talos_platform;
     id orig = o ? ((id (*)(id, SEL))o)(self, _cmd) : nil;
     BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
@@ -1417,24 +1490,28 @@ static id tg_talos(id self, SEL _cmd) {
 }
 // BBASMPlugin +getConstantSystemInfoDictionary
 static id tg_bbasm_const(id self, SEL _cmd) {
+    bds_reward_target_hit(BDSRewardTargetBBASMConstant);
     id orig = tg_o_bbasm_const ? ((id (*)(id, SEL))tg_o_bbasm_const)(self, _cmd) : nil;
     BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
     return tg_rewrite_bbasm(orig);
 }
 // BBASMPlugin +getSystemInfoWithAppID:cardID:（两对象参数）
 static id tg_bbasm_sys2(id self, SEL _cmd, id a, id b) {
+    bds_reward_target_hit(BDSRewardTargetBBASMSystem);
     id orig = tg_o_bbasm_sys ? ((id (*)(id, SEL, id, id))tg_o_bbasm_sys)(self, _cmd, a, b) : nil;
     BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
     return tg_rewrite_bbasm(orig);
 }
 // BDPDeviceUtility +getSystemVersion
 static id tg_bdp_sysver(id self, SEL _cmd) {
+    bds_reward_target_hit(BDSRewardTargetBDPSystemVersion);
     if (tg_o_bdp_sysver) ((id (*)(id, SEL))tg_o_bdp_sysver)(self, _cmd);
     BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
     return tg_ios_version();
 }
 // BDPDeviceUtility +getIDFV：只在能确认原类型时替换；原方法返回 nil 时保持 nil，绝不凭空造对象
 static id tg_bdp_idfv(id self, SEL _cmd) {
+    bds_reward_target_hit(BDSRewardTargetBDPIDFV);
     id orig = tg_o_bdp_idfv ? ((id (*)(id, SEL))tg_o_bdp_idfv)(self, _cmd) : nil;
     NSString *u = cfgStr(@"idfv", @"");
     if ([orig isKindOfClass:NSUUID.class]) {
@@ -1450,12 +1527,14 @@ static id tg_bdp_idfv(id self, SEL _cmd) {
 }
 // DMDeviceInfoWrapper +systemVersion（补上公共 UIDevice hook 漏掉的内部读取路径）
 static id tg_dm_sysver(id self, SEL _cmd) {
+    bds_reward_target_hit(BDSRewardTargetDMSystemVersion);
     if (tg_o_dm_sysver) ((id (*)(id, SEL))tg_o_dm_sysver)(self, _cmd);
     BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
     return tg_ios_version();
 }
 // BDPUserAgent -useagent_getDeviceInfo（0 参；字符串整体改，字典只改白名单键）
 static id tg_ua_get(id self, SEL _cmd) {
+    bds_reward_target_hit(BDSRewardTargetUADeviceInfo);
     id o = tg_o_ua_get ? ((id (*)(id, SEL))tg_o_ua_get)(self, _cmd) : nil;
     if ([o isKindOfClass:NSString.class]) {
         BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
@@ -1478,6 +1557,7 @@ static id tg_ua_get(id self, SEL _cmd) {
 }
 // BDPUserAgent -composeUserAgentParameterWithOrigin:shouldEncodeURI:（对象 + BOOL）
 static id tg_ua_compose(id self, SEL _cmd, id origin, BOOL encode) {
+    bds_reward_target_hit(BDSRewardTargetUACompose);
     id o = tg_o_ua_compose ? ((id (*)(id, SEL, id, BOOL))tg_o_ua_compose)(self, _cmd, origin, encode) : nil;
     if ([o isKindOfClass:NSString.class]) {
         BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStateChanged);
@@ -1487,6 +1567,8 @@ static id tg_ua_compose(id self, SEL _cmd, id origin, BOOL encode) {
 }
 // BPushRequest -generalParamString / BPushBindRequest -HttpBody
 static id tg_push(id self, SEL _cmd) {
+    bds_reward_target_hit([NSStringFromSelector(_cmd) isEqualToString:@"HttpBody"]
+                              ? BDSRewardTargetPushBody : BDSRewardTargetPushGeneral);
     IMP o = [NSStringFromSelector(_cmd) isEqualToString:@"HttpBody"] ? tg_o_push_body : tg_o_push_general;
     id orig = o ? ((id (*)(id, SEL))o)(self, _cmd) : nil;
     if ([orig isKindOfClass:NSString.class]) {
@@ -2672,6 +2754,113 @@ static void BDSAppendDiagLine(NSMutableString *text, NSString *name, BDSDiagCoun
     [text appendFormat:@"\n%@：读取 %llu 次 / 返回原值 %llu 次 / 返回修改值 %llu 次 / 拦截 %llu 次 / 最近：%@",
         name, (unsigned long long)hits, (unsigned long long)passed,
         (unsigned long long)changed, (unsigned long long)blocked, BDSDiagStateText(state)];
+}
+
+static void BDSAppendRewardLine(NSMutableString *text, NSString *name, BDSDiagCounter *counter) {
+    uint64_t hits = __atomic_load_n(&counter->rewardHits, __ATOMIC_RELAXED);
+    if (!hits) return;
+    uint64_t passed = __atomic_load_n(&counter->rewardPassed, __ATOMIC_RELAXED);
+    uint64_t changed = __atomic_load_n(&counter->rewardChanged, __ATOMIC_RELAXED);
+    uint64_t blocked = __atomic_load_n(&counter->rewardBlocked, __ATOMIC_RELAXED);
+    int state = __atomic_load_n(&counter->rewardLastState, __ATOMIC_RELAXED);
+    [text appendFormat:@"\n%@：调用 %llu 次 / 原值 %llu / 修改值 %llu / 拦截 %llu / 最近：%@",
+        name, (unsigned long long)hits, (unsigned long long)passed,
+        (unsigned long long)changed, (unsigned long long)blocked, BDSDiagStateText(state)];
+}
+
+static NSString *BDSRewardDateText(NSTimeInterval unixTime) {
+    if (unixTime <= 0) return @"未知";
+    NSDateFormatter *formatter = [NSDateFormatter new];
+    formatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss Z";
+    return [formatter stringFromDate:[NSDate dateWithTimeIntervalSince1970:unixTime]] ?: @"未知";
+}
+
+static NSString *BDSRewardProbeReport(void) {
+    NSTimeInterval endedAt = NSDate.date.timeIntervalSince1970;
+    NSTimeInterval startedAt = g_rewardProbeStartedAt;
+    NSMutableString *text = [NSMutableString stringWithFormat:
+        @"BDSpoofer 奖励页只读探针报告\n"
+         "开始：%@\n结束：%@\n时长：%.1f 秒\n"
+         "Bundle：%@\n容器标识：%@\n\n"
+         "--- 当前配置快照 ---\n"
+         "机型：%@ (%@ / %@)\n"
+         "系统：iOS %@ (%@)\n"
+         "屏幕：%@x%@ @%@x，物理 %@x%@\n"
+         "百度定向指纹：%@\n全局 UIScreen：%@\n"
+         "长期身份值：只记录调用，TXT 不输出原始 ID\n\n"
+         "--- 本次会话命中分类 ---",
+        BDSRewardDateText(startedAt), BDSRewardDateText(endedAt), MAX(0.0, endedAt - startedAt),
+        NSBundle.mainBundle.bundleIdentifier ?: @"",
+        cfgStr(@"managerContainerIdentifier", @"未记录"),
+        cfgStr(@"deviceProfileName", @""), cfgStr(@"hwMachine", @""), cfgStr(@"hwModel", @""),
+        cfgStr(@"systemVersion", @""), cfgStr(@"systemBuild", @""),
+        @(cfgInt(@"screenWidth", 0)), @(cfgInt(@"screenHeight", 0)), @(cfgInt(@"screenScale", 0)),
+        @(cfgInt(@"nativeScreenWidth", 0)), @(cfgInt(@"nativeScreenHeight", 0)),
+        BDSOnOff(cfgBool(@"spoofBaiduTargeted", NO)),
+        cfgBool(@"spoofScreen", NO) ? @"返回修改值" : @"保持真机布局"];
+
+    BDSAppendRewardLine(text, @"UIDevice 机型/名称/系统", &g_diagUIDevice);
+    BDSAppendRewardLine(text, @"IDFV", &g_diagIDFV);
+    BDSAppendRewardLine(text, @"IDFA", &g_diagAdvertising);
+    BDSAppendRewardLine(text, @"NSProcessInfo 系统/内存", &g_diagProcess);
+    BDSAppendRewardLine(text, @"语言/地区/运营商", &g_diagLocaleCarrier);
+    BDSAppendRewardLine(text, @"屏幕/磁盘", &g_diagScreenStorage);
+    BDSAppendRewardLine(text, @"百度 SDK 身份（CUID/UTDID/DeviceID）", &g_diagBaiduSDK);
+    BDSAppendRewardLine(text, @"百度定向指纹", &g_diagBaiduTargeted);
+    BDSAppendRewardLine(text, @"sysctlbyname 硬件/系统", &g_diagSysctl);
+    BDSAppendRewardLine(text, @"Keychain", &g_diagKeychain);
+    BDSAppendRewardLine(text, @"User-Agent", &g_diagUserAgent);
+    BDSAppendRewardLine(text, @"dyld 镜像名", &g_diagDyld);
+    BDSAppendRewardLine(text, @"C 文件查询", &g_diagCFiles);
+    BDSAppendRewardLine(text, @"ObjC 文件/URL 查询", &g_diagObjCJailbreak);
+    BDSAppendRewardLine(text, @"NSBundle 遍历", &g_diagBundles);
+    BDSAppendRewardLine(text, @"WiFi SSID/BSSID", &g_diagWiFi);
+    BDSAppendRewardLine(text, @"本地 IP", &g_diagLocalIP);
+    BDSAppendRewardLine(text, @"App Group", &g_diagAppGroup);
+    BDSAppendRewardLine(text, @"剪贴板", &g_diagPasteboard);
+    BDSAppendRewardLine(text, @"系统启动时间", &g_diagBootTime);
+    BDSAppendRewardLine(text, @"CPU 参数", &g_diagCPU);
+    BDSAppendRewardLine(text, @"定位", &g_diagLocation);
+    BDSAppendRewardLine(text, @"代理设置", &g_diagProxy);
+    BDSAppendRewardLine(text, @"磁盘剩余空间", &g_diagStatfs);
+    BDSAppendRewardLine(text, @"dlopen 反检测", &g_diagDlopen);
+    BDSAppendRewardLine(text, @"iCloud 容器", &g_diagUbiquity);
+    BDSAppendRewardLine(text, @"隐私权限", &g_diagPrivacy);
+    BDSAppendRewardLine(text, @"WebKit Cookie", &g_diagWebKitCookie);
+    BDSAppendRewardLine(text, @"电池电量", &g_diagBattery);
+
+    NSArray<NSString *> *targetNames = @[
+        @"BaiduMobStatDeviceInfo +getScreenResolution",
+        @"UIDevice +bp_resolution",
+        @"BDPTalosBaseInfo +platformInfo",
+        @"BDPTalosBaseInfo +getBasicPlatformInfo",
+        @"BBASMPlugin +getConstantSystemInfoDictionary",
+        @"BBASMPlugin +getSystemInfoWithAppID:cardID:",
+        @"BDPDeviceUtility +getSystemVersion",
+        @"BDPDeviceUtility +getIDFV",
+        @"DMDeviceInfoWrapper +systemVersion",
+        @"BDPUserAgent -useagent_getDeviceInfo",
+        @"BDPUserAgent -composeUserAgentParameterWithOrigin:shouldEncodeURI:",
+        @"BPushRequest -generalParamString",
+        @"BPushBindRequest -HttpBody"
+    ];
+    [text appendString:@"\n\n--- 百度定向 selector 明细 ---"];
+    BOOL anyTarget = NO;
+    for (NSUInteger i = 0; i < BDSRewardTargetSelectorCount; i++) {
+        uint64_t hits = __atomic_load_n(&g_rewardTargetHits[i], __ATOMIC_RELAXED);
+        if (!hits) continue;
+        anyTarget = YES;
+        [text appendFormat:@"\n%@：%llu 次", targetNames[i], (unsigned long long)hits];
+    }
+    if (!anyTarget) [text appendString:@"\n本次会话未命中已定位的百度定向 selector。"];
+
+    [text appendString:@"\n\n--- 说明 ---\n"
+        "1. 本报告只表示会话期间 App 调用过相应接口。\n"
+        "2. 不代表这些值已经被写入本次奖励请求或上传服务器。\n"
+        "3. 探针不保存完整 ID、Token、Cookie 或账号内容。\n"
+        "4. 建议另录一份普通首页对照报告，排除后台公共调用。"];
+    return text;
 }
 
 static NSString *BDSRandomHex32(BOOL uppercase) {
@@ -3966,7 +4155,9 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
 }
 
 - (void)shareDiagnosticText:(NSString *)text {
-    NSString *fileName = [NSString stringWithFormat:@"BDSpoofer_diagnostics_%lld.txt",
+    NSString *prefix = [text hasPrefix:@"BDSpoofer 奖励页只读探针报告"]
+        ? @"BDSpoofer_reward_probe" : @"BDSpoofer_diagnostics";
+    NSString *fileName = [NSString stringWithFormat:@"%@_%lld.txt", prefix,
         (long long)NSDate.date.timeIntervalSince1970];
     NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:fileName];
     NSError *error = nil;
@@ -3993,8 +4184,9 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
 - (void)showSelfTest {
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
+    NSString *probeState = BDS_ATOMIC_GET(g_rewardProbeActive) ? @"奖励页探针：记录中" : @"奖励页探针：未记录";
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"诊断与自检"
-                                                                   message:@"API 返回值与 Hook 命中统计已分开显示。"
+                                                                   message:[NSString stringWithFormat:@"API 返回值与 Hook 命中统计已分开显示。\n%@\n点开始后直接进入奖励页，约 30 秒后回来结束并分享。", probeState]
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     [sheet addAction:[UIAlertAction actionWithTitle:@"公开 API 返回值  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
@@ -4011,6 +4203,21 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
         bds_diag_reset_all();
         [self presentMessage:@"统计已清零。现在正常操作百度极速版；出现问题后再打开“Hook 命中统计”。"
                         title:@"诊断已开始"];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"开始奖励页探针（清零）" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        bds_reward_probe_start();
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"结束奖励页探针并分享 TXT" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        if (!BDS_ATOMIC_GET(g_rewardProbeActive)) {
+            [self presentMessage:@"当前没有正在记录的奖励页会话。请先点“开始奖励页探针”。"
+                            title:@"探针未开始"];
+            return;
+        }
+        bds_reward_probe_stop();
+        NSString *report = BDSRewardProbeReport();
+        [self shareDiagnosticText:report];
     }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
         (void)action;
