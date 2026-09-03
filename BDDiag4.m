@@ -265,6 +265,11 @@ static void b4_record(NSString *type, NSString *source, NSString *detail) {
     b4_updateStatusAsync();
 }
 
+static void b4_recordNoThrow(NSString *type, NSString *source, NSString *detail) {
+    @try { b4_record(type, source, detail); }
+    @catch (__unused NSException *e) { }
+}
+
 static NSString *b4_source(id self, SEL command) {
     return [NSString stringWithFormat:@"%c[%@ %@]", object_isClass(self) ? '+' : '-',
             NSStringFromClass(object_isClass(self) ? self : [self class]), NSStringFromSelector(command)];
@@ -286,11 +291,13 @@ static void b4_sendSms(id self, SEL command, id country, id phone, id captcha, i
                        id success, id failure) {
     BOOL active = b4_isCapturing();
     if (active) {
-        NSString *detail = [NSString stringWithFormat:@"country=%@; %@; %@; extraParams=%@; callbacks=%@/%@",
-                            b4_deviceScalar(country), b4_privateArgument(@"phone", phone),
-                            b4_privateArgument(@"captcha", captcha), b4_dictionarySummary(extra, 0),
-                            b4_shape(success), b4_shape(failure)];
-        b4_record(@"FLOW_SEND_SMS", b4_source(self, command), detail);
+        @try {
+            NSString *detail = [NSString stringWithFormat:@"country=%@; %@; %@; extraParams=%@; callbacks=%@/%@",
+                                b4_deviceScalar(country), b4_privateArgument(@"phone", phone),
+                                b4_privateArgument(@"captcha", captcha), b4_dictionarySummary(extra, 0),
+                                b4_shape(success), b4_shape(failure)];
+            b4_recordNoThrow(@"FLOW_SEND_SMS", b4_source(self, command), detail);
+        } @catch (__unused NSException *e) { }
         t_b4LoginDepth++;
     }
     @try {
@@ -304,12 +311,14 @@ static void b4_smsLogin(id self, SEL command, id country, id phone, id smsCode, 
                         id extra, id success, id verify, id failure) {
     BOOL active = b4_isCapturing();
     if (active) {
-        NSString *detail = [NSString stringWithFormat:@"country=%@; %@; %@; %@; extraParams=%@; callbacks=%@/%@/%@",
-                            b4_deviceScalar(country), b4_privateArgument(@"phone", phone),
-                            b4_privateArgument(@"smsCode", smsCode),
-                            b4_privateArgument(@"encryptedId", encryptedId),
-                            b4_dictionarySummary(extra, 0), b4_shape(success), b4_shape(verify), b4_shape(failure)];
-        b4_record(@"FLOW_SMS_LOGIN", b4_source(self, command), detail);
+        @try {
+            NSString *detail = [NSString stringWithFormat:@"country=%@; %@; %@; %@; extraParams=%@; callbacks=%@/%@/%@",
+                                b4_deviceScalar(country), b4_privateArgument(@"phone", phone),
+                                b4_privateArgument(@"smsCode", smsCode),
+                                b4_privateArgument(@"encryptedId", encryptedId),
+                                b4_dictionarySummary(extra, 0), b4_shape(success), b4_shape(verify), b4_shape(failure)];
+            b4_recordNoThrow(@"FLOW_SMS_LOGIN", b4_source(self, command), detail);
+        } @catch (__unused NSException *e) { }
         t_b4LoginDepth++;
     }
     @try {
@@ -322,10 +331,12 @@ static void b4_smsLogin(id self, SEL command, id country, id phone, id smsCode, 
 static void b4_getDpass(id self, SEL command, id mobile, id captcha, id extra, id success, id failure) {
     BOOL active = b4_isCapturing();
     if (active) {
-        b4_record(@"FLOW_GET_DPASS", b4_source(self, command),
-                  [NSString stringWithFormat:@"%@; %@; extraParams=%@; callbacks=%@/%@",
-                   b4_privateArgument(@"mobile", mobile), b4_privateArgument(@"captcha", captcha),
-                   b4_dictionarySummary(extra, 0), b4_shape(success), b4_shape(failure)]);
+        @try {
+            b4_recordNoThrow(@"FLOW_GET_DPASS", b4_source(self, command),
+                [NSString stringWithFormat:@"%@; %@; extraParams=%@; callbacks=%@/%@",
+                 b4_privateArgument(@"mobile", mobile), b4_privateArgument(@"captcha", captcha),
+                 b4_dictionarySummary(extra, 0), b4_shape(success), b4_shape(failure)]);
+        } @catch (__unused NSException *e) { }
         t_b4LoginDepth++;
     }
     @try {
@@ -338,10 +349,12 @@ static void b4_getDpass(id self, SEL command, id mobile, id captcha, id extra, i
 static void b4_loginWithMobile(id self, SEL command, id mobile, id dpass, id extra, id success, id failure) {
     BOOL active = b4_isCapturing();
     if (active) {
-        b4_record(@"FLOW_LOGIN_MOBILE", b4_source(self, command),
-                  [NSString stringWithFormat:@"%@; %@; extraParams=%@; callbacks=%@/%@",
-                   b4_privateArgument(@"mobile", mobile), b4_privateArgument(@"dpass", dpass),
-                   b4_dictionarySummary(extra, 0), b4_shape(success), b4_shape(failure)]);
+        @try {
+            b4_recordNoThrow(@"FLOW_LOGIN_MOBILE", b4_source(self, command),
+                [NSString stringWithFormat:@"%@; %@; extraParams=%@; callbacks=%@/%@",
+                 b4_privateArgument(@"mobile", mobile), b4_privateArgument(@"dpass", dpass),
+                 b4_dictionarySummary(extra, 0), b4_shape(success), b4_shape(failure)]);
+        } @catch (__unused NSException *e) { }
         t_b4LoginDepth++;
     }
     @try {
@@ -354,11 +367,12 @@ static void b4_loginWithMobile(id self, SEL command, id mobile, id dpass, id ext
 static id b4_baseParams(id self, SEL command, id interfaceName) {
     SEL alias = sel_registerName("bd4orig_baseParamsForSMSLoginWithInterface:");
     id result = ((id (*)(id, SEL, id))objc_msgSend)(self, alias, interfaceName);
-    if (b4_isCapturing())
-        b4_record(@"SMS_BASE_PARAMS", b4_source(self, command),
-                  [NSString stringWithFormat:@"interface=%@; result=%@",
-                   [interfaceName isKindOfClass:NSString.class] ? b4_safeShortString(interfaceName) : b4_shape(interfaceName),
-                   b4_dictionarySummary(result, 0)]);
+    if (b4_isCapturing()) @try {
+        b4_recordNoThrow(@"SMS_BASE_PARAMS", b4_source(self, command),
+            [NSString stringWithFormat:@"interface=%@; result=%@",
+             [interfaceName isKindOfClass:NSString.class] ? b4_safeShortString(interfaceName) : b4_shape(interfaceName),
+             b4_dictionarySummary(result, 0)]);
+    } @catch (__unused NSException *e) { }
     return result;
 }
 
@@ -372,13 +386,15 @@ static id b4_request3(id self, SEL command, id method, id path, id parameters) {
             before = [NSString stringWithFormat:@"method=%@; path=%@; parameters=%@",
                       [method isKindOfClass:NSString.class] ? b4_safeShortString(method) : b4_shape(method),
                       b4_urlSummary(path), b4_dictionarySummary(parameters, 0)];
-        } @finally { t_b4Suppress--; }
+        } @catch (__unused NSException *e) { before = @"<pre-summary-failed>"; }
+          @finally { t_b4Suppress--; }
     }
     SEL alias = sel_registerName("bd4orig_requestWithMethod:path:parameters:");
     id result = ((id (*)(id, SEL, id, id, id))objc_msgSend)(self, alias, method, path, parameters);
     if (relevant)
-        b4_record(@"REQUEST_PRE_ENCODE", b4_source(self, command),
-                  [NSString stringWithFormat:@"%@; builtRequest={%@}", before ?: @"", b4_requestSummary(result)]);
+        @try { b4_recordNoThrow(@"REQUEST_PRE_ENCODE", b4_source(self, command),
+            [NSString stringWithFormat:@"%@; builtRequest={%@}", before ?: @"", b4_requestSummary(result)]); }
+        @catch (__unused NSException *e) { }
     return result;
 }
 
@@ -391,28 +407,34 @@ static id b4_request4(id self, SEL command, id method, id path, double timeout, 
             before = [NSString stringWithFormat:@"method=%@; path=%@; timeout=%.2f; parameters=%@",
                       [method isKindOfClass:NSString.class] ? b4_safeShortString(method) : b4_shape(method),
                       b4_urlSummary(path), timeout, b4_dictionarySummary(parameters, 0)];
-        } @finally { t_b4Suppress--; }
+        } @catch (__unused NSException *e) { before = @"<pre-summary-failed>"; }
+          @finally { t_b4Suppress--; }
     }
     SEL alias = sel_registerName("bd4orig_requestWithMethod:path:timeout:parameters:");
     id result = ((id (*)(id, SEL, id, id, double, id))objc_msgSend)
         (self, alias, method, path, timeout, parameters);
     if (relevant)
-        b4_record(@"REQUEST_PRE_ENCODE", b4_source(self, command),
-                  [NSString stringWithFormat:@"%@; builtRequest={%@}", before ?: @"", b4_requestSummary(result)]);
+        @try { b4_recordNoThrow(@"REQUEST_PRE_ENCODE", b4_source(self, command),
+            [NSString stringWithFormat:@"%@; builtRequest={%@}", before ?: @"", b4_requestSummary(result)]); }
+        @catch (__unused NSException *e) { }
     return result;
 }
 
 static id b4_smsLoginURL(id self, SEL command) {
     SEL alias = sel_registerName("bd4orig_smsLoginURLString");
     id result = ((id (*)(id, SEL))objc_msgSend)(self, alias);
-    if (b4_isCapturing()) b4_record(@"SMS_URL", b4_source(self, command), b4_urlSummary(result));
+    if (b4_isCapturing()) @try {
+        b4_recordNoThrow(@"SMS_URL", b4_source(self, command), b4_urlSummary(result));
+    } @catch (__unused NSException *e) { }
     return result;
 }
 
 static id b4_smsGetLoginURL(id self, SEL command) {
     SEL alias = sel_registerName("bd4orig_smsGetLoginURL");
     id result = ((id (*)(id, SEL))objc_msgSend)(self, alias);
-    if (b4_isCapturing()) b4_record(@"SMS_URL", b4_source(self, command), b4_urlSummary(result));
+    if (b4_isCapturing()) @try {
+        b4_recordNoThrow(@"SMS_URL", b4_source(self, command), b4_urlSummary(result));
+    } @catch (__unused NSException *e) { }
     return result;
 }
 
