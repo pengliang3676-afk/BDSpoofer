@@ -288,7 +288,7 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
         @"spoofPrivacyPermissions": @YES,
         @"spoofBattery": @YES,
         @"managerGeneratedAt": @([[NSDate date] timeIntervalSince1970]),
-        @"managerProfileVersion": @105,
+        @"managerProfileVersion": @107,
         @"managerRandomMode": mode == BDSRandomModeTargeted ? @"targeted" : @"basic",
     }];
 
@@ -330,15 +330,35 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
         for (NSString *key in BDSTargetedKeys()) config[key] = @([selectedTargetedKeys containsObject:key]);
         config[@"targetedGeneratedAt"] = @([[NSDate date] timeIntervalSince1970]);
         if ([selectedTargetedKeys containsObject:@"spoofBaiduTargetedSystem"]) {
+            // 系统组同时更新公共系统出口和百度定向出口，避免返回真机/旧基础版本。
+            config[@"systemVersion"] = system[@"version"];
+            config[@"systemBuild"] = system[@"build"];
+            config[@"kernOSVersion"] = system[@"build"];
             config[@"targetedSystemVersion"] = system[@"version"];
             config[@"targetedSystemBuild"] = system[@"build"];
         }
         if ([selectedTargetedKeys containsObject:@"spoofBaiduTargetedModel"]) {
+            NSArray<NSNumber *> *disks = device[@"disks"];
+            NSNumber *disk = ([disks isKindOfClass:NSArray.class] && disks.count)
+                ? disks[arc4random_uniform((uint32_t)disks.count)] : @64;
+            config[@"deviceProfileName"] = device[@"name"];
+            config[@"deviceModel"] = @"iPhone";
+            config[@"marketingModel"] = @"iPhone";
+            config[@"hwMachine"] = device[@"machine"];
+            config[@"hwModel"] = device[@"model"];
+            config[@"memorySize"] = device[@"memory"];
+            config[@"diskSize"] = disk;
             config[@"targetedDeviceProfileName"] = device[@"name"];
             config[@"targetedHwMachine"] = device[@"machine"];
             config[@"targetedHwModel"] = device[@"model"];
         }
         if ([selectedTargetedKeys containsObject:@"spoofBaiduTargetedScreen"]) {
+            // 保存匹配资料，但 spoofScreen 仍保持 NO，不改变真机 UIKit 布局。
+            config[@"screenWidth"] = device[@"width"];
+            config[@"screenHeight"] = device[@"height"];
+            config[@"screenScale"] = device[@"scale"];
+            config[@"nativeScreenWidth"] = device[@"nativeWidth"];
+            config[@"nativeScreenHeight"] = device[@"nativeHeight"];
             config[@"targetedScreenWidth"] = device[@"width"];
             config[@"targetedScreenHeight"] = device[@"height"];
             config[@"targetedScreenScale"] = device[@"scale"];
@@ -366,7 +386,7 @@ static NSMutableDictionary *BDSCreateRandomConfig(NSDictionary *existing,
     if (mode == BDSRandomModeAdvanced) {
         NSMutableDictionary *config = BDSMergedConfig(existing);
         config[@"managerGeneratedAt"] = @([[NSDate date] timeIntervalSince1970]);
-        config[@"managerProfileVersion"] = @105;
+        config[@"managerProfileVersion"] = @107;
         config[@"managerRandomMode"] = @"advanced";
         // 与插件“一键高级”一致：只更换五个长期身份值，所有参数和开关保持原状态。
         BDSSeedIdentityIfNeeded(config, YES);
@@ -544,7 +564,7 @@ static NSString *BDSTargetedResultDetail(NSDictionary *config, NSSet<NSString *>
     [header addSubview:label];
     self.tableView.tableHeaderView = header;
 
-    UIView *footer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 468)];
+    UIView *footer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 376)];
     UILabel *targetedLabel = [[UILabel alloc] initWithFrame:CGRectMake(18, 8, width - 36, 26)];
     targetedLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     targetedLabel.font = [UIFont boldSystemFontOfSize:15];
@@ -554,10 +574,21 @@ static NSString *BDSTargetedResultDetail(NSDictionary *config, NSSet<NSString *>
 
     NSMutableArray<UIButton *> *optionButtons = [NSMutableArray array];
     NSArray<NSString *> *names = BDSTargetedNames();
+    CGFloat optionGap = 10.0;
+    CGFloat optionWidth = floor((width - 36.0 - optionGap) / 2.0);
     for (NSUInteger i = 0; i < names.count; i++) {
         UIButton *option = [UIButton buttonWithType:UIButtonTypeSystem];
-        option.frame = CGRectMake(18, 38 + (CGFloat)i * 42, width - 36, 36);
-        option.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        if (i < 4) {
+            NSUInteger row = i / 2;
+            NSUInteger column = i % 2;
+            CGFloat x = 18.0 + (CGFloat)column * (optionWidth + optionGap);
+            option.frame = CGRectMake(x, 38.0 + (CGFloat)row * 42.0, optionWidth, 36.0);
+            option.autoresizingMask = column == 0
+                ? UIViewAutoresizingFlexibleRightMargin : UIViewAutoresizingFlexibleLeftMargin;
+        } else {
+            option.frame = CGRectMake(18.0, 122.0, width - 36.0, 36.0);
+            option.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        }
         option.tag = (NSInteger)i;
         option.layer.cornerRadius = 8;
         option.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
@@ -570,7 +601,7 @@ static NSString *BDSTargetedResultDetail(NSDictionary *config, NSSet<NSString *>
     [self refreshTargetedOptionButtons];
 
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
-    button.frame = CGRectMake(18, 260, width - 36, 52);
+    button.frame = CGRectMake(18, 176, width - 36, 52);
     button.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     button.layer.cornerRadius = 12;
     button.backgroundColor = UIColor.systemBlueColor;
@@ -584,7 +615,7 @@ static NSString *BDSTargetedResultDetail(NSDictionary *config, NSSet<NSString *>
     self.basicButton = button;
 
     UIButton *advancedButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    advancedButton.frame = CGRectMake(18, 324, width - 36, 52);
+    advancedButton.frame = CGRectMake(18, 240, width - 36, 52);
     advancedButton.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     advancedButton.layer.cornerRadius = 12;
     advancedButton.backgroundColor = UIColor.systemGreenColor;
@@ -598,7 +629,7 @@ static NSString *BDSTargetedResultDetail(NSDictionary *config, NSSet<NSString *>
     self.advancedButton = advancedButton;
 
     UIButton *targetedButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    targetedButton.frame = CGRectMake(18, 388, width - 36, 52);
+    targetedButton.frame = CGRectMake(18, 304, width - 36, 52);
     targetedButton.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     targetedButton.layer.cornerRadius = 12;
     targetedButton.backgroundColor = UIColor.systemRedColor;
@@ -888,21 +919,41 @@ static NSString *BDSTargetedResultDetail(NSDictionary *config, NSSet<NSString *>
             if (contentMatches && expectedTargeted) {
                 if ([targetedSelection containsObject:@"spoofBaiduTargetedSystem"]) {
                     contentMatches = [verified[@"targetedSystemVersion"] isEqual:config[@"targetedSystemVersion"]] &&
-                                     [verified[@"targetedSystemBuild"] isEqual:config[@"targetedSystemBuild"]];
+                                     [verified[@"targetedSystemBuild"] isEqual:config[@"targetedSystemBuild"]] &&
+                                     [verified[@"systemVersion"] isEqual:config[@"targetedSystemVersion"]] &&
+                                     [verified[@"systemBuild"] isEqual:config[@"targetedSystemBuild"]] &&
+                                     [verified[@"kernOSVersion"] isEqual:config[@"targetedSystemBuild"]];
                 }
                 if (contentMatches && [targetedSelection containsObject:@"spoofBaiduTargetedModel"]) {
-                    contentMatches = [verified[@"targetedHwMachine"] isEqual:config[@"targetedHwMachine"]] &&
-                                     [verified[@"targetedHwModel"] isEqual:config[@"targetedHwModel"]];
+                    contentMatches = [verified[@"targetedDeviceProfileName"] isEqual:config[@"targetedDeviceProfileName"]] &&
+                                     [verified[@"targetedHwMachine"] isEqual:config[@"targetedHwMachine"]] &&
+                                     [verified[@"targetedHwModel"] isEqual:config[@"targetedHwModel"]] &&
+                                     [verified[@"deviceProfileName"] isEqual:config[@"targetedDeviceProfileName"]] &&
+                                     [verified[@"hwMachine"] isEqual:config[@"targetedHwMachine"]] &&
+                                     [verified[@"hwModel"] isEqual:config[@"targetedHwModel"]] &&
+                                     [verified[@"memorySize"] isEqual:config[@"memorySize"]] &&
+                                     [verified[@"diskSize"] isEqual:config[@"diskSize"]];
                 }
                 if (contentMatches && [targetedSelection containsObject:@"spoofBaiduTargetedScreen"]) {
                     contentMatches = [verified[@"targetedScreenWidth"] isEqual:config[@"targetedScreenWidth"]] &&
-                                     [verified[@"targetedScreenHeight"] isEqual:config[@"targetedScreenHeight"]];
+                                     [verified[@"targetedScreenHeight"] isEqual:config[@"targetedScreenHeight"]] &&
+                                     [verified[@"targetedScreenScale"] isEqual:config[@"targetedScreenScale"]] &&
+                                     [verified[@"targetedNativeScreenWidth"] isEqual:config[@"targetedNativeScreenWidth"]] &&
+                                     [verified[@"targetedNativeScreenHeight"] isEqual:config[@"targetedNativeScreenHeight"]] &&
+                                     [verified[@"screenWidth"] isEqual:config[@"targetedScreenWidth"]] &&
+                                     [verified[@"screenHeight"] isEqual:config[@"targetedScreenHeight"]] &&
+                                     [verified[@"screenScale"] isEqual:config[@"targetedScreenScale"]] &&
+                                     [verified[@"nativeScreenWidth"] isEqual:config[@"targetedNativeScreenWidth"]] &&
+                                     [verified[@"nativeScreenHeight"] isEqual:config[@"targetedNativeScreenHeight"]];
                 }
                 if (contentMatches && [targetedSelection containsObject:@"spoofBaiduTargetedUA"]) {
-                    contentMatches = [verified[@"targetedUASystemVersion"] isEqual:config[@"targetedUASystemVersion"]];
+                    contentMatches = [verified[@"targetedUASystemVersion"] isEqual:config[@"targetedUASystemVersion"]] &&
+                                     [verified[@"targetedUASystemBuild"] isEqual:config[@"targetedUASystemBuild"]];
                 }
                 if (contentMatches && [targetedSelection containsObject:@"spoofBaiduTargetedPush"]) {
-                    contentMatches = [verified[@"targetedPushHwMachine"] isEqual:config[@"targetedPushHwMachine"]];
+                    contentMatches = [verified[@"targetedPushDeviceProfileName"] isEqual:config[@"targetedPushDeviceProfileName"]] &&
+                                     [verified[@"targetedPushHwMachine"] isEqual:config[@"targetedPushHwMachine"]] &&
+                                     [verified[@"targetedPushHwModel"] isEqual:config[@"targetedPushHwModel"]];
                 }
             }
         }

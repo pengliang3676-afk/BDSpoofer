@@ -1,6 +1,6 @@
 Package: com.codex.bdspoofer.cranemanager
 Name: 卍解
-Version: 1.0.6
+Version: 1.0.7
 Architecture: iphoneos-arm64e
 Description: 为百度极速版的 Crane 容器提前生成并写入 BDSpoofer 配置。
 Maintainer: Codex

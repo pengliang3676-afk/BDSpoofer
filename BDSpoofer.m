@@ -4,7 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
-//  1.9.0：
+//  1.9.1：
 //    Y. 新增“百度定向指纹”：只 hook BDDiag2 已确认真实签名的百度自有设备指纹出口
 //       （getScreenResolution/bp_resolution/Talos/BBASM/DMDeviceInfoWrapper/BDPDeviceUtility/BDPUserAgent/BPush），
 //       UIScreen 等 UIKit 布局接口保持真值，不再全局改屏导致界面异常。
@@ -3412,15 +3412,36 @@ static NSDictionary *BDSRandomTargetedProfileValues(void) {
         @"targetedGeneratedAt": @((long long)NSDate.date.timeIntervalSince1970)
     } mutableCopy];
     if (cfgBool(@"spoofBaiduTargetedSystem", NO)) {
+        // 系统组同时更新公共系统出口和百度定向出口，避免同一进程混用两个 iOS 版本。
+        values[@"systemVersion"] = system[@"version"] ?: @"15.4.1";
+        values[@"systemBuild"] = system[@"build"] ?: @"19E258";
+        values[@"kernOSVersion"] = system[@"build"] ?: @"19E258";
         values[@"targetedSystemVersion"] = system[@"version"] ?: @"15.4.1";
         values[@"targetedSystemBuild"] = system[@"build"] ?: @"19E258";
     }
     if (cfgBool(@"spoofBaiduTargetedModel", NO)) {
+        // 机型组同步公共硬件出口，并按机型匹配内存和磁盘；未选机型组时这些值保持原样。
+        NSArray<NSNumber *> *disks = device[@"disks"];
+        NSNumber *disk = ([disks isKindOfClass:NSArray.class] && disks.count)
+            ? disks[arc4random_uniform((uint32_t)disks.count)] : @64;
+        values[@"deviceProfileName"] = device[@"name"] ?: @"iPhone";
+        values[@"deviceModel"] = @"iPhone";
+        values[@"marketingModel"] = @"iPhone";
+        values[@"hwMachine"] = device[@"machine"] ?: @"iPhone14,6";
+        values[@"hwModel"] = device[@"model"] ?: @"D49AP";
+        values[@"memorySize"] = device[@"memory"] ?: @4096;
+        values[@"diskSize"] = disk;
         values[@"targetedDeviceProfileName"] = device[@"name"] ?: @"iPhone";
         values[@"targetedHwMachine"] = device[@"machine"] ?: @"iPhone14,6";
         values[@"targetedHwModel"] = device[@"model"] ?: @"D49AP";
     }
     if (cfgBool(@"spoofBaiduTargetedScreen", NO)) {
+        // 只同步屏幕资料供百度定向出口读取；spoofScreen 继续为 NO，真实 UIKit 布局不变。
+        values[@"screenWidth"] = device[@"width"] ?: @375;
+        values[@"screenHeight"] = device[@"height"] ?: @667;
+        values[@"screenScale"] = device[@"scale"] ?: @2;
+        values[@"nativeScreenWidth"] = device[@"nativeWidth"] ?: @750;
+        values[@"nativeScreenHeight"] = device[@"nativeHeight"] ?: @1334;
         values[@"targetedScreenWidth"] = device[@"width"] ?: @375;
         values[@"targetedScreenHeight"] = device[@"height"] ?: @667;
         values[@"targetedScreenScale"] = device[@"scale"] ?: @2;
