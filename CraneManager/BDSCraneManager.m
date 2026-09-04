@@ -456,6 +456,67 @@ static void *BDSLoadCraneLibrary(void) {
 - (void)applySelectedContainersWithMode:(BDSRandomMode)mode;
 @end
 
+static NSString *BDSContainerSummary(NSDictionary *config) {
+    if (![config isKindOfClass:NSDictionary.class]) return @"尚未写入参数";
+
+    NSString *basicName = config[@"deviceProfileName"] ?: @"未知机型";
+    NSString *basicSystem = config[@"systemVersion"] ?: @"未知";
+    NSMutableString *summary = [NSMutableString stringWithFormat:@"基础：%@ · iOS %@", basicName, basicSystem];
+
+    if ([config[@"spoofBaiduTargeted"] boolValue]) {
+        NSMutableArray<NSString *> *targeted = [NSMutableArray array];
+        if ([config[@"spoofBaiduTargetedModel"] boolValue]) {
+            [targeted addObject:config[@"targetedDeviceProfileName"] ?: @"未知机型"];
+        }
+        if ([config[@"spoofBaiduTargetedSystem"] boolValue]) {
+            [targeted addObject:[NSString stringWithFormat:@"iOS %@", config[@"targetedSystemVersion"] ?: @"未知"]];
+        }
+        if (!targeted.count) {
+            NSArray<NSString *> *keys = BDSTargetedKeys();
+            NSArray<NSString *> *names = BDSTargetedNames();
+            for (NSUInteger i = 0; i < keys.count && i < names.count; i++) {
+                if ([config[keys[i]] boolValue]) [targeted addObject:names[i]];
+            }
+        }
+        if (targeted.count) [summary appendFormat:@"\n定向：%@", [targeted componentsJoinedByString:@" · "]];
+    }
+    return summary;
+}
+
+static NSString *BDSTargetedResultDetail(NSDictionary *config, NSSet<NSString *> *selection) {
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    if ([selection containsObject:@"spoofBaiduTargetedModel"]) {
+        [lines addObject:[NSString stringWithFormat:@"定向机型：%@（%@ / %@）",
+            config[@"targetedDeviceProfileName"] ?: @"未知机型",
+            config[@"targetedHwMachine"] ?: @"未知",
+            config[@"targetedHwModel"] ?: @"未知"]];
+    }
+    if ([selection containsObject:@"spoofBaiduTargetedSystem"]) {
+        [lines addObject:[NSString stringWithFormat:@"定向系统：iOS %@（%@）",
+            config[@"targetedSystemVersion"] ?: @"未知",
+            config[@"targetedSystemBuild"] ?: @"未知"]];
+    }
+    if ([selection containsObject:@"spoofBaiduTargetedScreen"]) {
+        [lines addObject:[NSString stringWithFormat:@"定向屏幕：%@×%@ @%@x，物理 %@×%@",
+            config[@"targetedScreenWidth"] ?: @0,
+            config[@"targetedScreenHeight"] ?: @0,
+            config[@"targetedScreenScale"] ?: @0,
+            config[@"targetedNativeScreenWidth"] ?: @0,
+            config[@"targetedNativeScreenHeight"] ?: @0]];
+    }
+    if ([selection containsObject:@"spoofBaiduTargetedUA"]) {
+        [lines addObject:[NSString stringWithFormat:@"定向 User-Agent：iOS %@（%@）",
+            config[@"targetedUASystemVersion"] ?: @"未知",
+            config[@"targetedUASystemBuild"] ?: @"未知"]];
+    }
+    if ([selection containsObject:@"spoofBaiduTargetedPush"]) {
+        [lines addObject:[NSString stringWithFormat:@"定向 Push：%@（%@）",
+            config[@"targetedPushDeviceProfileName"] ?: @"未知机型",
+            config[@"targetedPushHwMachine"] ?: @"未知"]];
+    }
+    return [lines componentsJoinedByString:@"\n"];
+}
+
 @implementation BDSManagerViewController
 
 - (void)viewDidLoad {
@@ -464,6 +525,7 @@ static void *BDSLoadCraneLibrary(void) {
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];
+    self.tableView.rowHeight = 68.0;
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh target:self action:@selector(reloadContainers)];
     [self buildHeaderAndFooter];
@@ -664,8 +726,7 @@ static void *BDSLoadCraneLibrary(void) {
                                                      shouldUseShortVersion:NO];
         NSString *path = [self configPathForContainerID:containerID];
         NSDictionary *config = path.length ? [NSDictionary dictionaryWithContentsOfFile:path] : nil;
-        NSString *summary = config ? [NSString stringWithFormat:@"已配置：%@ · iOS %@",
-            config[@"deviceProfileName"] ?: @"未知机型", config[@"systemVersion"] ?: @"未知"] : @"尚未写入参数";
+        NSString *summary = BDSContainerSummary(config);
         [rows addObject:@{@"id": containerID, @"name": name ?: containerID,
                           @"summary": summary, @"path": path ?: @""}];
     }
@@ -860,8 +921,10 @@ static void *BDSLoadCraneLibrary(void) {
                 for (NSUInteger i = 0; i < keys.count; i++) {
                     if ([targetedSelection containsObject:keys[i]]) [selectedNames addObject:names[i]];
                 }
-                [successes addObject:[NSString stringWithFormat:@"%@：已随机 %@",
-                    row[@"name"], [selectedNames componentsJoinedByString:@"、"]]];
+                NSString *resultDetail = BDSTargetedResultDetail(config, targetedSelection);
+                [successes addObject:[NSString stringWithFormat:@"%@：已随机 %@%@%@",
+                    row[@"name"], [selectedNames componentsJoinedByString:@"、"],
+                    resultDetail.length ? @"\n" : @"", resultDetail ?: @""]];
             } else {
                 [successes addObject:[NSString stringWithFormat:@"%@：%@ / iOS %@（基础）",
                     row[@"name"], config[@"deviceProfileName"], config[@"systemVersion"]]];

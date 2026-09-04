@@ -123,9 +123,9 @@ jobs:
           printf '2.0\n' > deb-build/debian-binary
           COPYFILE_DISABLE=1 tar -C package-root/DEBIAN -czf deb-build/control.tar.gz .
           COPYFILE_DISABLE=1 tar -C package-root --exclude='./DEBIAN' -czf deb-build/data.tar.gz .
-          (cd deb-build && ar -rc ../dist/BDSpooferCraneManager_1.0.5_RootHide.deb \
+          (cd deb-build && ar -rc ../dist/BDSpooferCraneManager_1.0.6_RootHide.deb \
             debian-binary control.tar.gz data.tar.gz)
-          ar -t dist/BDSpooferCraneManager_1.0.5_RootHide.deb
+          ar -t dist/BDSpooferCraneManager_1.0.6_RootHide.deb
           tar -tzf deb-build/data.tar.gz
           lipo -info package-root/Applications/BDSCraneManager.app/BDSCraneManager
           codesign -d --entitlements :- package-root/Applications/BDSCraneManager.app
@@ -141,8 +141,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: BDSpoofer-CraneManager-1.0.5
+          name: BDSpoofer-CraneManager-1.0.6
           path: |
-            dist/BDSpooferCraneManager_1.0.5_RootHide.deb
+            dist/BDSpooferCraneManager_1.0.6_RootHide.deb
             BDSpoofer_1.9.0.dylib
             bdspoofer_config.plist
