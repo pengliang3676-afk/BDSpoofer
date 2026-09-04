@@ -1,11 +1,11 @@
-# 卍解 1.0.4
+# 卍解 1.0.5
 
 这是 BDSpoofer 1.9.0 的外部容器配置器，不替代 TrollFools 已注入的
 `BDSpoofer_1.9.0.dylib`。
 
 ## 使用方式
 
-1. 用 Sileo 安装 `BDSpooferCraneManager_1.0.4_RootHide.deb`。
+1. 用 Sileo 安装 `BDSpooferCraneManager_1.0.5_RootHide.deb`。
 2. 保持 BDSpoofer dylib 只注入百度极速版。
 3. 从桌面打开“卍解”。
 4. 勾选需要配置的 Crane 容器，按需要点击基础、高级或定向随机按钮。
@@ -18,9 +18,11 @@
 
 基础随机从 36 个机型中选择一个兼容组合，iPhone SE（第 2 代）不在随机池中；
 开启基础、反关联和 3 项常规高级功能，同时关闭定向总开关及 5 个子开关。
-定向随机使用同一次抽取的机型/iOS 同步写入基础与定向参数，并开启基础、
-反关联及全部定向开关。两者都保持 Keychain、App Group、WebKit Cookie、
-User-Agent 这 4 个兼容风险开关原状态。
+定向随机先在界面选择系统版本、机型标识、屏幕参数、User-Agent、Push参数中的
+一项或多项，再用同一次抽取的兼容机型/iOS 只更新已选类别；未选类别保持关闭且
+参数不变。执行时会开启基础 6 项、常规高级 3 项及反关联 12 项。基础和定向随机
+都保持 Keychain、App Group、WebKit Cookie、普通 User-Agent 这 4 个兼容风险
+开关原状态，全局屏幕 Hook 保持关闭。
 
 新容器首次生成 IDFA、IDFV、DeviceID、CUID 和 UTDID。之后再次随机基础参数时，
 这些身份值保持不变；“一键随机整套高级参数”只重新生成这五项，不改变其他参数和开关。

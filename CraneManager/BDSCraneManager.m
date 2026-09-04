@@ -214,6 +214,16 @@ typedef NS_ENUM(NSInteger, BDSRandomMode) {
     BDSRandomModeTargeted = 2,
 };
 
+static NSArray<NSString *> *BDSTargetedKeys(void) {
+    return @[@"spoofBaiduTargetedSystem", @"spoofBaiduTargetedModel",
+             @"spoofBaiduTargetedScreen", @"spoofBaiduTargetedUA",
+             @"spoofBaiduTargetedPush"];
+}
+
+static NSArray<NSString *> *BDSTargetedNames(void) {
+    return @[@"系统版本", @"机型标识", @"屏幕参数", @"User-Agent", @"Push参数"];
+}
+
 static void BDSSeedIdentityIfNeeded(NSMutableDictionary *config, BOOL force) {
     if (!force && config[@"idfa"] && config[@"idfv"] && config[@"deviceID"] &&
         config[@"cuid"] && config[@"utdid"]) return;
@@ -224,21 +234,37 @@ static void BDSSeedIdentityIfNeeded(NSMutableDictionary *config, BOOL force) {
     config[@"utdid"] = BDSRandomHex(32, NO);
 }
 
+static NSMutableDictionary *BDSMergedConfig(NSDictionary *existing) {
+    NSMutableDictionary *config = [BDSDefaultConfig() mutableCopy];
+    if (existing.count) [config addEntriesFromDictionary:existing];
+    NSInteger version = [existing[@"configVersion"] integerValue];
+    if (version < 185) {
+        // 与插件 v185 迁移保持一致：首次升级将 5 个定向选择重置为关闭，并拆出 UA/Push 独立参数。
+        config[@"targetedUASystemVersion"] = existing[@"targetedUASystemVersion"] ?: config[@"targetedSystemVersion"] ?: @"15.4.1";
+        config[@"targetedUASystemBuild"] = existing[@"targetedUASystemBuild"] ?: config[@"targetedSystemBuild"] ?: @"19E258";
+        config[@"targetedPushDeviceProfileName"] = existing[@"targetedPushDeviceProfileName"] ?: config[@"targetedDeviceProfileName"] ?: @"iPhone SE (3rd generation)";
+        config[@"targetedPushHwMachine"] = existing[@"targetedPushHwMachine"] ?: config[@"targetedHwMachine"] ?: @"iPhone14,6";
+        config[@"targetedPushHwModel"] = existing[@"targetedPushHwModel"] ?: config[@"targetedHwModel"] ?: @"D49AP";
+        config[@"spoofBaiduTargeted"] = @NO;
+        for (NSString *key in BDSTargetedKeys()) config[key] = @NO;
+    }
+    config[@"configVersion"] = @185;
+    return config;
+}
+
 static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
                                                        NSDictionary *device,
-                                                       BDSRandomMode mode) {
+                                                       BDSRandomMode mode,
+                                                       NSSet<NSString *> *selectedTargetedKeys) {
     if (![device isKindOfClass:NSDictionary.class]) return nil;
+    if (mode == BDSRandomModeTargeted && !selectedTargetedKeys.count) return nil;
     BOOL hadExistingConfig = existing.count > 0;
-    NSMutableDictionary *config = [BDSDefaultConfig() mutableCopy];
-    if (hadExistingConfig) [config addEntriesFromDictionary:existing];
+    NSMutableDictionary *config = BDSMergedConfig(existing);
 
     NSDictionary *system = BDSRandomSystemForDevice(device);
-    NSArray *disks = device[@"disks"];
-    NSNumber *disk = disks[arc4random_uniform((uint32_t)disks.count)];
-    NSString *deviceName = [NSString stringWithFormat:@"iPhone-%@", [BDSRandomHex(6, YES) uppercaseString]];
 
     [config addEntriesFromDictionary:@{
-        @"configVersion": @184,
+        @"configVersion": @185,
         @"enabled": @YES,
         @"spoofAdvertisingIdentifiers": @YES,
         @"spoofProcessHardware": @YES,
@@ -246,6 +272,9 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
         @"spoofCarrier": @YES,
         @"spoofScreen": @NO,
         @"spoofStorage": @YES,
+        @"spoofBaiduSDK": @YES,
+        @"spoofSysctl": @YES,
+        @"bypassJailbreakDetect": @YES,
         @"spoofWiFi": @YES,
         @"spoofLocalIP": @YES,
         @"spoofPasteboard": @YES,
@@ -258,77 +287,86 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
         @"spoofUbiquity": @YES,
         @"spoofPrivacyPermissions": @YES,
         @"spoofBattery": @YES,
-        @"deviceProfileName": device[@"name"],
-        @"deviceModel": @"iPhone",
-        @"marketingModel": @"iPhone",
-        @"systemVersion": system[@"version"],
-        @"systemBuild": system[@"build"],
-        @"kernOSVersion": system[@"build"],
-        @"hwMachine": device[@"machine"],
-        @"hwModel": device[@"model"],
-        @"memorySize": device[@"memory"],
-        @"diskSize": disk,
-        @"deviceName": deviceName,
-        @"kernHostname": deviceName,
-        @"screenWidth": device[@"width"],
-        @"screenHeight": device[@"height"],
-        @"screenScale": device[@"scale"],
-        @"nativeScreenWidth": device[@"nativeWidth"],
-        @"nativeScreenHeight": device[@"nativeHeight"],
-        @"bootTimeOffsetSeconds": @(86400 + arc4random_uniform(7 * 86400)),
         @"managerGeneratedAt": @([[NSDate date] timeIntervalSince1970]),
-        @"managerProfileVersion": @104,
+        @"managerProfileVersion": @105,
         @"managerRandomMode": mode == BDSRandomModeTargeted ? @"targeted" : @"basic",
     }];
-    [config addEntriesFromDictionary:BDSRandomCarrier()];
 
     if (mode == BDSRandomModeBasic) {
-        // 保持插件“一键基础”的旧行为：开启 3 项常规高级功能，但不重置长期身份值。
+        NSArray *disks = device[@"disks"];
+        if (![disks isKindOfClass:NSArray.class] || !disks.count) return nil;
+        NSNumber *disk = disks[arc4random_uniform((uint32_t)disks.count)];
+        NSString *deviceName = [NSString stringWithFormat:@"iPhone-%@", [BDSRandomHex(6, YES) uppercaseString]];
         [config addEntriesFromDictionary:@{
-            @"spoofBaiduSDK": @YES,
-            @"spoofSysctl": @YES,
-            @"bypassJailbreakDetect": @YES,
             @"spoofBaiduTargeted": @NO,
             @"spoofBaiduTargetedSystem": @NO,
             @"spoofBaiduTargetedModel": @NO,
             @"spoofBaiduTargetedScreen": @NO,
             @"spoofBaiduTargetedUA": @NO,
             @"spoofBaiduTargetedPush": @NO,
+            @"deviceProfileName": device[@"name"],
+            @"deviceModel": @"iPhone",
+            @"marketingModel": @"iPhone",
+            @"systemVersion": system[@"version"],
+            @"systemBuild": system[@"build"],
+            @"kernOSVersion": system[@"build"],
+            @"hwMachine": device[@"machine"],
+            @"hwModel": device[@"model"],
+            @"memorySize": device[@"memory"],
+            @"diskSize": disk,
+            @"deviceName": deviceName,
+            @"kernHostname": deviceName,
+            @"screenWidth": device[@"width"],
+            @"screenHeight": device[@"height"],
+            @"screenScale": device[@"scale"],
+            @"nativeScreenWidth": device[@"nativeWidth"],
+            @"nativeScreenHeight": device[@"nativeHeight"],
+            @"bootTimeOffsetSeconds": @(86400 + arc4random_uniform(7 * 86400)),
         }];
+        [config addEntriesFromDictionary:BDSRandomCarrier()];
     } else {
-        // 定向模式与插件一致：同一次抽取的机型/iOS 同步写入基础与定向仓库。
-        [config addEntriesFromDictionary:@{
-            @"spoofBaiduTargeted": @YES,
-            @"spoofBaiduTargetedSystem": @YES,
-            @"spoofBaiduTargetedModel": @YES,
-            @"spoofBaiduTargetedScreen": @YES,
-            @"spoofBaiduTargetedUA": @YES,
-            @"spoofBaiduTargetedPush": @YES,
-            @"targetedDeviceProfileName": device[@"name"],
-            @"targetedSystemVersion": system[@"version"],
-            @"targetedSystemBuild": system[@"build"],
-            @"targetedHwMachine": device[@"machine"],
-            @"targetedHwModel": device[@"model"],
-            @"targetedScreenWidth": device[@"width"],
-            @"targetedScreenHeight": device[@"height"],
-            @"targetedScreenScale": device[@"scale"],
-            @"targetedNativeScreenWidth": device[@"nativeWidth"],
-            @"targetedNativeScreenHeight": device[@"nativeHeight"],
-            @"targetedGeneratedAt": @([[NSDate date] timeIntervalSince1970]),
-        }];
+        // 只开启并随机用户预先选择的类别；未选类别保持关闭且参数不变。
+        config[@"spoofBaiduTargeted"] = @YES;
+        for (NSString *key in BDSTargetedKeys()) config[key] = @([selectedTargetedKeys containsObject:key]);
+        config[@"targetedGeneratedAt"] = @([[NSDate date] timeIntervalSince1970]);
+        if ([selectedTargetedKeys containsObject:@"spoofBaiduTargetedSystem"]) {
+            config[@"targetedSystemVersion"] = system[@"version"];
+            config[@"targetedSystemBuild"] = system[@"build"];
+        }
+        if ([selectedTargetedKeys containsObject:@"spoofBaiduTargetedModel"]) {
+            config[@"targetedDeviceProfileName"] = device[@"name"];
+            config[@"targetedHwMachine"] = device[@"machine"];
+            config[@"targetedHwModel"] = device[@"model"];
+        }
+        if ([selectedTargetedKeys containsObject:@"spoofBaiduTargetedScreen"]) {
+            config[@"targetedScreenWidth"] = device[@"width"];
+            config[@"targetedScreenHeight"] = device[@"height"];
+            config[@"targetedScreenScale"] = device[@"scale"];
+            config[@"targetedNativeScreenWidth"] = device[@"nativeWidth"];
+            config[@"targetedNativeScreenHeight"] = device[@"nativeHeight"];
+        }
+        if ([selectedTargetedKeys containsObject:@"spoofBaiduTargetedUA"]) {
+            config[@"targetedUASystemVersion"] = system[@"version"];
+            config[@"targetedUASystemBuild"] = system[@"build"];
+        }
+        if ([selectedTargetedKeys containsObject:@"spoofBaiduTargetedPush"]) {
+            config[@"targetedPushDeviceProfileName"] = device[@"name"];
+            config[@"targetedPushHwMachine"] = device[@"machine"];
+            config[@"targetedPushHwModel"] = device[@"model"];
+        }
     }
     // 新容器必须有独立种子；已有容器的长期身份值在基础/定向随机时保持不变。
     if (!hadExistingConfig) BDSSeedIdentityIfNeeded(config, YES);
     return config;
 }
 
-static NSMutableDictionary *BDSCreateRandomConfig(NSDictionary *existing, BDSRandomMode mode) {
+static NSMutableDictionary *BDSCreateRandomConfig(NSDictionary *existing,
+                                                   BDSRandomMode mode,
+                                                   NSSet<NSString *> *selectedTargetedKeys) {
     if (mode == BDSRandomModeAdvanced) {
-        NSMutableDictionary *config = [BDSDefaultConfig() mutableCopy];
-        if (existing.count) [config addEntriesFromDictionary:existing];
-        config[@"configVersion"] = @184;
+        NSMutableDictionary *config = BDSMergedConfig(existing);
         config[@"managerGeneratedAt"] = @([[NSDate date] timeIntervalSince1970]);
-        config[@"managerProfileVersion"] = @104;
+        config[@"managerProfileVersion"] = @105;
         config[@"managerRandomMode"] = @"advanced";
         // 与插件“一键高级”一致：只更换五个长期身份值，所有参数和开关保持原状态。
         BDSSeedIdentityIfNeeded(config, YES);
@@ -337,7 +375,7 @@ static NSMutableDictionary *BDSCreateRandomConfig(NSDictionary *existing, BDSRan
     NSArray<NSDictionary *> *devices = BDSDeviceProfiles();
     if (!devices.count) return nil;
     NSDictionary *device = devices[arc4random_uniform((uint32_t)devices.count)];
-    return BDSCreateConfigForDevice(existing, device, mode);
+    return BDSCreateConfigForDevice(existing, device, mode, selectedTargetedKeys);
 }
 
 static NSString *gCraneLoadDetail;
@@ -408,9 +446,13 @@ static void *BDSLoadCraneLibrary(void) {
 @property(nonatomic, strong) UIButton *basicButton;
 @property(nonatomic, strong) UIButton *advancedButton;
 @property(nonatomic, strong) UIButton *targetedButton;
+@property(nonatomic, strong) NSMutableSet<NSString *> *targetedSelectionKeys;
+@property(nonatomic, strong) NSArray<UIButton *> *targetedOptionButtons;
 - (void)randomizeBasicForSelectedContainers;
 - (void)randomizeAdvancedForSelectedContainers;
 - (void)randomizeTargetedForSelectedContainers;
+- (void)toggleTargetedOption:(UIButton *)sender;
+- (void)refreshTargetedOptionButtons;
 - (void)applySelectedContainersWithMode:(BDSRandomMode)mode;
 @end
 
@@ -421,6 +463,7 @@ static void *BDSLoadCraneLibrary(void) {
     self.title = @"卍解";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
+    self.targetedSelectionKeys = [NSMutableSet set];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh target:self action:@selector(reloadContainers)];
     [self buildHeaderAndFooter];
@@ -439,9 +482,33 @@ static void *BDSLoadCraneLibrary(void) {
     [header addSubview:label];
     self.tableView.tableHeaderView = header;
 
-    UIView *footer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 218)];
+    UIView *footer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 468)];
+    UILabel *targetedLabel = [[UILabel alloc] initWithFrame:CGRectMake(18, 8, width - 36, 26)];
+    targetedLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    targetedLabel.font = [UIFont boldSystemFontOfSize:15];
+    targetedLabel.textColor = UIColor.secondaryLabelColor;
+    targetedLabel.text = @"定向指纹项目（先选择，再点定向随机）";
+    [footer addSubview:targetedLabel];
+
+    NSMutableArray<UIButton *> *optionButtons = [NSMutableArray array];
+    NSArray<NSString *> *names = BDSTargetedNames();
+    for (NSUInteger i = 0; i < names.count; i++) {
+        UIButton *option = [UIButton buttonWithType:UIButtonTypeSystem];
+        option.frame = CGRectMake(18, 38 + (CGFloat)i * 42, width - 36, 36);
+        option.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        option.tag = (NSInteger)i;
+        option.layer.cornerRadius = 8;
+        option.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+        option.titleLabel.font = [UIFont systemFontOfSize:15];
+        [option addTarget:self action:@selector(toggleTargetedOption:) forControlEvents:UIControlEventTouchUpInside];
+        [footer addSubview:option];
+        [optionButtons addObject:option];
+    }
+    self.targetedOptionButtons = optionButtons;
+    [self refreshTargetedOptionButtons];
+
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
-    button.frame = CGRectMake(18, 18, width - 36, 52);
+    button.frame = CGRectMake(18, 260, width - 36, 52);
     button.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     button.layer.cornerRadius = 12;
     button.backgroundColor = UIColor.systemBlueColor;
@@ -455,10 +522,11 @@ static void *BDSLoadCraneLibrary(void) {
     self.basicButton = button;
 
     UIButton *advancedButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    advancedButton.frame = CGRectMake(18, 82, width - 36, 52);
+    advancedButton.frame = CGRectMake(18, 324, width - 36, 52);
     advancedButton.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     advancedButton.layer.cornerRadius = 12;
-    advancedButton.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+    advancedButton.backgroundColor = UIColor.systemGreenColor;
+    [advancedButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
     advancedButton.titleLabel.font = [UIFont boldSystemFontOfSize:17];
     advancedButton.titleLabel.adjustsFontSizeToFitWidth = YES;
     advancedButton.titleLabel.minimumScaleFactor = 0.78;
@@ -468,10 +536,11 @@ static void *BDSLoadCraneLibrary(void) {
     self.advancedButton = advancedButton;
 
     UIButton *targetedButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    targetedButton.frame = CGRectMake(18, 146, width - 36, 52);
+    targetedButton.frame = CGRectMake(18, 388, width - 36, 52);
     targetedButton.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     targetedButton.layer.cornerRadius = 12;
-    targetedButton.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+    targetedButton.backgroundColor = UIColor.systemRedColor;
+    [targetedButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
     targetedButton.titleLabel.font = [UIFont boldSystemFontOfSize:17];
     targetedButton.titleLabel.adjustsFontSizeToFitWidth = YES;
     targetedButton.titleLabel.minimumScaleFactor = 0.78;
@@ -647,7 +716,32 @@ static void *BDSLoadCraneLibrary(void) {
 }
 
 - (void)randomizeTargetedForSelectedContainers {
+    if (!self.targetedSelectionKeys.count) {
+        [self showMessage:@"尚未选择定向项目" detail:@"请先在下方 5 项中开启至少一项，再点击定向随机。"];
+        return;
+    }
     [self applySelectedContainersWithMode:BDSRandomModeTargeted];
+}
+
+- (void)toggleTargetedOption:(UIButton *)sender {
+    NSArray<NSString *> *keys = BDSTargetedKeys();
+    if (sender.tag < 0 || (NSUInteger)sender.tag >= keys.count) return;
+    NSString *key = keys[(NSUInteger)sender.tag];
+    if ([self.targetedSelectionKeys containsObject:key]) [self.targetedSelectionKeys removeObject:key];
+    else [self.targetedSelectionKeys addObject:key];
+    [self refreshTargetedOptionButtons];
+}
+
+- (void)refreshTargetedOptionButtons {
+    NSArray<NSString *> *keys = BDSTargetedKeys();
+    NSArray<NSString *> *names = BDSTargetedNames();
+    [self.targetedOptionButtons enumerateObjectsUsingBlock:^(UIButton *button, NSUInteger idx, BOOL *stop) {
+        (void)stop;
+        if (idx >= keys.count || idx >= names.count) return;
+        BOOL selected = [self.targetedSelectionKeys containsObject:keys[idx]];
+        [button setTitle:[NSString stringWithFormat:@"%@：%@", names[idx], selected ? @"开" : @"关"]
+                 forState:UIControlStateNormal];
+    }];
 }
 
 - (void)applySelectedContainersWithMode:(BDSRandomMode)mode {
@@ -658,6 +752,7 @@ static void *BDSLoadCraneLibrary(void) {
 
     NSMutableArray<NSString *> *successes = [NSMutableArray array];
     NSMutableArray<NSString *> *failures = [NSMutableArray array];
+    NSSet<NSString *> *targetedSelection = [self.targetedSelectionKeys copy];
     for (NSDictionary *row in self.containers) {
         NSString *containerID = row[@"id"];
         if (![self.selectedContainerIDs containsObject:containerID]) continue;
@@ -679,7 +774,7 @@ static void *BDSLoadCraneLibrary(void) {
         }
 
         NSDictionary *existing = [NSDictionary dictionaryWithContentsOfFile:configPath];
-        NSMutableDictionary *config = BDSCreateRandomConfig(existing, mode);
+        NSMutableDictionary *config = BDSCreateRandomConfig(existing, mode, targetedSelection);
         if (!config.count) {
             [failures addObject:[NSString stringWithFormat:@"%@：没有生成有效配置", row[@"name"]]];
             continue;
@@ -711,19 +806,43 @@ static void *BDSLoadCraneLibrary(void) {
         } else {
             contentMatches = [verified[@"systemVersion"] isEqual:config[@"systemVersion"]] &&
                              [verified[@"deviceProfileName"] isEqual:config[@"deviceProfileName"]];
-            NSArray<NSString *> *targetedSwitches = @[
-                @"spoofBaiduTargeted", @"spoofBaiduTargetedSystem", @"spoofBaiduTargetedModel",
-                @"spoofBaiduTargetedScreen", @"spoofBaiduTargetedUA", @"spoofBaiduTargetedPush"
+            NSArray<NSString *> *requiredOn = @[
+                @"enabled", @"spoofAdvertisingIdentifiers", @"spoofProcessHardware", @"spoofLocale",
+                @"spoofCarrier", @"spoofStorage", @"spoofBaiduSDK", @"spoofSysctl",
+                @"bypassJailbreakDetect", @"spoofWiFi", @"spoofLocalIP", @"spoofPasteboard",
+                @"spoofBootTime", @"spoofCPU", @"spoofLocation", @"spoofProxyDetection",
+                @"spoofStatfs", @"spoofDlopen", @"spoofUbiquity", @"spoofPrivacyPermissions",
+                @"spoofBattery"
             ];
+            for (NSString *key in requiredOn) {
+                if (![verified[key] boolValue]) { contentMatches = NO; break; }
+            }
+            if ([verified[@"spoofScreen"] boolValue]) contentMatches = NO;
             BOOL expectedTargeted = mode == BDSRandomModeTargeted;
-            for (NSString *key in targetedSwitches) {
-                if ([verified[key] boolValue] != expectedTargeted) { contentMatches = NO; break; }
+            if ([verified[@"spoofBaiduTargeted"] boolValue] != expectedTargeted) contentMatches = NO;
+            for (NSString *key in BDSTargetedKeys()) {
+                BOOL expectedChild = expectedTargeted && [targetedSelection containsObject:key];
+                if ([verified[key] boolValue] != expectedChild) { contentMatches = NO; break; }
             }
             if (contentMatches && expectedTargeted) {
-                contentMatches = [verified[@"targetedSystemVersion"] isEqual:verified[@"systemVersion"]] &&
-                                 [verified[@"targetedSystemBuild"] isEqual:verified[@"systemBuild"]] &&
-                                 [verified[@"targetedHwMachine"] isEqual:verified[@"hwMachine"]] &&
-                                 [verified[@"targetedHwModel"] isEqual:verified[@"hwModel"]];
+                if ([targetedSelection containsObject:@"spoofBaiduTargetedSystem"]) {
+                    contentMatches = [verified[@"targetedSystemVersion"] isEqual:config[@"targetedSystemVersion"]] &&
+                                     [verified[@"targetedSystemBuild"] isEqual:config[@"targetedSystemBuild"]];
+                }
+                if (contentMatches && [targetedSelection containsObject:@"spoofBaiduTargetedModel"]) {
+                    contentMatches = [verified[@"targetedHwMachine"] isEqual:config[@"targetedHwMachine"]] &&
+                                     [verified[@"targetedHwModel"] isEqual:config[@"targetedHwModel"]];
+                }
+                if (contentMatches && [targetedSelection containsObject:@"spoofBaiduTargetedScreen"]) {
+                    contentMatches = [verified[@"targetedScreenWidth"] isEqual:config[@"targetedScreenWidth"]] &&
+                                     [verified[@"targetedScreenHeight"] isEqual:config[@"targetedScreenHeight"]];
+                }
+                if (contentMatches && [targetedSelection containsObject:@"spoofBaiduTargetedUA"]) {
+                    contentMatches = [verified[@"targetedUASystemVersion"] isEqual:config[@"targetedUASystemVersion"]];
+                }
+                if (contentMatches && [targetedSelection containsObject:@"spoofBaiduTargetedPush"]) {
+                    contentMatches = [verified[@"targetedPushHwMachine"] isEqual:config[@"targetedPushHwMachine"]];
+                }
             }
         }
         if (!identifierMatches || !contentMatches) {
@@ -734,9 +853,19 @@ static void *BDSLoadCraneLibrary(void) {
         if (mode == BDSRandomModeAdvanced) {
             [successes addObject:[NSString stringWithFormat:@"%@：五项高级身份参数已更换", row[@"name"]]];
         } else {
-            NSString *modeName = mode == BDSRandomModeTargeted ? @"定向" : @"基础";
-            [successes addObject:[NSString stringWithFormat:@"%@：%@ / iOS %@（%@）",
-                row[@"name"], config[@"deviceProfileName"], config[@"systemVersion"], modeName]];
+            if (mode == BDSRandomModeTargeted) {
+                NSMutableArray<NSString *> *selectedNames = [NSMutableArray array];
+                NSArray<NSString *> *keys = BDSTargetedKeys();
+                NSArray<NSString *> *names = BDSTargetedNames();
+                for (NSUInteger i = 0; i < keys.count; i++) {
+                    if ([targetedSelection containsObject:keys[i]]) [selectedNames addObject:names[i]];
+                }
+                [successes addObject:[NSString stringWithFormat:@"%@：已随机 %@",
+                    row[@"name"], [selectedNames componentsJoinedByString:@"、"]]];
+            } else {
+                [successes addObject:[NSString stringWithFormat:@"%@：%@ / iOS %@（基础）",
+                    row[@"name"], config[@"deviceProfileName"], config[@"systemVersion"]]];
+            }
         }
     }
 
@@ -750,9 +879,13 @@ static void *BDSLoadCraneLibrary(void) {
         } else if (mode == BDSRandomModeAdvanced) {
             [detail appendString:@"\n\n只更换 IDFA、IDFV、DeviceID、CUID、UTDID；其他参数和开关均未改变。"];
         } else {
-            [detail appendString:@"\n\n基础、反关联、定向总开关及 5 个子开关已开启；高级设置和长期身份值未改变。"];
+            [detail appendString:@"\n\n只随机已选择的定向项目；基础 6 项、高级 3 项和反关联 12 项已开启。未选定向项目、长期身份值及风险测试 4 项未改变。"];
         }
         [detail appendString:@"\n未运行的容器可直接首次打开；已在后台运行的百度仍需彻底结束一次再打开。"];
+    }
+    if (successes.count && mode == BDSRandomModeBasic) {
+        [self.targetedSelectionKeys removeAllObjects];
+        [self refreshTargetedOptionButtons];
     }
     [self showMessage:failures.count ? @"配置完成（部分失败）" : @"配置已写入" detail:detail];
 }
