@@ -30,7 +30,7 @@ jobs:
           test "$(grep -o 'BDSSystem(@"' BDSpoofer.m | wc -l | tr -d ' ')" -eq 78
           test "$(grep -o 'BDSSystem(@"' CraneManager/BDSCraneManager.m | wc -l | tr -d ' ')" -eq 78
           grep -q '@"configVersion": @185' CraneManager/BDSCraneManager.m
-          grep -q '@"spoofBaiduTargeted": @YES' CraneManager/BDSCraneManager.m
+          grep -Fq 'config[@"spoofBaiduTargeted"] = @YES' CraneManager/BDSCraneManager.m
           grep -q '@"spoofScreen": @NO' CraneManager/BDSCraneManager.m
           ! grep -q '从机型池套用机型iOS' BDSpoofer.m
           grep -q '一键随机定向指纹参数' BDSpoofer.m
