@@ -3,13 +3,10 @@
 #import <WebKit/WebKit.h>
 #import <objc/runtime.h>
 #import <math.h>
-#import <fcntl.h>
-#import <unistd.h>
-#import <errno.h>
 #import "ObserverScript.h"
 
-static NSString *const BDSDVersion = @"0.3.0";
-static NSString *const BDSDHandlerName = @"bds_reward_diag_030";
+static NSString *const BDSDVersion = @"0.4.0";
+static NSString *const BDSDHandlerName = @"bds_reward_diag_040";
 static char BDSDControllerKey, BDSDWebViewKey;
 static dispatch_queue_t BDSDLogQueue;
 
@@ -57,73 +54,6 @@ static void BDSDLog(NSDictionary *record) {
     });
 }
 
-// One attempt per process, one successful file per data container/version.
-// Publish by hard link after writing: an existing capture can never be overwritten.
-static void BDSDSavePrivateResponse(NSDictionary *entry) {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        NSDictionary *copy = [entry copy];
-        dispatch_async(BDSDLogQueue, ^{
-            NSString *temporary;
-            int fd = -1;
-            NSString *outcome = @"full_response_save_failed";
-            NSString *reason = @"storage_error";
-            NSUInteger bytes = 0;
-            @try {
-                do {
-                    NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-                    if (!documents) break;
-                    NSString *directory = [documents stringByAppendingPathComponent:@"BDSRewardDiagnostics"];
-                    if (![NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES
-                        attributes:@{NSFilePosixPermissions:@0700} error:nil]) break;
-                    NSString *destination = [directory stringByAppendingPathComponent:@"response-once-0.3.0.json"];
-                    if ([NSFileManager.defaultManager fileExistsAtPath:destination]) {
-                        outcome = @"full_response_already_exists"; reason = @"preserved_existing_capture"; break;
-                    }
-                    NSMutableDictionary *envelope = [copy mutableCopy];
-                    envelope[@"version"] = BDSDVersion;
-                    envelope[@"timestamp_ms"] = @((long long)(NSDate.date.timeIntervalSince1970 * 1000));
-                    NSData *json = [NSJSONSerialization dataWithJSONObject:envelope options:0 error:nil];
-                    if (!json || json.length > 8 * 1024 * 1024) { reason = @"serialization_or_size_limit"; break; }
-                    bytes = json.length;
-                    temporary = [directory stringByAppendingPathComponent:
-                        [NSString stringWithFormat:@".response-030-%@.tmp", NSUUID.UUID.UUIDString]];
-                    fd = open(temporary.fileSystemRepresentation, O_WRONLY | O_CREAT | O_EXCL, 0600);
-                    if (fd < 0) { temporary = nil; break; }
-                    if (![NSFileManager.defaultManager setAttributes:@{NSFileProtectionKey:NSFileProtectionCompleteUntilFirstUserAuthentication,
-                        NSFilePosixPermissions:@0600} ofItemAtPath:temporary error:nil]) break;
-                    const unsigned char *buffer = json.bytes;
-                    NSUInteger offset = 0;
-                    while (offset < json.length) {
-                        ssize_t count = write(fd, buffer + offset, json.length - offset);
-                        if (count < 0 && errno == EINTR) continue;
-                        if (count <= 0) break;
-                        offset += (NSUInteger)count;
-                    }
-                    if (offset != json.length || fsync(fd) != 0) break;
-                    int closed = close(fd); fd = -1;
-                    if (closed != 0) break;
-                    if (link(temporary.fileSystemRepresentation, destination.fileSystemRepresentation) == 0) {
-                        outcome = @"full_response_saved"; reason = @"complete";
-                    } else if (errno == EEXIST) {
-                        outcome = @"full_response_already_exists"; reason = @"preserved_existing_capture";
-                    }
-                } while (0);
-            } @catch (__unused NSException *exception) { reason = @"storage_exception"; }
-            @finally {
-                if (fd >= 0) close(fd);
-                // Only the unique temporary file created by this attempt is removed.
-                if (temporary) unlink(temporary.fileSystemRepresentation);
-            }
-            NSMutableDictionary *status = [@{@"event":outcome, @"capture_reason":reason,
-                @"filename":@"response-once-0.3.0.json", @"request_id":copy[@"request_id"],
-                @"page_id":copy[@"page_id"]} mutableCopy];
-            if ([outcome isEqualToString:@"full_response_saved"]) status[@"file_bytes"] = @(bytes);
-            BDSDLog(status);
-        });
-    });
-}
-
 static NSString *BDSDScript(void) {
     static NSString *script;
     static dispatch_once_t once;
@@ -134,22 +64,7 @@ static NSString *BDSDScript(void) {
     return script;
 }
 
-// Page messages are untrusted. Rebuild each record from narrowly allowed fields.
-static NSString *BDSDCleanReason(NSString *text, NSUInteger limit) {
-    NSString *value = [text substringToIndex:MIN(text.length, 4096)];
-    for (NSString *pattern in @[
-        @"(?:https?://|www\\.)[^\\s]+",
-        @"[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}",
-        @"\\b(?:BDUSS|Cookie|token|authorization|bearer|zid|cuid|uid|idfa|idfv|utdid)\\s*[:=]\\s*\\S+",
-        @"[A-Za-z0-9_+/=.%:-]{16,}", @"\\d{6,}", @"[\\x00-\\x1f\\x7f]"]) {
-        NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:pattern
-            options:NSRegularExpressionCaseInsensitive error:nil];
-        value = [regex stringByReplacingMatchesInString:value options:0
-            range:NSMakeRange(0, value.length) withTemplate:@"[redacted]"];
-    }
-    return [value substringToIndex:MIN(value.length, MIN(limit, 128))];
-}
-
+// Rebuild page messages from bounded fields. No URL queries, bodies or account identifiers.
 @interface BDSDMessageSink : NSObject <WKScriptMessageHandler>
 @end
 @implementation BDSDMessageSink
@@ -158,73 +73,43 @@ static NSString *BDSDCleanReason(NSString *text, NSUInteger limit) {
         if (![message.name isEqualToString:BDSDHandlerName] || !BDSDBaiduURL(message.frameInfo.request.URL) ||
             ![message.body isKindOfClass:NSDictionary.class]) return;
         NSDictionary *body = message.body;
-        if ([body[@"event"] isEqual:@"private_response_once"]) {
-            id text = body[@"response_text"], request = body[@"request_id"], status = body[@"http_status"];
-            if (![text isKindOfClass:NSString.class] || [text length] > 1024 * 1024 ||
-                ![body[@"capture_kind"] isEqual:@"xhr_response_text"] ||
-                ![request isKindOfClass:NSNumber.class] || !isfinite([request doubleValue]) ||
-                [request doubleValue] < 1 || [request doubleValue] > 128 ||
-                ![status isKindOfClass:NSNumber.class] || !isfinite([status doubleValue]) ||
-                [status doubleValue] < 100 || [status doubleValue] > 599) return;
-            NSString *page = objc_getAssociatedObject(message.webView, &BDSDWebViewKey) ?: @"unassigned";
-            BDSDSavePrivateResponse(@{@"response_text":text, @"capture_kind":@"xhr_response_text",
-                @"request_id":request, @"http_status":status, @"page_id":page, @"endpoint":@"/incentive/uanti"});
-            return;
-        }
-        NSArray *events = @[@"observer_ready", @"observer_install_failed", @"request_started", @"request_complete",
-            @"send_threw", @"observation_window_elapsed", @"full_response_skipped"];
-        if (![events containsObject:body[@"event"]]) return;
-        NSMutableDictionary *safe = [NSMutableDictionary dictionaryWithObject:body[@"event"] forKey:@"event"];
-        safe[@"endpoint"] = @"/incentive/uanti";
-        for (NSString *key in @[@"request_id", @"elapsed_ms", @"http_status", @"business_code_present",
-            @"business_code_is_number_zero", @"is_safe_present", @"is_safe_truthy",
-            @"security_param_present", @"security_param_nonempty", @"security_param_placeholder",
-            @"security_param_count"]) {
-            id value = body[key];
-            if ([value isKindOfClass:NSNumber.class] && isfinite([value doubleValue])) safe[key] = value;
+        NSArray *events = @[@"telemetry_ready", @"telemetry_attempt", @"telemetry_handed_to_browser",
+            @"telemetry_image_load", @"telemetry_image_error", @"telemetry_xhr_complete",
+            @"telemetry_beacon_return", @"telemetry_api_threw", @"telemetry_observation_expired",
+            @"telemetry_superseded", @"telemetry_listener_failed", @"telemetry_resource"];
+        if (![events containsObject:body[@"event"]] ||
+            ![body[@"endpoint"] isEqual:@"https://h2tcbox.baidu.com/ztbox"]) return;
+        NSMutableDictionary *safe = [@{@"event":body[@"event"], @"endpoint":@"https://h2tcbox.baidu.com/ztbox"} mutableCopy];
+        for (NSString *key in @[@"capture_id", @"event_id", @"payload_timestamp_ms", @"elapsed_ms",
+            @"http_status", @"cash_num_present", @"queued", @"final_endpoint_matches", @"correlation_ambiguous",
+            @"image_property", @"image_attribute", @"xhr", @"beacon", @"resource_observer",
+            @"startTime", @"duration", @"transferSize", @"encodedBodySize", @"decodedBodySize", @"responseStatus"]) {
+            id v = body[key];
+            if ([v isKindOfClass:NSNumber.class] && isfinite([v doubleValue]) && [v doubleValue] >= 0 && [v doubleValue] <= 1e15) safe[key] = v;
         }
         NSDictionary *enums = @{
-            @"capture_reason":@[@"unsupported_response_type", @"unavailable", @"size_limit", @"message_delivery_failed"],
+            @"transport":@[@"image_src", @"image_attribute", @"xhr", @"beacon", @"resource"],
+            @"event_page":@[@"y_mission_index"],
+            @"action":@[@"zpblog", @"mpblog", @"zubc"],
             @"terminal_event":@[@"load", @"error", @"timeout", @"abort", @"unknown"],
-            @"json_state":@[@"valid", @"invalid", @"empty", @"size_limit", @"unavailable", @"json_null_or_invalid",
-                @"unsupported_response_type", @"redirect_outside_scope"],
-            @"root_type":@[@"null", @"array", @"object", @"string", @"number", @"boolean", @"undefined"],
-            @"data_type":@[@"null", @"array", @"object", @"string", @"number", @"boolean", @"undefined"],
-            @"business_code_type":@[@"null", @"array", @"object", @"string", @"number", @"boolean", @"undefined"],
-            @"is_safe_type":@[@"null", @"array", @"object", @"string", @"number", @"boolean", @"undefined"]};
+            @"cash_num_type":@[@"absent", @"null", @"number", @"string", @"boolean", @"object", @"undefined"],
+            @"initiator":@[@"img", @"xmlhttprequest", @"beacon", @"fetch", @"other"]};
         for (NSString *key in enums) if ([enums[key] containsObject:body[key]]) safe[key] = body[key];
-        id code = body[@"business_code"];
-        if ([code isKindOfClass:NSNumber.class] && isfinite([code doubleValue])) safe[@"business_code"] = code;
-        else if ([code isKindOfClass:NSString.class] && [code length] <= 11) {
-            NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"^-?[0-9]{1,10}$" options:0 error:nil];
-            if ([regex numberOfMatchesInString:code options:0 range:NSMakeRange(0, [code length])] == 1) safe[@"business_code"] = code;
+        for (NSString *key in @[@"document_id", @"event_type"]) {
+            id v = body[key];
+            if (![v isKindOfClass:NSString.class] || [v length] > 64) continue;
+            NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"^[A-Za-z0-9_-]{1,64}$" options:0 error:nil];
+            if ([re numberOfMatchesInString:v options:0 range:NSMakeRange(0, [v length])] == 1) safe[key] = v;
         }
-        id value = body[@"is_safe_value"];
-        if (([value isKindOfClass:NSNumber.class] && isfinite([value doubleValue])) ||
-            (value && [@[@"", @"0", @"1", @"true", @"false"] containsObject:value])) safe[@"is_safe_value"] = value;
-        if ([body[@"reason_fields"] isKindOfClass:NSDictionary.class]) {
-            NSDictionary *reasons = body[@"reason_fields"];
-            NSMutableDictionary *filtered = [NSMutableDictionary dictionary];
-            NSUInteger remaining = 256;
-            for (NSString *scope in @[@"data", @"root"]) {
-                for (NSString *field in @[@"reasonCode", @"reason_code", @"riskCode", @"risk_code",
-                    @"subErrno", @"sub_errno", @"reason", @"riskMessage", @"message", @"errmsg", @"msg", @"tips"]) {
-                    if (filtered.count >= 8) break;
-                    NSString *key = [NSString stringWithFormat:@"%@.%@", scope, field];
-                    id reason = reasons[key];
-                    if ([reason isKindOfClass:NSNumber.class] && isfinite([reason doubleValue])) filtered[key] = reason;
-                    else if ([reason isKindOfClass:NSString.class] && remaining) {
-                        NSString *clean = BDSDCleanReason(reason, remaining);
-                        filtered[key] = clean;
-                        remaining -= clean.length;
-                    }
-                }
-            }
-            safe[@"reason_fields"] = filtered;
+        id cash = body[@"cash_num"];
+        if ([cash isKindOfClass:NSNumber.class] && isfinite([cash doubleValue]) && fabs([cash doubleValue]) <= 1e12) safe[@"cash_num"] = cash;
+        else if ([cash isKindOfClass:NSString.class] && [cash length] <= 20) {
+            NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"^-?[0-9]{1,12}(\\.[0-9]{1,6})?$" options:0 error:nil];
+            if ([re numberOfMatchesInString:cash options:0 range:NSMakeRange(0, [cash length])] == 1) safe[@"cash_num"] = cash;
         }
-        // This ID identifies only the local WKWebView, never a device or account.
         NSString *page = objc_getAssociatedObject(message.webView, &BDSDWebViewKey);
         if (page) safe[@"page_id"] = page;
+        safe[@"main_frame"] = @(message.frameInfo.mainFrame);
         BDSDLog(safe);
     } @catch (__unused NSException *exception) { }
 }

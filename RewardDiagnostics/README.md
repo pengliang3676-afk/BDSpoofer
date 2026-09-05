@@ -1,80 +1,69 @@
-# 百度活动异常临时诊断插件 0.3.0
+# 百度现金统计临时取证组件 0.4.0
 
-目标 Bundle ID：com.baidu.BaiduMobileInfo。独立诊断组件，不包含随机参数或越狱隐藏功能。
+目标 Bundle ID：com.baidu.BaiduMobileInfo。只记录活动页现金统计的客户端发送证据，不修改收益或资格。
 
-## 本次用途
+## 使用
 
-0.2.0 的实际记录已出现 HTTP 200、errno 为数字 0、data.isSafe 为 false，且目标请求的 zid 非空。
-此前只保存白名单字段，不能排除深层结构中还有原因字段。0.3.0 补充一次完整响应文本采集。
-它帮助确认接口实际返回了哪些信息；即使正文没有原因码，也不能据此还原服务器内部规则。
+1. 在巨魔注入器 / TrollFools 中移除旧 BDSRewardDiagnostics_0.3.0.dylib，注入 BDSRewardDiagnostics_0.4.0.dylib。
+   如有更早诊断版本，也先移除；不同版本不能同时加载。原插件与账号、容器配置保持当前状态。
+2. 完全退出百度后重新打开活动页，停留约 5 秒。无需额外执行领取或提现。
+3. 手机保持连接，读取当前容器 Documents/BDSRewardDiagnostics/session-*.jsonl，按 version=0.4.0 筛选。
+4. 取证结束后移除本诊断组件。旧日志仍保留，本版本不删除或覆盖旧完整响应文件。
 
-## 安装及唯一配合步骤
+## 本次运行范围
 
-1. 在巨魔注入器 / TrollFools 中移除旧的 BDSRewardDiagnostics_0.2.0.dylib（如有 0.1.0 也移除）。
-2. 给目标百度应用注入 BDSRewardDiagnostics_0.3.0.dylib，不要同时加载多个诊断版本。
-3. 完全退出后重新打开百度，进入原来的异常页面，手机保持连接以便读取结果。
-   保持账号、Crane 容器、原插件状态和随机参数不变。无需额外执行提现或反复领取操作。
-4. 诊断结束后可移除这个诊断 dylib，再重启应用。移除组件不会自动删除诊断文件。
+0.4.0 实际嵌入 telemetry.js，停止运行旧的资格接口观察器。
+observer.js 和 observer.test.cjs 保留为历史源码/回归资料，编译脚本不再嵌入它们。
 
-本组件没有 UI；最低 iOS 15.0，包含 arm64 和 arm64e。
-编译、签名和模拟测试不等于已经验证本机注入成功或获得真实响应。
+仅处理 HTTPS h2tcbox.baidu.com 的 /ztbox，且解析出的事件 actiondata.id=10290、content.page=y_mission_index。
+从实际交给图片 src/setAttribute、XHR 或 sendBeacon 的参数中提取现金字段 actiondata.content.ext.num。
+同时通过 PerformanceObserver 被动记录这个目标的资源条目，补充浏览器的加载信息。
+不主动发送、重放或重试统计，不创建额外图片请求，不改变原请求和回调，不读响应正文或请求头。
 
-## 两种本地文件
+查询参数 data 中的 JSON 是重点路径。XHR/Beacon 使用表单字符串时也检查其中 data 字段。
+不消费 Blob、流或自定义对象，不额外调用对象 toString；这类数据不在本版本捕获范围。
+不覆盖原生 SDK 内部发送，或未知第三方地址；不能把范围外的缺失记录解释成没有上传。
 
-均位于当前百度数据容器的 Documents/BDSRewardDiagnostics/ 下：
+## 保留字段与隐私
 
-- session-时间-随机编号.jsonl：有限、经过字段过滤的摘要，保留 HTTP 状态、JSON 类型、errno、isSafe、
-  zid 是否存在/非空/占位以及根层和 data 层的短原因字段。摘要不包含完整正文。
-- response-once-0.3.0.json：私有完整响应文件。response_text 字符串保存 XHR 暴露的原始文本，
-  包括空白、未知字段和嵌套结构；其他键记录版本、采集时间、本地页面编号、请求序号和 HTTP 状态。
-  读取外层 JSON 后才能取得原正文；这不是 TLS 报文原始字节，也不是服务器签名的证据。
+保留固定目标地址、原始现金值及类型、事件 ID、事件类型、事件时间、本地 document/page/capture 编号和加载状态。
+现金字符串必须是限定长度的数字，不保留任意文本。JS 和原生层都过滤字段。
+完整 URL 的查询值、原始日志正文、Cookie、账号 ID、安全参数等不写入诊断文件。
+每个文档最多观察 128 个 API 请求、128 个资源条目、768 条消息；每个应用进程日志最多 1024 条/512 KiB，单条 4096 字节。
+没有 UI；iOS 最低 15.0，包含 arm64 与 arm64e。
 
-完整响应可能含有账号标识或其他私密字段，不做正文脱敏以免丢失待检查字段。
-文件只写入本机专用目录，不上传、不输出到控制台、不混入摘要、源代码或分发包。
-分析/对外反馈时需要选择必要字段并脱敏，不要公开整个文件。
+## 证据如何解释
 
-## 一次性采集规则
-
-- 只观察 HTTPS 百度域名上精确路径 /incentive/uanti 的 XMLHttpRequest。
-- 只有收到正常 load 终止事件、最终 responseURL 仍匹配目标、HTTP 状态为 100–599，才尝试保存。
-- 只保存 responseType 为空或 text 的 responseText；JSON 对象和二进制不会被重新序列化冒充原文。
-- 最多 1,048,576 个 UTF-16 代码单元。超过上限会跳过并记录 size_limit，绝不截断后声称完整。
-  最终文件还受 8 MiB 大小限制。空文本或无效 JSON 也会原样保存，方便区分空响应和解析失败。
-- 每页最多成功发送一次私有消息；原生层每次应用进程只尝试写一次。
-  同一数据容器、同一版本只保留一个成功文件，重新启动或刷新不覆盖它。
-  如一次写入失败，摘要显示失败；重启应用后可重新尝试。已有文件则保留原文件及其原采集时间。
-- 原生层先写独立临时文件并刷新，再以不覆盖的方式发布最终文件；失败时清理本次临时文件。
-  进程突然终止可能留下自己的临时文件，不会自动删除其他文件。目录 0700，文件 0600，
-  使用 iOS 首次解锁后的文件保护属性。
-
-## 摘要事件判读
-
-| 事件 | 含义 |
+| 事件 | 能证明什么 |
 | --- | --- |
-| native_ready / observer_ready | 原生组件/页面观察器已运行，不表示目标请求已经发生 |
-| request_started / request_complete | 目标 XHR 开始/结束；结合 terminal_event、http_status、json_state 判断 |
-| full_response_saved | 原生层已成功保存完整文件；含 filename、file_bytes、本地请求关联信息 |
-| full_response_already_exists | 原文件已存在并保留，不能当作本次的新响应 |
-| full_response_save_failed | 私有文件未成功保存，capture_reason 表明写入或序列化阶段问题 |
-| full_response_skipped | 正文类型不支持、读取失败、超限或消息发送失败；没有声称完整采集成功 |
-| observation_window_elapsed | 15 秒观察窗口结束，不代表请求本身超时；不会主动取消请求 |
+| telemetry_ready | 各观察入口是否安装成功，不能当作请求已发生 |
+| telemetry_attempt | 在原始发送 API 调用前看到了目标参数，原 API 仍可能抛错 |
+| telemetry_handed_to_browser | 原始 src setter/XHR send 正常返回，不能单凭这个证明网络成功 |
+| telemetry_image_load | 对应图片产生 load；支持图片加载成功，不直接提供 HTTP 状态码、最终重定向主机或服务器处理内容 |
+| telemetry_image_error | 图片产生 error；可能是网络或解码错误，不能断言服务器没有收到 |
+| telemetry_xhr_complete | 记录 loadend、终止类型、实际 HTTP 状态及最终 URL 是否仍为目标，不能把 HTTP 200 当作余额业务被接受 |
+| telemetry_beacon_return | queued=true 仅表示浏览器接受排队，不表示服务器确认收到 |
+| telemetry_resource | 浏览器产生资源记录，保留可用的时长、大小、responseStatus；0 或缺失不是 HTTP 200，也不能直接判断缓存命中 |
+| telemetry_api_threw | 原 API 抛错，同一异常仍交给应用 |
+| telemetry_observation_expired | 20 秒观察窗口到期，仅移除观察监听，不取消请求 |
+| telemetry_superseded | 同一图片/XHR 被改为另一次请求，旧记录不能对应后续加载事件 |
+| telemetry_listener_failed | 监听未完整安装，不影响原始请求调用 |
 
-同一个 WKWebView 重新导航会重置 request_id；按日志顺序、observer_ready、page_id 和时间关联。
-security_param_nonempty=true 只说明查询参数里有非空值，不证明该值有效或服务器据此拒绝。
-errno 字符串 "0" 和数字 0 不同，isSafe 字符串 "0" 在 JS 中为真；摘要保留实际类型。
-若只有弹窗而没有新的 request_started，可能是页面沿用了先前结果，不能视作新请求。
+用 document_id + page_id + capture_id 关联 API 与加载结果。capture_id=0 表示资源记录未对应到一个已捕获 API。
+相同 URL 被多次使用时，资源条目标记 correlation_ambiguous=true，不强行关联到其中一次。
+事件 payload_timestamp_ms 来自原统计参数；timestamp_ms 由原生层记录消息时间。
+若统计事件有现金值，cash_num 才会出现；cash_num_present 及类型可以区分缺失和不符合允许格式。
 
-## 行为边界与测试
+核实“实际带出 2.53”至少应看到原发送入口记录 cash_num=2.53；加载/资源结果可补充传输完成情况。
+这属于客户端观测，不是服务端签名审计。跨域图片 load 或不完整 Resource Timing 不能证明服务器内部最终如何使用数据。
+不能凭源码，或另一时间、另一条 action=zubc 的通信记录，替代目标 action=zpblog 的实际记录。
+如果本次没有目标事件，先检查 ready 和浏览器是否真的产生该统计，不生成一个假的测试上报来冒充证据。
 
-不读取请求体、Cookie、请求头，不保存完整请求 URL 或请求参数值。
-不修改请求、响应、资格结果、插件配置、账号或容器，不自动发请求、重放请求或领取奖励。
-只覆盖 XHR；不覆盖 fetch、原生请求或请求前的 SDK 回调。
-页面消息属于不可信输入，原生层检查类型、字段和大小；日志仍然只是客户端观测证据。
-摘要每页最多 128 次请求，每个进程最多 1024 条/512 KiB，单行最多 4096 字节。
-完整响应有独立的写入路径和上限，不会被摘要单行限制丢弃。
-方法包装仍可能产生运行时影响，模拟测试不能保证与所有第三方插件完全兼容。
+## 构建验证
 
-开发测试：node --test RewardDiagnostics/observer.test.cjs
-macOS/Xcode 构建：bash RewardDiagnostics/build.sh
-输出：dist-ui1/reward-diagnostics/，包含 dylib、SHA256SUMS.txt、源码和本说明。
-构建检查两个架构、临时签名与签名校验。包内不包含真实手机日志。
+node --test RewardDiagnostics/observer.test.cjs RewardDiagnostics/telemetry.test.cjs
+bash RewardDiagnostics/build.sh
+
+测试检查原始参数/返回值/异常/回调保持、端点与事件范围、字段过滤、并发与复用关联、生命周期与资源状态。
+macOS/Xcode 编译两个架构、合并并执行临时签名和校验。构建与测试通过不等于手机已经采到证据。
+分发包只含组件、源码与说明，不含真实手机日志或账号数据。
