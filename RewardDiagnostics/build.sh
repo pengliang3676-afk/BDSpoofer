@@ -26,7 +26,7 @@ lipo -create "$BDSD_BUILD/arm64.dylib" "$BDSD_BUILD/arm64e.dylib" \
     -output "$BDSD_DIST/BDSRewardDiagnostics_0.1.0.dylib"
 codesign --force --sign - --timestamp=none "$BDSD_DIST/BDSRewardDiagnostics_0.1.0.dylib"
 codesign --verify --strict "$BDSD_DIST/BDSRewardDiagnostics_0.1.0.dylib"
-lipo -verify_arch arm64 arm64e "$BDSD_DIST/BDSRewardDiagnostics_0.1.0.dylib"
+lipo "$BDSD_DIST/BDSRewardDiagnostics_0.1.0.dylib" -verify_arch arm64 arm64e
 lipo -info "$BDSD_DIST/BDSRewardDiagnostics_0.1.0.dylib"
 otool -L "$BDSD_DIST/BDSRewardDiagnostics_0.1.0.dylib"
 cp RewardDiagnostics/README.md "$BDSD_DIST/"
