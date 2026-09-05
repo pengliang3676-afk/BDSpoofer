@@ -1,138 +1,23 @@
-name: Build BDSpoofer and Crane Manager
-
+name: Build BDSpoofer UI1 and Crane Manager
 on:
   push:
-    branches: [main, master]
+    branches: ["**"]
   workflow_dispatch:
-
 jobs:
   build:
     runs-on: macos-14
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Show Xcode and SDK info
-        run: |
-          xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-path
-          xcrun --sdk iphoneos --show-sdk-version
-
-      - name: Validate sources and property lists
-        run: |
-          set -euo pipefail
-          test "$(grep -c 'BDSDevice(@' CraneManager/BDSCraneManager.m)" -eq 36
-          ! grep -q 'iPhone12,8' CraneManager/BDSCraneManager.m
-          test "$(grep -c '@"machine": @"iPhone' BDSpoofer.m)" -eq 37
-          grep -q 'profile\[@"machine"\].*iPhone12,8' BDSpoofer.m
-          grep -q '统一随机（%lu款）' BDSpoofer.m
-          test "$(grep -o 'BDSSystem(@"' BDSpoofer.m | wc -l | tr -d ' ')" -eq 78
-          test "$(grep -o 'BDSSystem(@"' CraneManager/BDSCraneManager.m | wc -l | tr -d ' ')" -eq 78
-          grep -q '___Crane_Containers' CraneManager/BDSCraneManager.m
-          grep -q 'managerResolvedPath' CraneManager/BDSCraneManager.m
-          plutil -lint bdspoofer_config.plist
-          plutil -lint CraneManager/Info.plist
-          plutil -lint CraneManager/BDSCraneManager.entitlements
-          plutil -lint CraneManager/BDSCraneManager.libSandy.plist
-
-      - name: Build injected dylib for arm64 and arm64e
-        run: |
-          set -euo pipefail
-          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-          COMMON_FLAGS=(
-            -isysroot "$SDK_PATH"
-            -miphoneos-version-min=15.0
-            -fobjc-arc
-            -dynamiclib
-            -framework Foundation
-            -framework UIKit
-            -framework CoreGraphics
-            -framework AdSupport
-            -framework CoreTelephony
-            -framework Security
-            -framework WebKit
-            -framework SystemConfiguration
-            -framework CoreLocation
-            -framework Contacts
-            -framework EventKit
-            -install_name @rpath/BDSpoofer_1.8.1.dylib
-          )
-          xcrun --sdk iphoneos clang -arch arm64 "${COMMON_FLAGS[@]}" \
-            -o BDSpoofer_1.8.1_arm64.dylib BDSpoofer.m
-          xcrun --sdk iphoneos clang -arch arm64e "${COMMON_FLAGS[@]}" \
-            -o BDSpoofer_1.8.1_arm64e.dylib BDSpoofer.m
-          lipo -create BDSpoofer_1.8.1_arm64.dylib BDSpoofer_1.8.1_arm64e.dylib \
-            -output BDSpoofer_1.8.1.dylib
-
-      - name: Build Crane manager app for arm64 and arm64e
-        run: |
-          set -euo pipefail
-          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-          COMMON_FLAGS=(
-            -isysroot "$SDK_PATH"
-            -miphoneos-version-min=15.0
-            -fobjc-arc
-            -fblocks
-            -framework Foundation
-            -framework UIKit
-            -framework CoreGraphics
-            -ldl
-          )
-          xcrun --sdk iphoneos clang -arch arm64 "${COMMON_FLAGS[@]}" \
-            -o BDSCraneManager_arm64 CraneManager/BDSCraneManager.m
-          xcrun --sdk iphoneos clang -arch arm64e "${COMMON_FLAGS[@]}" \
-            -o BDSCraneManager_arm64e CraneManager/BDSCraneManager.m
-          lipo -create BDSCraneManager_arm64 BDSCraneManager_arm64e \
-            -output BDSCraneManager
-
-      - name: Stage and sign RootHide package
-        run: |
-          set -euo pipefail
-          APP=package-root/Applications/BDSCraneManager.app
-          mkdir -p "$APP" package-root/Library/libSandy package-root/DEBIAN dist
-          cp BDSCraneManager "$APP/BDSCraneManager"
-          cp CraneManager/Info.plist "$APP/Info.plist"
-          cp bdspoofer_config.plist "$APP/bdspoofer_config.plist"
-          cp CraneManager/AppIcon60x60@2x.png "$APP/AppIcon60x60@2x.png"
-          cp CraneManager/AppIcon60x60@3x.png "$APP/AppIcon60x60@3x.png"
-          cp CraneManager/BDSCraneManager.libSandy.plist \
-            package-root/Library/libSandy/BDSCraneManager.plist
-          cp CraneManager/control package-root/DEBIAN/control
-          cp CraneManager/postinst package-root/DEBIAN/postinst
-          cp CraneManager/prerm package-root/DEBIAN/prerm
-          chmod 0755 "$APP/BDSCraneManager" package-root/DEBIAN/postinst package-root/DEBIAN/prerm
-          codesign --force --sign - \
-            --entitlements CraneManager/BDSCraneManager.entitlements \
-            "$APP"
-
-      - name: Build and verify DEB
-        run: |
-          set -euo pipefail
-          mkdir -p deb-build
-          printf '2.0\n' > deb-build/debian-binary
-          COPYFILE_DISABLE=1 tar -C package-root/DEBIAN -czf deb-build/control.tar.gz .
-          COPYFILE_DISABLE=1 tar -C package-root --exclude='./DEBIAN' -czf deb-build/data.tar.gz .
-          (cd deb-build && ar -rc ../dist/BDSpooferCraneManager_1.0.2_RootHide.deb \
-            debian-binary control.tar.gz data.tar.gz)
-          ar -t dist/BDSpooferCraneManager_1.0.2_RootHide.deb
-          tar -tzf deb-build/data.tar.gz
-          lipo -info package-root/Applications/BDSCraneManager.app/BDSCraneManager
-          codesign -d --entitlements :- package-root/Applications/BDSCraneManager.app
-
-      - name: Verify dylib
-        run: |
-          set -euo pipefail
-          file BDSpoofer_1.8.1.dylib
-          lipo -info BDSpoofer_1.8.1.dylib
-          otool -L BDSpoofer_1.8.1.dylib
-          otool -l BDSpoofer_1.8.1.dylib | grep -A5 LC_BUILD_VERSION
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/checkout@v4
         with:
-          name: BDSpoofer-CraneManager-1.0.2
+          fetch-depth: 0
+      - name: Build and verify release with Xcode
+        run: bash scripts/build_release_xcode.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BDSpoofer-1.8.1-UI1-CraneManager-1.0.2-ui1
           path: |
-            dist/BDSpooferCraneManager_1.0.2_RootHide.deb
-            BDSpoofer_1.8.1.dylib
-            bdspoofer_config.plist
+            dist-ui1/BDSpoofer_1.8.1_UI1.dylib
+            dist-ui1/BDSpooferCraneManager_1.0.2-ui1_RootHide.deb
+            dist-ui1/RELEASE_UI1.md
+            dist-ui1/bdspoofer_config.plist
+            dist-ui1/SHA256SUMS.txt

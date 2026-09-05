@@ -1,0 +1,71 @@
+#import <Foundation/Foundation.h>
+
+static NSArray<NSArray<NSDictionary *> *> *BDSSettingGroups(void) {
+    return @[
+        @[@{@"key":@"enabled",@"name":@"基础功能"},
+          @{@"key":@"spoofAdvertisingIdentifiers",@"name":@"广告标识参数"},
+          @{@"key":@"spoofProcessHardware",@"name":@"主机名与内存参数"},
+          @{@"key":@"spoofLocale",@"name":@"语言与地区参数"},
+          @{@"key":@"spoofCarrier",@"name":@"运营商参数"},
+          @{@"key":@"spoofStorage",@"name":@"存储参数"}],
+        @[@{@"key":@"spoofBaiduSDK",@"name":@"百度身份参数"},
+          @{@"key":@"spoofSysctl",@"name":@"系统硬件参数"},
+          @{@"key":@"bypassJailbreakDetect",@"name":@"防越狱检测"},
+          @{@"key":@"spoofKeychain",@"name":@"Keychain 拦截",@"off":@YES},
+          @{@"key":@"spoofAppGroup",@"name":@"App Group 隔离",@"off":@YES},
+          @{@"key":@"spoofWebKitCookie",@"name":@"WebKit Cookie 过滤",@"off":@YES},
+          @{@"key":@"spoofUserAgent",@"name":@"自定义 User-Agent",@"off":@YES}],
+        @[@{@"key":@"spoofWiFi",@"name":@"Wi-Fi 参数"},
+          @{@"key":@"spoofLocalIP",@"name":@"本地 IP 参数"},
+          @{@"key":@"spoofPasteboard",@"name":@"剪贴板保护"},
+          @{@"key":@"spoofBootTime",@"name":@"启动时间参数"},
+          @{@"key":@"spoofCPU",@"name":@"CPU 参数"},
+          @{@"key":@"spoofLocation",@"name":@"定位保护"},
+          @{@"key":@"spoofProxyDetection",@"name":@"代理检测隐藏"},
+          @{@"key":@"spoofStatfs",@"name":@"剩余空间参数"},
+          @{@"key":@"spoofDlopen",@"name":@"dlopen 反检测"},
+          @{@"key":@"spoofUbiquity",@"name":@"iCloud 隔离"},
+          @{@"key":@"spoofPrivacyPermissions",@"name":@"通讯录与日历保护"},
+          @{@"key":@"spoofBattery",@"name":@"电池参数"}]
+    ];
+}
+static NSArray<NSString *> *BDSRegularKeys(void) {
+    NSMutableArray *keys=[NSMutableArray array];
+    for (NSArray *group in BDSSettingGroups()) for(NSDictionary *item in group)
+        if(![item[@"off"] boolValue]) [keys addObject:item[@"key"]];
+    return keys;
+}
+static NSArray<NSString *> *BDSRiskKeys(void) {
+    return @[@"spoofKeychain",@"spoofAppGroup",@"spoofWebKitCookie",@"spoofUserAgent"];
+}
+static NSArray<NSString *> *BDSSelectedTargetKeys(void) {
+    return @[@"spoofBaiduTargetedSystem",@"spoofBaiduTargetedModel",@"spoofBaiduTargetedScreen",@"spoofBaiduTargetedUA",@"spoofBaiduTargetedPush"];
+}
+static NSDictionary *BDSSafeSwitchValues(void) {
+    NSMutableDictionary *values=[NSMutableDictionary dictionary];
+    for(NSString *key in BDSRegularKeys()) values[key]=@NO;
+    for(NSString *key in BDSRiskKeys()) values[key]=@NO;
+    for(NSString *key in BDSSelectedTargetKeys()) values[key]=@NO;
+    values[@"spoofScreen"]=@NO;
+    values[@"spoofBaiduTargeted"]=@NO;
+    return values;
+}
+static void BDSSeedInitialIdentities(NSMutableDictionary *config, NSDictionary *saved) {
+    for(NSString *key in @[@"idfa",@"idfv",@"deviceID",@"cuid",@"utdid"]) {
+        id value=saved[key];
+        if([value isKindOfClass:NSString.class] && [value length]) { config[key]=value; continue; }
+        NSString *fresh=NSUUID.UUID.UUIDString;
+        if([key isEqualToString:@"cuid"] || [key isEqualToString:@"utdid"]) fresh=[fresh stringByReplacingOccurrencesOfString:@"-" withString:@""];
+        config[key]=[key isEqualToString:@"utdid"]?fresh.lowercaseString:fresh.uppercaseString;
+    }
+}
+// Initialization is separate from randomization. Explicit saved choices survive.
+static void BDSApplyInitialDefaults(NSMutableDictionary *config, NSDictionary *saved) {
+    for(NSString *key in BDSRegularKeys()) config[key]=saved[key] ?: @YES;
+    for(NSString *key in BDSRiskKeys()) config[key]=saved[key] ?: @NO;
+    for(NSString *key in BDSSelectedTargetKeys()) config[key]=saved[key] ?: @NO;
+    config[@"spoofBaiduTargeted"]=saved[@"spoofBaiduTargeted"] ?: @NO;
+    config[@"spoofScreen"]=@NO;
+    config[@"targetedScreenHwMachine"]=saved[@"targetedScreenHwMachine"] ?: config[@"targetedHwMachine"] ?: @"iPhone14,6";
+    config[@"configVersion"]=@186;
+}
