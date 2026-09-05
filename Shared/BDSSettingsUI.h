@@ -10,17 +10,32 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
 @interface BDSActionPage : UITableViewController
 @property(nonatomic,copy) NSArray<NSDictionary *> *items;
 @property(nonatomic,copy) NSString *pageSummary;
+@property(nonatomic,copy) NSString *(^summaryProvider)(void);
 @end
 @implementation BDSActionPage
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.tableView.rowHeight=58;
+    self.tableView.sectionHeaderHeight=UITableViewAutomaticDimension;
+    self.tableView.estimatedSectionHeaderHeight=420;
     self.tableView.separatorStyle=UITableViewCellSeparatorStyleNone;
     self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"关闭" style:UIBarButtonItemStylePlain target:self action:@selector(close)];
+}
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    if(self.summaryProvider) self.pageSummary=self.summaryProvider();
+    [self.tableView reloadData];
 }
 - (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return self.items.count; }
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section { return self.pageSummary; }
+- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
+    if([view isKindOfClass:UITableViewHeaderFooterView.class]) {
+        UILabel *label=((UITableViewHeaderFooterView *)view).textLabel;
+        label.numberOfLines=0;
+        label.text=self.pageSummary;
+    }
+}
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
     NSDictionary *item=self.items[indexPath.row];

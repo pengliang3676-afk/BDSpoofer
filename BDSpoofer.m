@@ -3204,13 +3204,37 @@ static NSDictionary *BDSRandomTargetedProfileValues(void) {
 }
 
 static NSString *BDSConfigSummary(void) {
-    return [NSString stringWithFormat:
-        @"状态：%@\n设备：%@\n系统：iOS %@ (%@)\n随机范围：%@",
+    NSMutableString *summary = [NSMutableString stringWithFormat:
+        @"基础参数（保存值）\n基础总开关：%@\n设备：%@\n系统：iOS %@ (%@)\n基础随机范围：%@",
         cfgBool(@"enabled", NO) ? @"已开启" : @"已关闭",
         cfgStr(@"deviceProfileName", @"iPhone SE (3rd generation)"),
         cfgStr(@"systemVersion", @"15.4.1"),
         cfgStr(@"systemBuild", @"19E258"),
         BDSDeviceRangeName()];
+    [summary appendFormat:@"\n\n定向参数（保存值）\n定向总开关：%@",
+        cfgBool(@"spoofBaiduTargeted", NO) ? @"已开启" : @"已关闭"];
+    NSString *(^state)(NSString *) = ^NSString *(NSString *key) {
+        return cfgBool(key, NO) ? @"开" : @"关";
+    };
+    [summary appendFormat:@"\n机型 [%@]：%@（%@）",
+        state(@"spoofBaiduTargetedModel"),
+        cfgStr(@"targetedDeviceProfileName", @"未设置"), cfgStr(@"targetedHwMachine", @"未设置")];
+    [summary appendFormat:@"\n系统 [%@]：iOS %@（%@）",
+        state(@"spoofBaiduTargetedSystem"),
+        cfgStr(@"targetedSystemVersion", @"未设置"), cfgStr(@"targetedSystemBuild", @"未设置")];
+    [summary appendFormat:@"\n屏幕 [%@]：%ld×%ld @%ldx\n物理像素：%ld×%ld",
+        state(@"spoofBaiduTargetedScreen"),
+        (long)cfgInt(@"targetedScreenWidth", 0), (long)cfgInt(@"targetedScreenHeight", 0),
+        (long)cfgInt(@"targetedScreenScale", 0),
+        (long)cfgInt(@"targetedNativeScreenWidth", 0), (long)cfgInt(@"targetedNativeScreenHeight", 0)];
+    [summary appendFormat:@"\nUA 系统 [%@]：iOS %@（%@）",
+        state(@"spoofBaiduTargetedUA"),
+        cfgStr(@"targetedUASystemVersion", @"未设置"), cfgStr(@"targetedUASystemBuild", @"未设置")];
+    [summary appendFormat:@"\nPush 机型 [%@]：%@（%@）",
+        state(@"spoofBaiduTargetedPush"),
+        cfgStr(@"targetedPushDeviceProfileName", @"未设置"), cfgStr(@"targetedPushHwMachine", @"未设置")];
+    [summary appendString:@"\n总开关与对应子项均开启时才启用。\n以上为配置保存值，不代表已验证百度实际读取结果。"];
+    return summary;
 }
 
 // The system alert title reserves a large bottom inset.  Use a compact custom
@@ -3372,8 +3396,9 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"BDSpoofer 1.8.1 UI1";
+    page.title=@"BDSpoofer 1.8.1 UI1.1";
     page.pageSummary=BDSConfigSummary();
+    page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
     NSArray *titles=@[@"一键随机整套基础参数",@"一键随机整套高级参数",@"一键随机定向指纹参数",@"反关联设置",@"诊断与自检",@"恢复安全",@"关闭"];
     NSMutableArray *items=[NSMutableArray array];
