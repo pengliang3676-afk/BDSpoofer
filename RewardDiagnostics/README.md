@@ -1,19 +1,29 @@
-# 百度现金统计临时取证组件 0.4.0
+# 百度现金统计临时取证组件 0.5.0
 
 目标 Bundle ID：com.baidu.BaiduMobileInfo。只记录活动页现金统计的客户端发送证据，不修改收益或资格。
 
 ## 使用
 
-1. 在巨魔注入器 / TrollFools 中移除旧 BDSRewardDiagnostics_0.3.0.dylib，注入 BDSRewardDiagnostics_0.4.0.dylib。
+1. 在巨魔注入器 / TrollFools 中移除旧 BDSRewardDiagnostics_0.4.0.dylib，注入 BDSRewardDiagnostics_0.5.0.dylib。
    如有更早诊断版本，也先移除；不同版本不能同时加载。原插件与账号、容器配置保持当前状态。
 2. 完全退出百度后重新打开活动页，停留约 5 秒。无需额外执行领取或提现。
-3. 手机保持连接，读取当前容器 Documents/BDSRewardDiagnostics/session-*.jsonl，按 version=0.4.0 筛选。
+3. 手机保持连接，读取当前容器 Documents/BDSRewardDiagnostics/session-*.jsonl，按 version=0.5.0 筛选。
 4. 取证结束后移除本诊断组件。旧日志仍保留，本版本不删除或覆盖旧完整响应文件。
 
 ## 本次运行范围
 
-0.4.0 实际嵌入 telemetry.js，停止运行旧的资格接口观察器。
+0.5.0 沿用 0.4.0 的 telemetry.js 和内部消息通道；停止运行旧的资格接口观察器。
 observer.js 和 observer.test.cjs 保留为历史源码/回归资料，编译脚本不再嵌入它们。
+
+### 新增的限时 Web Inspector 入口
+
+仅在启动时发现当前容器 Documents/BDSRewardDiagnostics/enable-web-inspector 文件，且其修改时间在最近 600 秒内，才临时允许本应用的 WKWebView 被远程检查。该文件由取证操作创建，不随组件自动生成。系统的 Safari Web Inspector 开关也必须开启。
+
+新系统优先使用 inspectable；旧系统以 respondsToSelector 检查 _allowsRemoteInspection / _setAllowsRemoteInspection:。记录实际 setter 后的 getter 结果，不把存在方法当作成功接入。此设置会允许已配对电脑检查本应用其他 WKWebView 的内容；电脑采集器必须只处理指定活动页面及目标统计请求。
+
+按门控文件时间计算，最多开放 10 分钟。主线程定时回调恢复仍存活视图的原始设置；应用暂停时，恢复回调需要等应用恢复执行。过期后不再为新增视图开启检查。结束后应关闭百度、移除门控文件和诊断组件，并恢复系统原有的 Web Inspector 设置。
+
+Web Inspector 用于观察新发生的原始 Network 事件，不补造历史响应。构建通过不等于手机可枚举页面或能取得 HTTP 状态，必须在设备上分别验证。
 
 仅处理 HTTPS h2tcbox.baidu.com 的 /ztbox，且解析出的事件 actiondata.id=10290、content.page=y_mission_index。
 从实际交给图片 src/setAttribute、XHR 或 sendBeacon 的参数中提取现金字段 actiondata.content.ext.num。

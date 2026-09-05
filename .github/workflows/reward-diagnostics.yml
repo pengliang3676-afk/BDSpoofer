@@ -17,5 +17,5 @@ jobs:
         run: bash RewardDiagnostics/build.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: BDSRewardDiagnostics-0.4.0
+          name: BDSRewardDiagnostics-0.5.0
           path: dist-ui1/reward-diagnostics/

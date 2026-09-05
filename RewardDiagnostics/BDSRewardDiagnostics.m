@@ -2,13 +2,17 @@
 #import <UIKit/UIKit.h>
 #import <WebKit/WebKit.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <math.h>
 #import "ObserverScript.h"
 
-static NSString *const BDSDVersion = @"0.4.0";
+static NSString *const BDSDVersion = @"0.5.0";
 static NSString *const BDSDHandlerName = @"bds_reward_diag_040";
 static char BDSDControllerKey, BDSDWebViewKey;
 static dispatch_queue_t BDSDLogQueue;
+static char BDSDInspectionKey;
+static NSDate *BDSDInspectionDeadline;
+static NSHashTable<WKWebView *> *BDSDInspectedViews;
 
 static BOOL BDSDBaiduURL(NSURL *url) {
     NSString *host = url.host.lowercaseString;
@@ -62,6 +66,64 @@ static NSString *BDSDScript(void) {
         script = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
     });
     return script;
+}
+
+// A local, short-lived opt-in file enables inspection for this diagnostic session.
+// The previous per-view setting is restored when the gate expires.
+static void BDSDInspectView(WKWebView *view) {
+    if (!BDSDInspectionDeadline || [BDSDInspectionDeadline timeIntervalSinceNow] <= 0 ||
+        objc_getAssociatedObject(view, &BDSDInspectionKey)) return;
+    @try {
+        SEL getter = NSSelectorFromString(@"isInspectable");
+        SEL setter = NSSelectorFromString(@"setInspectable:");
+        if (![view respondsToSelector:getter] || ![view respondsToSelector:setter]) {
+            getter = NSSelectorFromString(@"_allowsRemoteInspection");
+            setter = NSSelectorFromString(@"_setAllowsRemoteInspection:");
+        }
+        if (![view respondsToSelector:getter] || ![view respondsToSelector:setter]) {
+            BDSDLog(@{@"event":@"inspection_unavailable"});
+            return;
+        }
+        BOOL previous = ((BOOL (*)(id, SEL))objc_msgSend)(view, getter);
+        objc_setAssociatedObject(view, &BDSDInspectionKey,
+            @{@"previous":@(previous), @"setter":NSStringFromSelector(setter)}, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [BDSDInspectedViews addObject:view];
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(view, setter, YES);
+        BOOL enabled = ((BOOL (*)(id, SEL))objc_msgSend)(view, getter);
+        BDSDLog(@{@"event":@"inspection_enabled", @"enabled":@(enabled), @"previous":@(previous)});
+    } @catch (__unused NSException *exception) {
+        BDSDLog(@{@"event":@"inspection_failed"});
+    }
+}
+
+static void BDSDPrepareInspection(void) {
+    NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *gate = [documents stringByAppendingPathComponent:@"BDSRewardDiagnostics/enable-web-inspector"];
+    NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:gate error:nil];
+    NSDate *modified = attributes[NSFileModificationDate];
+    NSTimeInterval age = modified ? -modified.timeIntervalSinceNow : 1e9;
+    if (!modified || age < -5 || age >= 600) {
+        BDSDLog(@{@"event":@"inspection_gate_inactive"});
+        return;
+    }
+    BDSDInspectionDeadline = [modified dateByAddingTimeInterval:600];
+    BDSDInspectedViews = [NSHashTable weakObjectsHashTable];
+    BDSDLog(@{@"event":@"inspection_gate_active", @"remaining_seconds":@(600-age)});
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((600-age)*NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        BDSDInspectionDeadline = nil;
+        for (WKWebView *view in BDSDInspectedViews) {
+            @try {
+                NSDictionary *state = objc_getAssociatedObject(view, &BDSDInspectionKey);
+                SEL setter = NSSelectorFromString(state[@"setter"]);
+                if (state && [view respondsToSelector:setter])
+                    ((void (*)(id, SEL, BOOL))objc_msgSend)(view, setter, [state[@"previous"] boolValue]);
+            } @catch (__unused NSException *exception) {
+                BDSDLog(@{@"event":@"inspection_restore_failed"});
+            }
+        }
+        [BDSDInspectedViews removeAllObjects];
+        BDSDLog(@{@"event":@"inspection_gate_expired"});
+    });
 }
 
 // Rebuild page messages from bounded fields. No URL queries, bodies or account identifiers.
@@ -134,6 +196,7 @@ static void BDSDPrepareController(WKUserContentController *controller) {
 static void BDSDAttachView(WKWebView *view) {
     @try {
     if (!view) return;
+    BDSDInspectView(view);
     BDSDPrepareController(view.configuration.userContentController);
     if (!objc_getAssociatedObject(view, &BDSDWebViewKey))
         objc_setAssociatedObject(view, &BDSDWebViewKey, NSUUID.UUID.UUIDString, OBJC_ASSOCIATION_COPY_NONATOMIC);
@@ -181,6 +244,7 @@ __attribute__((constructor)) static void BDSDStart(void) {
         if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.baidu.BaiduMobileInfo"]) return;
         BDSDLogQueue = dispatch_queue_create("com.codex.bd-reward-diagnostics.log", DISPATCH_QUEUE_SERIAL);
         dispatch_async(dispatch_get_main_queue(), ^{
+            BDSDPrepareInspection();
             BOOL init = BDSDHook(WKWebView.class, @selector(initWithFrame:configuration:), (IMP)BDSDInit, (IMP *)&BDSDOriginalInit);
             BOOL move = BDSDHook(WKWebView.class, @selector(didMoveToWindow), (IMP)BDSDMove, (IMP *)&BDSDOriginalMove);
             BDSDLog(@{@"event":@"native_ready", @"init_hook":@(init), @"view_hook":@(move)});
