@@ -59,7 +59,7 @@ function fixture(options = {}) {
     const context = {
         XMLHttpRequest: XHR, URL,
         location: {hostname:options.host || 'mbd.baidu.com', href:'https://mbd.baidu.com/newspage/activity'},
-        webkit:{messageHandlers:{bds_reward_diag_010:{postMessage(value) {
+        webkit:{messageHandlers:{bds_reward_diag_020:{postMessage(value) {
             if (options.sinkThrows) throw new Error('sink unavailable');
             messages.push(JSON.parse(JSON.stringify(value)));
         }}}},
@@ -91,7 +91,7 @@ test('preserves call arguments, return values, response and application callback
     assert.deepEqual(xhr.openArgs, ['POST','/incentive/uanti',true,'name','password']);
     assert.equal(xhr.send(body), 'original-send-result');
     assert.equal(xhr.sendArgs[0], body);
-    const response = '{"errno":0,"data":{"isSafe":false},"token":"RESPONSE_SECRET","errmsg":"PRIVATE"}';
+    const response = '{"errno":0,"data":{"isSafe":false},"token":"RESPONSE_SECRET","errmsg":"request failed"}';
     xhr.complete(response);
     assert.equal(callbackCount, 1);
     assert.equal(callbackText, response);
@@ -102,7 +102,7 @@ test('preserves call arguments, return values, response and application callback
     assert.equal(f.completeRecord().elapsed_ms, 25);
     assert.equal(f.timers.size, 0);
     const serialized = JSON.stringify(f.messages);
-    for (const secret of ['BODY_SECRET','RESPONSE_SECRET','PRIVATE','password','name','token','errmsg']) {
+    for (const secret of ['BODY_SECRET','RESPONSE_SECRET','PRIVATE','password','name','token']) {
         assert.ok(!serialized.includes(secret), secret);
     }
 });
@@ -231,4 +231,47 @@ test('unsafe business field contents are omitted rather than copied', () => {
     assert.equal(r.is_safe_value, undefined);
     assert.equal(r.is_safe_truthy, true);
     assert.ok(!JSON.stringify(f.messages).includes('PRIVATE'));
+});
+
+test('records only security parameter presence and emptiness, never its value', () => {
+    for (const [query, present, nonempty, placeholder, count] of [
+        ['',false,false,false,0],
+        ['?zid=',true,false,false,1],
+        ['?zid=%20',true,false,false,1],
+        ['?zid=null',true,true,true,1],
+        ['?zid=undefined',true,true,true,1],
+        ['?zid=ZID_SECRET_VALUE',true,true,false,1],
+        ['?zid=&zid=ZID_SECRET_VALUE',true,true,false,2]
+    ]) {
+        const f=fixture(); f.start('/incentive/uanti'+query).complete('{"errno":0,"data":{"isSafe":false}}');
+        for (const r of f.messages.filter(x=>x.event.startsWith('request_'))) {
+            assert.equal(r.security_param_present,present);
+            assert.equal(r.security_param_nonempty,nonempty);
+            assert.equal(r.security_param_placeholder,placeholder);
+            assert.equal(r.security_param_count,count);
+        }
+        assert.ok(!JSON.stringify(f.messages).includes('ZID_SECRET_VALUE'));
+    }
+});
+test('retains bounded reason fields with credentials and identifiers redacted', () => {
+    const f=fixture();
+    const reason='token=PRIVATE_SECRET contact abc@example.com 13812345678 https://example.com/private ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    f.start().complete(JSON.stringify({errno:0,errmsg:'ok',data:{isSafe:false,reasonCode:123,reason,
+        account:{name:'PRIVATE_NAME'},unknown:'PRIVATE_OTHER'}}));
+    const r=f.completeRecord();
+    assert.equal(r.reason_fields['data.reasonCode'],123);
+    assert.equal(r.reason_fields['root.errmsg'],'ok');
+    assert.ok(r.reason_fields['data.reason'].includes('[redacted]'));
+    for (const v of ['PRIVATE_SECRET','abc@example.com','13812345678','example.com/private','ABCDEFGHIJKLMNOPQRSTUVWXYZ','PRIVATE_NAME','PRIVATE_OTHER'])
+        assert.ok(!JSON.stringify(r).includes(v),v);
+});
+test('limits reason text size and leaves the original response intact', () => {
+    const f=fixture(), x=f.start();
+    const body=JSON.stringify({errno:0,errmsg:'x'.repeat(5000),
+        data:{isSafe:false,reason:'说明'.repeat(500),message:'更多说明'.repeat(500),reason_code:7}});
+    x.complete(body);
+    const reasons=f.completeRecord().reason_fields;
+    assert.ok(Object.keys(reasons).length<=8);
+    assert.ok(Object.values(reasons).filter(v=>typeof v==='string').reduce((n,v)=>n+v.length,0)<=256);
+    assert.equal(x.responseText,body);
 });

@@ -1,8 +1,8 @@
 /* Passive observer for the activity eligibility request. No business overrides. */
 (function () {
     'use strict';
-    var marker = '__bdsRewardDiagnostics010';
-    var handler = 'bds_reward_diag_010';
+    var marker = '__bdsRewardDiagnostics020';
+    var handler = 'bds_reward_diag_020';
     var endpoint = '/incentive/uanti';
     var maxBody = 65536;
     var maxRequests = 128;
@@ -34,6 +34,43 @@
     function kind(value) {
         return value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
     }
+    function parameterSummary(url) {
+        var values = new URL(url, location.href).searchParams.getAll('zid');
+        return {
+            security_param_present: values.length > 0,
+            security_param_nonempty: values.some(function (v) { return v.trim().length > 0; }),
+            security_param_placeholder: values.some(function (v) { return /^(null|undefined)$/i.test(v.trim()); }),
+            security_param_count: Math.min(values.length, 10)
+        };
+    }
+    function reasonSummary(value) {
+        var result = {};
+        var remaining = 256;
+        var fields = ['reasonCode', 'reason_code', 'riskCode', 'risk_code', 'subErrno', 'sub_errno',
+            'reason', 'riskMessage', 'message', 'errmsg', 'msg', 'tips'];
+        [['data', value.data], ['root', value]].forEach(function (scope) {
+            if (!scope[1] || typeof scope[1] !== 'object' || Array.isArray(scope[1])) return;
+            fields.forEach(function (key) {
+                if (Object.keys(result).length >= 8 || !hop.call(scope[1], key)) return;
+                var v = scope[1][key], name = scope[0] + '.' + key;
+                if (typeof v === 'number' && Number.isFinite(v)) result[name] = v;
+                else if (typeof v === 'string' && remaining > 0) {
+                    // Keep short explanations, redact likely identifiers and credential assignments.
+                    var clean = v.slice(0, 4096)
+                        .replace(/(?:https?:\/\/|www\.)[^\s]+/gi, '[redacted]')
+                        .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[redacted]')
+                        .replace(/\b(?:BDUSS|Cookie|token|authorization|bearer|zid|cuid|uid|idfa|idfv|utdid)\s*[:=]\s*\S+/gi, '[redacted]')
+                        .replace(/[A-Za-z0-9_+\/=.%:-]{16,}/g, '[redacted]')
+                        .replace(/\d{6,}/g, '[redacted]')
+                        .replace(/[\x00-\x1f\x7f]/g, ' ')
+                        .slice(0, Math.min(128, remaining));
+                    result[name] = clean;
+                    remaining -= clean.length;
+                }
+            });
+        });
+        return result;
+    }
     function businessSummary(value) {
         var result = { json_state: 'valid', root_type: kind(value) };
         if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
@@ -58,7 +95,8 @@
                 result.is_safe_value = safe;
             }
         }
-        // Deliberately exclude errmsg, headers, IDs and all other response fields.
+        result.reason_fields = reasonSummary(value);
+        // No full response, headers, IDs or unlisted fields.
         return result;
     }
     function responseSummary(xhr) {
@@ -96,6 +134,7 @@
                 elapsed_ms: Math.max(0, Math.round(performance.now() - record.started)),
                 terminal_event: record.terminal || 'unknown'
             };
+            Object.assign(result, record.parameters);
             if (event === 'request_complete') {
                 try { result.http_status = xhr.status; } catch (_) {}
                 try {
@@ -126,7 +165,8 @@
         } catch (_) {}
         var value = originalOpen.apply(this, arguments);
         try {
-            if (target(arguments[1]) && sequence < maxRequests) records.set(this, { id: ++sequence });
+            if (target(arguments[1]) && sequence < maxRequests)
+                records.set(this, { id: ++sequence, parameters: parameterSummary(arguments[1]) });
         } catch (_) {}
         return value;
     }
@@ -136,7 +176,7 @@
             try {
                 record.started = performance.now();
                 observe(this, record);
-                emit({ event: 'request_started', request_id: record.id });
+                emit(Object.assign({ event: 'request_started', request_id: record.id }, record.parameters));
             } catch (_) { if (record.cleanup) record.cleanup(); }
         } else record = null;
         try { return originalSend.apply(this, arguments); }

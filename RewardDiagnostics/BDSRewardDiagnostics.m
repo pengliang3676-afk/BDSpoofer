@@ -5,8 +5,8 @@
 #import <math.h>
 #import "ObserverScript.h"
 
-static NSString *const BDSDVersion = @"0.1.0";
-static NSString *const BDSDHandlerName = @"bds_reward_diag_010";
+static NSString *const BDSDVersion = @"0.2.0";
+static NSString *const BDSDHandlerName = @"bds_reward_diag_020";
 static char BDSDControllerKey, BDSDWebViewKey;
 static dispatch_queue_t BDSDLogQueue;
 
@@ -65,6 +65,21 @@ static NSString *BDSDScript(void) {
 }
 
 // Page messages are untrusted. Rebuild each record from narrowly allowed fields.
+static NSString *BDSDCleanReason(NSString *text, NSUInteger limit) {
+    NSString *value = [text substringToIndex:MIN(text.length, 4096)];
+    for (NSString *pattern in @[
+        @"(?:https?://|www\\.)[^\\s]+",
+        @"[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}",
+        @"\\b(?:BDUSS|Cookie|token|authorization|bearer|zid|cuid|uid|idfa|idfv|utdid)\\s*[:=]\\s*\\S+",
+        @"[A-Za-z0-9_+/=.%:-]{16,}", @"\\d{6,}", @"[\\x00-\\x1f\\x7f]"]) {
+        NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:pattern
+            options:NSRegularExpressionCaseInsensitive error:nil];
+        value = [regex stringByReplacingMatchesInString:value options:0
+            range:NSMakeRange(0, value.length) withTemplate:@"[redacted]"];
+    }
+    return [value substringToIndex:MIN(value.length, MIN(limit, 128))];
+}
+
 @interface BDSDMessageSink : NSObject <WKScriptMessageHandler>
 @end
 @implementation BDSDMessageSink
@@ -79,7 +94,9 @@ static NSString *BDSDScript(void) {
         NSMutableDictionary *safe = [NSMutableDictionary dictionaryWithObject:body[@"event"] forKey:@"event"];
         safe[@"endpoint"] = @"/incentive/uanti";
         for (NSString *key in @[@"request_id", @"elapsed_ms", @"http_status", @"business_code_present",
-            @"business_code_is_number_zero", @"is_safe_present", @"is_safe_truthy"]) {
+            @"business_code_is_number_zero", @"is_safe_present", @"is_safe_truthy",
+            @"security_param_present", @"security_param_nonempty", @"security_param_placeholder",
+            @"security_param_count"]) {
             id value = body[key];
             if ([value isKindOfClass:NSNumber.class] && isfinite([value doubleValue])) safe[key] = value;
         }
@@ -101,6 +118,26 @@ static NSString *BDSDScript(void) {
         id value = body[@"is_safe_value"];
         if (([value isKindOfClass:NSNumber.class] && isfinite([value doubleValue])) ||
             (value && [@[@"", @"0", @"1", @"true", @"false"] containsObject:value])) safe[@"is_safe_value"] = value;
+        if ([body[@"reason_fields"] isKindOfClass:NSDictionary.class]) {
+            NSDictionary *reasons = body[@"reason_fields"];
+            NSMutableDictionary *filtered = [NSMutableDictionary dictionary];
+            NSUInteger remaining = 256;
+            for (NSString *scope in @[@"data", @"root"]) {
+                for (NSString *field in @[@"reasonCode", @"reason_code", @"riskCode", @"risk_code",
+                    @"subErrno", @"sub_errno", @"reason", @"riskMessage", @"message", @"errmsg", @"msg", @"tips"]) {
+                    if (filtered.count >= 8) break;
+                    NSString *key = [NSString stringWithFormat:@"%@.%@", scope, field];
+                    id reason = reasons[key];
+                    if ([reason isKindOfClass:NSNumber.class] && isfinite([reason doubleValue])) filtered[key] = reason;
+                    else if ([reason isKindOfClass:NSString.class] && remaining) {
+                        NSString *clean = BDSDCleanReason(reason, remaining);
+                        filtered[key] = clean;
+                        remaining -= clean.length;
+                    }
+                }
+            }
+            safe[@"reason_fields"] = filtered;
+        }
         // This ID identifies only the local WKWebView, never a device or account.
         NSString *page = objc_getAssociatedObject(message.webView, &BDSDWebViewKey);
         if (page) safe[@"page_id"] = page;
