@@ -1,11 +1,13 @@
 /* Passive observer for the activity eligibility request. No business overrides. */
 (function () {
     'use strict';
-    var marker = '__bdsRewardDiagnostics020';
-    var handler = 'bds_reward_diag_020';
+    var marker = '__bdsRewardDiagnostics030';
+    var handler = 'bds_reward_diag_030';
     var endpoint = '/incentive/uanti';
     var maxBody = 65536;
     var maxRequests = 128;
+    var maxPrivateBody = 1024 * 1024;
+    var privateResponseSent = false;
     var hop = Object.prototype.hasOwnProperty;
     function baiduHost(host) {
         return host === 'baidu.com' || host.endsWith('.baidu.com');
@@ -21,7 +23,7 @@
     var records = new WeakMap();
     var sequence = 0;
     function emit(value) {
-        try { sink.postMessage(value); } catch (_) { /* Diagnostics must not affect requests. */ }
+        try { sink.postMessage(value); return true; } catch (_) { return false; }
     }
     function target(value) {
         // Do not invoke an application object's custom string conversion a second time.
@@ -96,7 +98,7 @@
             }
         }
         result.reason_fields = reasonSummary(value);
-        // No full response, headers, IDs or unlisted fields.
+        // Summary events never contain the full response or unlisted fields.
         return result;
     }
     function responseSummary(xhr) {
@@ -110,6 +112,28 @@
             try { return businessSummary(JSON.parse(text)); }
             catch (_) { return { json_state: 'invalid' }; }
         } catch (_) { return { json_state: 'unavailable' }; }
+    }
+    function capturePrivateResponse(xhr, record) {
+        if (privateResponseSent || record.terminal !== 'load') return;
+        var reason;
+        try {
+            // Require a verified final endpoint; an empty responseURL is insufficient.
+            if (!target(xhr.responseURL) || xhr.status < 100 || xhr.status > 599) return;
+            if (xhr.responseType && xhr.responseType !== 'text') reason = 'unsupported_response_type';
+            else {
+                var text = xhr.responseText;
+                if (typeof text !== 'string') reason = 'unavailable';
+                else if (text.length > maxPrivateBody) reason = 'size_limit';
+                else {
+                    // Separate private channel. Native code writes this once to a local file,
+                    // never to the bounded/redacted JSONL summary stream.
+                    privateResponseSent = emit({event:'private_response_once', request_id:record.id,
+                        http_status:xhr.status, response_text:text, capture_kind:'xhr_response_text'});
+                    if (!privateResponseSent) reason = 'message_delivery_failed';
+                }
+            }
+        } catch (_) { reason = 'unavailable'; }
+        if (reason) emit({event:'full_response_skipped', request_id:record.id, capture_reason:reason});
     }
     function observe(xhr, record) {
         var listeners = [];
@@ -144,6 +168,7 @@
                 } catch (_) { result.json_state = 'unavailable'; }
             }
             emit(result);
+            if (event === 'request_complete') capturePrivateResponse(xhr, record);
         }
         record.cleanup = cleanup;
         ['load', 'error', 'timeout', 'abort'].forEach(function (name) {

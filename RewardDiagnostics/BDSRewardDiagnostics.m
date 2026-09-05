@@ -3,10 +3,13 @@
 #import <WebKit/WebKit.h>
 #import <objc/runtime.h>
 #import <math.h>
+#import <fcntl.h>
+#import <unistd.h>
+#import <errno.h>
 #import "ObserverScript.h"
 
-static NSString *const BDSDVersion = @"0.2.0";
-static NSString *const BDSDHandlerName = @"bds_reward_diag_020";
+static NSString *const BDSDVersion = @"0.3.0";
+static NSString *const BDSDHandlerName = @"bds_reward_diag_030";
 static char BDSDControllerKey, BDSDWebViewKey;
 static dispatch_queue_t BDSDLogQueue;
 
@@ -54,6 +57,73 @@ static void BDSDLog(NSDictionary *record) {
     });
 }
 
+// One attempt per process, one successful file per data container/version.
+// Publish by hard link after writing: an existing capture can never be overwritten.
+static void BDSDSavePrivateResponse(NSDictionary *entry) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSDictionary *copy = [entry copy];
+        dispatch_async(BDSDLogQueue, ^{
+            NSString *temporary;
+            int fd = -1;
+            NSString *outcome = @"full_response_save_failed";
+            NSString *reason = @"storage_error";
+            NSUInteger bytes = 0;
+            @try {
+                do {
+                    NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+                    if (!documents) break;
+                    NSString *directory = [documents stringByAppendingPathComponent:@"BDSRewardDiagnostics"];
+                    if (![NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES
+                        attributes:@{NSFilePosixPermissions:@0700} error:nil]) break;
+                    NSString *destination = [directory stringByAppendingPathComponent:@"response-once-0.3.0.json"];
+                    if ([NSFileManager.defaultManager fileExistsAtPath:destination]) {
+                        outcome = @"full_response_already_exists"; reason = @"preserved_existing_capture"; break;
+                    }
+                    NSMutableDictionary *envelope = [copy mutableCopy];
+                    envelope[@"version"] = BDSDVersion;
+                    envelope[@"timestamp_ms"] = @((long long)(NSDate.date.timeIntervalSince1970 * 1000));
+                    NSData *json = [NSJSONSerialization dataWithJSONObject:envelope options:0 error:nil];
+                    if (!json || json.length > 8 * 1024 * 1024) { reason = @"serialization_or_size_limit"; break; }
+                    bytes = json.length;
+                    temporary = [directory stringByAppendingPathComponent:
+                        [NSString stringWithFormat:@".response-030-%@.tmp", NSUUID.UUID.UUIDString]];
+                    fd = open(temporary.fileSystemRepresentation, O_WRONLY | O_CREAT | O_EXCL, 0600);
+                    if (fd < 0) { temporary = nil; break; }
+                    if (![NSFileManager.defaultManager setAttributes:@{NSFileProtectionKey:NSFileProtectionCompleteUntilFirstUserAuthentication,
+                        NSFilePosixPermissions:@0600} ofItemAtPath:temporary error:nil]) break;
+                    const unsigned char *buffer = json.bytes;
+                    NSUInteger offset = 0;
+                    while (offset < json.length) {
+                        ssize_t count = write(fd, buffer + offset, json.length - offset);
+                        if (count < 0 && errno == EINTR) continue;
+                        if (count <= 0) break;
+                        offset += (NSUInteger)count;
+                    }
+                    if (offset != json.length || fsync(fd) != 0) break;
+                    int closed = close(fd); fd = -1;
+                    if (closed != 0) break;
+                    if (link(temporary.fileSystemRepresentation, destination.fileSystemRepresentation) == 0) {
+                        outcome = @"full_response_saved"; reason = @"complete";
+                    } else if (errno == EEXIST) {
+                        outcome = @"full_response_already_exists"; reason = @"preserved_existing_capture";
+                    }
+                } while (0);
+            } @catch (__unused NSException *exception) { reason = @"storage_exception"; }
+            @finally {
+                if (fd >= 0) close(fd);
+                // Only the unique temporary file created by this attempt is removed.
+                if (temporary) unlink(temporary.fileSystemRepresentation);
+            }
+            NSMutableDictionary *status = [@{@"event":outcome, @"capture_reason":reason,
+                @"filename":@"response-once-0.3.0.json", @"request_id":copy[@"request_id"],
+                @"page_id":copy[@"page_id"]} mutableCopy];
+            if ([outcome isEqualToString:@"full_response_saved"]) status[@"file_bytes"] = @(bytes);
+            BDSDLog(status);
+        });
+    });
+}
+
 static NSString *BDSDScript(void) {
     static NSString *script;
     static dispatch_once_t once;
@@ -88,8 +158,21 @@ static NSString *BDSDCleanReason(NSString *text, NSUInteger limit) {
         if (![message.name isEqualToString:BDSDHandlerName] || !BDSDBaiduURL(message.frameInfo.request.URL) ||
             ![message.body isKindOfClass:NSDictionary.class]) return;
         NSDictionary *body = message.body;
+        if ([body[@"event"] isEqual:@"private_response_once"]) {
+            id text = body[@"response_text"], request = body[@"request_id"], status = body[@"http_status"];
+            if (![text isKindOfClass:NSString.class] || [text length] > 1024 * 1024 ||
+                ![body[@"capture_kind"] isEqual:@"xhr_response_text"] ||
+                ![request isKindOfClass:NSNumber.class] || !isfinite([request doubleValue]) ||
+                [request doubleValue] < 1 || [request doubleValue] > 128 ||
+                ![status isKindOfClass:NSNumber.class] || !isfinite([status doubleValue]) ||
+                [status doubleValue] < 100 || [status doubleValue] > 599) return;
+            NSString *page = objc_getAssociatedObject(message.webView, &BDSDWebViewKey) ?: @"unassigned";
+            BDSDSavePrivateResponse(@{@"response_text":text, @"capture_kind":@"xhr_response_text",
+                @"request_id":request, @"http_status":status, @"page_id":page, @"endpoint":@"/incentive/uanti"});
+            return;
+        }
         NSArray *events = @[@"observer_ready", @"observer_install_failed", @"request_started", @"request_complete",
-            @"send_threw", @"observation_window_elapsed"];
+            @"send_threw", @"observation_window_elapsed", @"full_response_skipped"];
         if (![events containsObject:body[@"event"]]) return;
         NSMutableDictionary *safe = [NSMutableDictionary dictionaryWithObject:body[@"event"] forKey:@"event"];
         safe[@"endpoint"] = @"/incentive/uanti";
@@ -101,6 +184,7 @@ static NSString *BDSDCleanReason(NSString *text, NSUInteger limit) {
             if ([value isKindOfClass:NSNumber.class] && isfinite([value doubleValue])) safe[key] = value;
         }
         NSDictionary *enums = @{
+            @"capture_reason":@[@"unsupported_response_type", @"unavailable", @"size_limit", @"message_delivery_failed"],
             @"terminal_event":@[@"load", @"error", @"timeout", @"abort", @"unknown"],
             @"json_state":@[@"valid", @"invalid", @"empty", @"size_limit", @"unavailable", @"json_null_or_invalid",
                 @"unsupported_response_type", @"redirect_outside_scope"],

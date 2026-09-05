@@ -59,8 +59,9 @@ function fixture(options = {}) {
     const context = {
         XMLHttpRequest: XHR, URL,
         location: {hostname:options.host || 'mbd.baidu.com', href:'https://mbd.baidu.com/newspage/activity'},
-        webkit:{messageHandlers:{bds_reward_diag_020:{postMessage(value) {
+        webkit:{messageHandlers:{bds_reward_diag_030:{postMessage(value) {
             if (options.sinkThrows) throw new Error('sink unavailable');
+            if (options.privateSinkThrows && value.event === 'private_response_once') throw new Error('private sink unavailable');
             messages.push(JSON.parse(JSON.stringify(value)));
         }}}},
         performance:{now:() => now},
@@ -274,4 +275,74 @@ test('limits reason text size and leaves the original response intact', () => {
     assert.ok(Object.keys(reasons).length<=8);
     assert.ok(Object.values(reasons).filter(v=>typeof v==='string').reduce((n,v)=>n+v.length,0)<=256);
     assert.equal(x.responseText,body);
+});
+
+test('private capture preserves the complete nested response text exactly, separate from summaries', () => {
+    const f = fixture(), x = f.start('/incentive/uanti?zid=REQUEST_SECRET');
+    x.responseURL = 'https://mbd.baidu.com/incentive/uanti?zid=REQUEST_SECRET';
+    const body = '{\n "errno":0,"data":{"isSafe":false,"nested":[{"unknownReason":"说明 🧪","token":"PRIVATE_TOKEN"}]},"extra":null\n}';
+    x.complete(body);
+    const raw = f.messages.filter(m => m.event === 'private_response_once');
+    assert.equal(raw.length, 1);
+    assert.equal(raw[0].response_text, body);
+    assert.equal(raw[0].capture_kind, 'xhr_response_text');
+    assert.equal(raw[0].request_id, f.completeRecord().request_id);
+    assert.equal(raw[0].http_status, 200);
+    assert.ok(!JSON.stringify(f.messages.filter(m => m.event !== 'private_response_once')).includes('PRIVATE_TOKEN'));
+    assert.ok(!JSON.stringify(f.messages).includes('REQUEST_SECRET'));
+    assert.equal(x.responseText, body);
+});
+
+test('private capture sends only the first complete response per page', () => {
+    const f = fixture();
+    for (const text of ['first', 'second']) {
+        const x = f.start(); x.responseURL = 'https://mbd.baidu.com/incentive/uanti'; x.complete(text);
+    }
+    assert.deepEqual(f.messages.filter(m => m.event === 'private_response_once').map(m => m.response_text), ['first']);
+    assert.equal(f.messages.filter(m => m.event === 'request_complete').length, 2);
+});
+
+test('private capture requires completed load with confirmed final endpoint and HTTP status', () => {
+    for (const [url, terminal, status] of [
+        ['', 'load', 200], ['https://mbd.baidu.com/other', 'load', 200],
+        ['https://evil.test/incentive/uanti', 'load', 200],
+        ['https://mbd.baidu.com/incentive/uanti', 'error', 0],
+        ['https://mbd.baidu.com/incentive/uanti', 'timeout', 0],
+        ['https://mbd.baidu.com/incentive/uanti', 'abort', 0],
+        ['https://mbd.baidu.com/incentive/uanti', 'load', 0]
+    ]) {
+        const f = fixture(), x = f.start(); x.responseURL = url; x.complete('PRIVATE', terminal, status);
+        assert.equal(f.messages.filter(m => m.event === 'private_response_once').length, 0);
+    }
+});
+
+test('private body limit skips without truncation and allows a later complete response', () => {
+    const f = fixture(), x = f.start(); x.responseURL = 'https://mbd.baidu.com/incentive/uanti';
+    x.complete('x'.repeat(1024 * 1024 + 1));
+    assert.equal(f.messages.at(-1).capture_reason, 'size_limit');
+    assert.equal(f.messages.filter(m => m.event === 'private_response_once').length, 0);
+    const y = f.start(); y.responseURL = x.responseURL;
+    const body = 'x'.repeat(1024 * 1024); y.complete(body);
+    assert.equal(f.messages.at(-1).response_text, body);
+    assert.equal(f.completeRecord().json_state, 'size_limit');
+});
+
+test('JSON or binary response types are not mislabeled as original text', () => {
+    for (const type of ['json','arraybuffer','blob']) {
+        const f = fixture(), x = f.start(); x.responseURL = 'https://mbd.baidu.com/incentive/uanti';
+        x.responseType = type; x.response = {errno:0}; x.complete('PRIVATE');
+        assert.equal(x.reads, 0);
+        assert.equal(f.messages.at(-1).capture_reason, 'unsupported_response_type');
+        assert.equal(f.messages.filter(m => m.event === 'private_response_once').length, 0);
+    }
+});
+
+test('failed private delivery is reported and does not claim capture success or affect callbacks', () => {
+    const f = fixture({privateSinkThrows:true}), x = f.start();
+    x.responseURL = 'https://mbd.baidu.com/incentive/uanti';
+    let called = 0; x.onload = () => called++; x.complete('{}');
+    assert.equal(called, 1);
+    assert.equal(x.sendCalls, 1);
+    assert.equal(f.messages.at(-1).capture_reason, 'message_delivery_failed');
+    assert.equal(f.messages.filter(m => m.event === 'private_response_once').length, 0);
 });

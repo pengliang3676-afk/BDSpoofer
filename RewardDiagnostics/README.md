@@ -1,100 +1,80 @@
-# 百度活动异常临时诊断插件 0.2.0
+# 百度活动异常临时诊断插件 0.3.0
 
-这是独立的临时诊断组件，适用目标 Bundle ID 为 com.baidu.BaiduMobileInfo。
-它不包含原插件的随机参数、反关联或越狱隐藏功能。
+目标 Bundle ID：com.baidu.BaiduMobileInfo。独立诊断组件，不包含随机参数或越狱隐藏功能。
 
-## 0.2.0 新增
+## 本次用途
 
-- 仅检查目标 URL 查询参数中 zid 是否存在、是否非空、是否为 null/undefined 占位文本，以及重复个数；不保存值。
-- 从响应根层与 data 层提取允许的原因码和简短说明，记录为 reason_fields。
-  只允许 reasonCode、reason_code、riskCode、risk_code、subErrno、sub_errno、reason、
-  riskMessage、message、errmsg、msg、tips，最多 8 项、总计 256 个文本字符。
-- 原因文本过滤常见凭据赋值、URL、邮箱、长标识和长数字；不保存完整响应。
-  短说明仍可能包含业务上下文，诊断日志保留在本地专用目录。
-- security_param_nonempty=true 只证明 URL 中有非空值，不证明值有效，也不证明服务器据此拒绝。
-  没有原因字段也不等于后台没有原因；本版本不观察原生 SDK 回调。
+0.2.0 的实际记录已出现 HTTP 200、errno 为数字 0、data.isSafe 为 false，且目标请求的 zid 非空。
+此前只保存白名单字段，不能排除深层结构中还有原因字段。0.3.0 补充一次完整响应文本采集。
+它帮助确认接口实际返回了哪些信息；即使正文没有原因码，也不能据此还原服务器内部规则。
 
-升级时先在注入器中移除旧的 BDSRewardDiagnostics_0.1.0.dylib，再注入 0.2.0。
-不要同时加载两个版本。这里只替换诊断组件。
+## 安装及唯一配合步骤
 
-## 它要回答什么
+1. 在巨魔注入器 / TrollFools 中移除旧的 BDSRewardDiagnostics_0.2.0.dylib（如有 0.1.0 也移除）。
+2. 给目标百度应用注入 BDSRewardDiagnostics_0.3.0.dylib，不要同时加载多个诊断版本。
+3. 完全退出后重新打开百度，进入原来的异常页面，手机保持连接以便读取结果。
+   保持账号、Crane 容器、原插件状态和随机参数不变。无需额外执行提现或反复领取操作。
+4. 诊断结束后可移除这个诊断 dylib，再重启应用。移除组件不会自动删除诊断文件。
 
-此前读取的当前版本活动页代码中，/incentive/uanti 的正常返回未通过资格检查，
-以及请求失败、业务错误、JSON 解析失败，都可能进入同一个“账号存在风险”提示。
-本组件记录下一次实际请求的有限结果，帮助区分这些分支。
-即使捕获到资格未通过，也不能据此知道服务器采用了哪条风控规则。
+本组件没有 UI；最低 iOS 15.0，包含 arm64 和 arm64e。
+编译、签名和模拟测试不等于已经验证本机注入成功或获得真实响应。
 
-## 安装与采集
+## 两种本地文件
 
-1. 用巨魔注入器 / TrollFools 给目标百度应用注入 BDSRewardDiagnostics_0.2.0.dylib；已装旧诊断版本时先移除旧版。
-   它是单独的诊断文件。原有插件和配置保持当前状态，以便比较。
-2. 完全退出百度后重新打开，进入此前出现异常的活动页面。
-3. 手工进行一次正常操作，等待原有异常出现；记录当时的时间和操作。
-   组件不会代替用户领取奖励或提现，也不会改变资格判断。
-4. 日志位于百度当前数据容器 Documents/BDSRewardDiagnostics/ 下，
-   文件名为 session-时间-随机编号.jsonl。
-   使用 Crane 时，要读取这次实际使用的容器，不能只按显示名称猜测路径。
-5. 导出对应日志后，只移除这个诊断 dylib，再完全退出并重新打开百度。
-   移除组件不会自动删除日志；需要时可单独删除 BDSRewardDiagnostics 目录。
+均位于当前百度数据容器的 Documents/BDSRewardDiagnostics/ 下：
 
-组件没有设置界面，也没有“修复异常”按钮。安装必须使用原始、完整的构建文件。
-iOS 最低部署版本为 15.0，包含 arm64 和 arm64e。
-本次构建与模拟测试不代表已经验证当前手机的注入和页面捕获效果。
+- session-时间-随机编号.jsonl：有限、经过字段过滤的摘要，保留 HTTP 状态、JSON 类型、errno、isSafe、
+  zid 是否存在/非空/占位以及根层和 data 层的短原因字段。摘要不包含完整正文。
+- response-once-0.3.0.json：私有完整响应文件。response_text 字符串保存 XHR 暴露的原始文本，
+  包括空白、未知字段和嵌套结构；其他键记录版本、采集时间、本地页面编号、请求序号和 HTTP 状态。
+  读取外层 JSON 后才能取得原正文；这不是 TLS 报文原始字节，也不是服务器签名的证据。
 
-## 日志判读
+完整响应可能含有账号标识或其他私密字段，不做正文脱敏以免丢失待检查字段。
+文件只写入本机专用目录，不上传、不输出到控制台、不混入摘要、源代码或分发包。
+分析/对外反馈时需要选择必要字段并脱敏，不要公开整个文件。
 
-| 事件或字段 | 含义与限制 |
+## 一次性采集规则
+
+- 只观察 HTTPS 百度域名上精确路径 /incentive/uanti 的 XMLHttpRequest。
+- 只有收到正常 load 终止事件、最终 responseURL 仍匹配目标、HTTP 状态为 100–599，才尝试保存。
+- 只保存 responseType 为空或 text 的 responseText；JSON 对象和二进制不会被重新序列化冒充原文。
+- 最多 1,048,576 个 UTF-16 代码单元。超过上限会跳过并记录 size_limit，绝不截断后声称完整。
+  最终文件还受 8 MiB 大小限制。空文本或无效 JSON 也会原样保存，方便区分空响应和解析失败。
+- 每页最多成功发送一次私有消息；原生层每次应用进程只尝试写一次。
+  同一数据容器、同一版本只保留一个成功文件，重新启动或刷新不覆盖它。
+  如一次写入失败，摘要显示失败；重启应用后可重新尝试。已有文件则保留原文件及其原采集时间。
+- 原生层先写独立临时文件并刷新，再以不覆盖的方式发布最终文件；失败时清理本次临时文件。
+  进程突然终止可能留下自己的临时文件，不会自动删除其他文件。目录 0700，文件 0600，
+  使用 iOS 首次解锁后的文件保护属性。
+
+## 摘要事件判读
+
+| 事件 | 含义 |
 | --- | --- |
-| native_ready | 原生组件已运行，init_hook/view_hook 是各 Hook 的安装结果 |
-| observer_ready | 某个页面已装入 XHR 观察器，不代表请求已发生 |
-| request_started | 观察到目标 XHR 即将调用原始 send；它仍可能同步抛错 |
-| request_complete | 观察到 loadend；结合 terminal_event、http_status 和 JSON 字段判断 |
-| send_threw | 原始 send 同步抛错；同一异常继续交给应用处理 |
-| terminal_event=error/timeout/abort | 分别为 XHR 的错误、超时、取消事件 |
-| json_state=invalid | 捕获的文本未能解析为 JSON |
-| business_code_is_number_zero=true | errno 严格等于数字 0，与此前所读页面的判断一致 |
-| is_safe_present / is_safe_type / is_safe_truthy | 字段是否存在、类型、按 JavaScript 规则转换的真假值 |
-| observation_window_elapsed | 观察已超过 15 秒并停止；不能当作实际网络超时 |
-| controller_install_failed / observer_install_failed / existing_page_install_failed / view_attach_failed | 观察器未成功安装，不能从缺失记录推断请求结果 |
+| native_ready / observer_ready | 原生组件/页面观察器已运行，不表示目标请求已经发生 |
+| request_started / request_complete | 目标 XHR 开始/结束；结合 terminal_event、http_status、json_state 判断 |
+| full_response_saved | 原生层已成功保存完整文件；含 filename、file_bytes、本地请求关联信息 |
+| full_response_already_exists | 原文件已存在并保留，不能当作本次的新响应 |
+| full_response_save_failed | 私有文件未成功保存，capture_reason 表明写入或序列化阶段问题 |
+| full_response_skipped | 正文类型不支持、读取失败、超限或消息发送失败；没有声称完整采集成功 |
+| observation_window_elapsed | 15 秒观察窗口结束，不代表请求本身超时；不会主动取消请求 |
 
-例如：同一次 request_complete 中，terminal_event 为 load、HTTP 成功、JSON 有效、
-errno 为数字 0、data 是对象且 isSafe 确实存在但为假，
-支持“这次返回的资格未通过”，不支持“已经查明服务器拒绝原因”。
+同一个 WKWebView 重新导航会重置 request_id；按日志顺序、observer_ready、page_id 和时间关联。
+security_param_nonempty=true 只说明查询参数里有非空值，不证明该值有效或服务器据此拒绝。
+errno 字符串 "0" 和数字 0 不同，isSafe 字符串 "0" 在 JS 中为真；摘要保留实际类型。
+若只有弹窗而没有新的 request_started，可能是页面沿用了先前结果，不能视作新请求。
 
-errno 为字符串 "0" 与数字 0 不同；isSafe 为字符串 "0" 在 JavaScript 中仍为真。
-日志保留类型，不能仅按显示文字解释。
+## 行为边界与测试
 
-只有 observer_ready，没有 request_started，可能是未触发、页面沿用之前的缓存判断、
-请求在进入 XHR 前失败、页面使用了别的传输方式，或捕获范围未覆盖。
-只出现旧的异常弹窗也不证明新请求已经发生。
+不读取请求体、Cookie、请求头，不保存完整请求 URL 或请求参数值。
+不修改请求、响应、资格结果、插件配置、账号或容器，不自动发请求、重放请求或领取奖励。
+只覆盖 XHR；不覆盖 fetch、原生请求或请求前的 SDK 回调。
+页面消息属于不可信输入，原生层检查类型、字段和大小；日志仍然只是客户端观测证据。
+摘要每页最多 128 次请求，每个进程最多 1024 条/512 KiB，单行最多 4096 字节。
+完整响应有独立的写入路径和上限，不会被摘要单行限制丢弃。
+方法包装仍可能产生运行时影响，模拟测试不能保证与所有第三方插件完全兼容。
 
-request_id 只在当前页面脚本实例内递增；page_id 只标记本地 WKWebView。
-同一 WebView 重新导航后序号会重置，请按文件顺序和 observer_ready 分段判读。
-这些记录是客户端观测，不是经过服务器签名的审计记录。
-
-## 采集范围与隐私
-
-- 仅处理 HTTPS 百度域名上的精确路径 /incentive/uanti。
-- 仅观察 XMLHttpRequest。依据此前缓存页面代码选择该通道，不覆盖 fetch、原生请求或请求前的 SDK 步骤。
-- 不读取请求体、Cookie 或请求头。不保存完整 URL 或安全参数值；只检查目标 URL 中 zid 的存在性和空值状态。
-- 对范围内的文本响应，仅在内存中解析不超过 65536 个字符的正文，随后提取允许字段。
-  不保存完整正文；原因文本只按上述允许字段提取并过滤。
-- 不修改 URL、参数、请求头、请求体、响应、资格字段、页面拦截逻辑或原有插件配置。
-- 每个页面最多观察 128 次目标请求；每个应用进程最多写入 1024 条、512 KiB 日志。
-- JS 消息进入原生层后再次按允许字段过滤。
-- JS 的 XHR 方法和 WKWebView 方法会被包装，因此诊断组件本身存在运行时影响。
-  模拟测试只能降低行为改变的风险，不能保证与所有页面脚本及其他插件完全兼容。
-
-## 开发与验证
-
-在仓库根目录运行：
-
-    node --test RewardDiagnostics/observer.test.cjs
-
-在带 iPhoneOS SDK 的 macOS / Xcode 环境编译：
-
-    bash RewardDiagnostics/build.sh
-
-输出在 dist-ui1/reward-diagnostics/。
-构建脚本编译两个架构、合并、执行临时签名与签名校验，并生成 SHA256SUMS.txt。
-本包没有包含真实手机日志或任何账号数据。
+开发测试：node --test RewardDiagnostics/observer.test.cjs
+macOS/Xcode 构建：bash RewardDiagnostics/build.sh
+输出：dist-ui1/reward-diagnostics/，包含 dylib、SHA256SUMS.txt、源码和本说明。
+构建检查两个架构、临时签名与签名校验。包内不包含真实手机日志。

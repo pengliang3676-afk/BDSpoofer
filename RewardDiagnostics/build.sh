@@ -19,18 +19,18 @@ for BDSD_ARCH in arm64 arm64e; do
         -miphoneos-version-min=15.0 -fobjc-arc -fblocks -Wall -Wextra \
         -Wno-unused-parameter -Werror=return-type -Werror=implicit-function-declaration \
         -framework Foundation -framework UIKit -framework WebKit \
-        -I "$BDSD_BUILD" -dynamiclib -install_name @rpath/BDSRewardDiagnostics_0.2.0.dylib \
+        -I "$BDSD_BUILD" -dynamiclib -install_name @rpath/BDSRewardDiagnostics_0.3.0.dylib \
         RewardDiagnostics/BDSRewardDiagnostics.m -o "$BDSD_BUILD/$BDSD_ARCH.dylib"
 done
 lipo -create "$BDSD_BUILD/arm64.dylib" "$BDSD_BUILD/arm64e.dylib" \
-    -output "$BDSD_DIST/BDSRewardDiagnostics_0.2.0.dylib"
-codesign --force --sign - --timestamp=none "$BDSD_DIST/BDSRewardDiagnostics_0.2.0.dylib"
-codesign --verify --strict "$BDSD_DIST/BDSRewardDiagnostics_0.2.0.dylib"
-lipo "$BDSD_DIST/BDSRewardDiagnostics_0.2.0.dylib" -verify_arch arm64 arm64e
-lipo -info "$BDSD_DIST/BDSRewardDiagnostics_0.2.0.dylib"
-otool -L "$BDSD_DIST/BDSRewardDiagnostics_0.2.0.dylib"
+    -output "$BDSD_DIST/BDSRewardDiagnostics_0.3.0.dylib"
+codesign --force --sign - --timestamp=none "$BDSD_DIST/BDSRewardDiagnostics_0.3.0.dylib"
+codesign --verify --strict "$BDSD_DIST/BDSRewardDiagnostics_0.3.0.dylib"
+lipo "$BDSD_DIST/BDSRewardDiagnostics_0.3.0.dylib" -verify_arch arm64 arm64e
+lipo -info "$BDSD_DIST/BDSRewardDiagnostics_0.3.0.dylib"
+otool -L "$BDSD_DIST/BDSRewardDiagnostics_0.3.0.dylib"
 cp RewardDiagnostics/README.md "$BDSD_DIST/"
 mkdir -p "$BDSD_DIST/RewardDiagnostics"
 cp RewardDiagnostics/BDSRewardDiagnostics.m RewardDiagnostics/observer.js \
     RewardDiagnostics/observer.test.cjs RewardDiagnostics/build.sh RewardDiagnostics/README.md "$BDSD_DIST/RewardDiagnostics/"
-(cd "$BDSD_DIST" && shasum -a 256 BDSRewardDiagnostics_0.2.0.dylib > SHA256SUMS.txt)
+(cd "$BDSD_DIST" && shasum -a 256 BDSRewardDiagnostics_0.3.0.dylib > SHA256SUMS.txt)
