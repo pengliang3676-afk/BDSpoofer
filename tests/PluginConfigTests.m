@@ -6,11 +6,27 @@ static void checkUnchanged(NSDictionary *before, NSDictionary *after, NSSet *all
     for(NSString *key in before) if(![allowed containsObject:key]) assert([before[key] isEqual:after[key]]);
     for(NSString *key in after) if(![allowed containsObject:key]) assert([before[key] isEqual:after[key]]);
 }
+static NSURLRequest *cashTelemetryRequest(NSString *host, id eventID, NSString *page,
+                                          NSString *type, id amount) {
+    NSMutableDictionary *ext=[NSMutableDictionary dictionary];
+    if(amount) ext[@"num"]=amount;
+    NSDictionary *data=@{@"actiondata":@{@"id":eventID ?: @"",
+        @"content":@{@"page":page ?: @"", @"type":type ?: @"", @"ext":ext}}};
+    NSData *json=[NSJSONSerialization dataWithJSONObject:data options:0 error:nil];
+    NSString *value=[[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
+    NSURLComponents *components=[[NSURLComponents alloc] init];
+    components.scheme=@"https"; components.host=host; components.path=@"/ztbox";
+    components.queryItems=@[[NSURLQueryItem queryItemWithName:@"action" value:@"zpblog"],
+                            [NSURLQueryItem queryItemWithName:@"data" value:value]];
+    return [NSURLRequest requestWithURL:components.URL];
+}
 int main(void) {
     @autoreleasepool {
         NSMutableDictionary *config=[BDSDefaultConfig() mutableCopy];
         BDSApplyInitialDefaults(config,nil);
-        assert(BDSRegularKeys().count==21 && BDSRiskKeys().count==4);
+        assert(BDSRegularKeys().count==21 && BDSRiskKeys().count==5);
+        assert([config[@"configVersion"] integerValue]==187);
+        assert(![config[@"blockStatCashTelemetry"] boolValue]);
         for(NSString *key in BDSRegularKeys()) assert([config[key] boolValue]);
         for(NSString *key in BDSRiskKeys()) assert(![config[key] boolValue]);
         [config addEntriesFromDictionary:BDSRandomIdentityValues()];
@@ -57,7 +73,12 @@ int main(void) {
         NSMutableDictionary *reloaded=[safe mutableCopy];BDSApplyInitialDefaults(reloaded,safe);
         for(NSString *key in BDSSafeSwitchValues()) assert(![reloaded[key] boolValue]);
         assert([reloaded[@"idfv"] isEqual:safe[@"idfv"]]);
-        puts("PASS plugin: defaults, preserved manual choices, safe restore, 200 independent basic/advanced operations, all 32 targeted selections, UA/Push/screen regressions");
+        assert(BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_index", @"c_pv", @"3.03")));
+        assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10291, @"y_mission_index", @"c_pv", @"3.03")));
+        assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"other_page", @"c_pv", @"3.03")));
+        assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"example.com", @10290, @"y_mission_index", @"c_pv", @"3.03")));
+        assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_index", @"c_pv", nil)));
+        puts("PASS plugin: v187 defaults, safe restore, independent random modes, targeted selections, exact cash telemetry matcher, UA/Push/screen regressions");
     }
     return 0;
 }

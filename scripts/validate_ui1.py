@@ -4,18 +4,32 @@ root=Path(__file__).resolve().parents[1]
 plugin=(root/'BDSpoofer.m').read_text(encoding='utf-8')
 manager=(root/'CraneManager/BDSCraneManager.m').read_text(encoding='utf-8')
 policy=(root/'Shared/BDSConfigPolicy.h').read_text(encoding='utf-8')
+blocker=(root/'Shared/BDSCashTelemetryBlocker.h').read_text(encoding='utf-8')
+release=(root/'RELEASE_UI1.md').read_text(encoding='utf-8')
+build=(root/'scripts/build_release_xcode.sh').read_text(encoding='utf-8')
 config=plistlib.loads((root/'bdspoofer_config.plist').read_bytes())
 items=re.findall(r'@\{@"key":@"([^"]+)",@"name":@"[^"]+"(,@"off":@YES)?\}',policy)
-assert len(items)==25
+assert len(items)==26
 regular=[key for key,off in items if not off];risk=[key for key,off in items if off]
-assert len(regular)==21 and len(risk)==4
+assert len(regular)==21 and len(risk)==5
 assert all(config[k] is True for k in regular)
 assert all(config[k] is False for k in risk)
-assert config['spoofScreen'] is False and config['configVersion']==186
+assert config['spoofScreen'] is False and config['configVersion']==187
+assert config['blockStatCashTelemetry'] is False
+assert 'blockStatCashTelemetry' in policy and 'blockStatCashTelemetry' in plugin
+assert '金额统计上报：%@' in plugin and '? @"阻止" : @"开启"' in plugin
 assert all(config['spoofBaiduTargeted'+x] is False for x in ['', 'System','Model','Screen','UA','Push'])
 for text in ['一键随机整套基础参数','一键随机整套高级参数','一键随机定向指纹参数','反关联设置','恢复安全']:assert text in plugin,text
 for text in ['一键随机基础整套设置','一键随机高级整套设置','一键随机定向指纹设置','反关联设置','恢复安全']:assert text in manager,text
 assert 'g_rewardProbe' not in plugin
+assert 'BDSInstallCashSpoofing' not in plugin and 'arc4random_uniform(101)' not in plugin
+assert 'dataTaskWithRequest' not in blocker and 'willPerformHTTPRedirection' not in blocker
+for text in ['h2tcbox.baidu.com','/ztbox','zpblog','10290','y_mission_index','c_pv','ext[@"num"]']:
+    assert text in blocker,text
+assert 'BDSInstallCashTelemetryBlocking();' in plugin
+assert plugin.count('loadConfig();') >= 3
+assert '0.50' not in release and '触发风控' not in release
+assert 'BDSpoofer_1.8.1_UI1.2.dylib' in build and 'UI1.1.dylib' not in build
 assert '[verified isEqualToDictionary:config]' in manager
 assert 'targetedScreenHwMachine' in plugin and 'targetedScreenHwMachine' in manager
 def function(text,name):
@@ -27,9 +41,40 @@ def function(text,name):
         depth+=(stripped[i]=='{')-(stripped[i]=='}')
         if depth==0:return text[match.start():i+1]
     raise AssertionError(name)
+def plugin_devices(text):
+    body=function(text,'BDSDeviceProfiles')
+    blocks=re.findall(r'@\{@"name":\s*@"[^"]+".*?@"disks":\s*@\[(.*?)\]\}',body,re.S)
+    records={}
+    for block in re.finditer(r'@\{@"name":\s*@"[^"]+".*?@"disks":\s*@\[(.*?)\]\}',body,re.S):
+        item=block.group(0)
+        string=lambda key: re.search(r'@"'+key+r'":\s*@"([^"]+)"',item).group(1)
+        number=lambda key: int(re.search(r'@"'+key+r'":\s*@(\d+)',item).group(1))
+        disks=tuple(map(int,re.findall(r'@(\d+)',block.group(1))))
+        machine=string('machine')
+        if machine=='iPhone12,8': continue
+        records[machine]=(string('name'),string('model'),number('width'),number('height'),
+            number('nativeWidth'),number('nativeHeight'),number('scale'),number('memory'),disks)
+    return records
+def manager_devices(text):
+    body=function(text,'BDSDeviceProfiles')
+    pattern=(r'BDSDevice\(@"([^"]+)",\s*@"([^"]+)",\s*@"([^"]+)",\s*'
+             r'(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*'
+             r'@\[(.*?)\],\s*@"[^"]+",\s*\d+\)')
+    records={}
+    for values in re.findall(pattern,body,re.S):
+        name,machine,model,*rest=values
+        numbers=tuple(map(int,rest[:6]))
+        disks=tuple(map(int,re.findall(r'@(\d+)',rest[6])))
+        records[machine]=(name,model,*numbers,disks)
+    return records
+plugin_pool=plugin_devices(plugin);manager_pool=manager_devices(manager)
+assert len(plugin_pool)==36 and plugin_pool==manager_pool
+plugin_systems=re.findall(r'BDSSystem\(@"([^"]+)",\s*@"([^"]+)"\)',function(plugin,'BDSSystemProfiles'))
+manager_systems=re.findall(r'BDSSystem\(@"([^"]+)",\s*@"([^"]+)"\)',function(manager,'BDSSystemProfiles'))
+assert plugin_systems==manager_systems and len(plugin_systems)>50
 base=subprocess.check_output(['git','show','b65d42ab33948455ef84e57d109d0dbede2a1b72:BDSpoofer.m'],cwd=root).decode('utf-8')
 names=['bds_c_is_jailbreak_path','bds_is_suspicious_dlopen_path','bds_my_dlopen','bds_my_dlopen_preflight','bds_my_stat','bds_my_lstat','bds_my_access','bds_my_fopen','bds_my_opendir','bds_perform_rebinding_with_section','bds_rebind_symbols_for_image']
 for name in names:assert function(plugin,name)==function(base,name),name
 for path in ['bdspoofer_config.plist','CraneManager/Info.plist','CraneManager/BDSCraneManager.entitlements','CraneManager/BDSCraneManager.libSandy.plist']:plistlib.loads((root/path).read_bytes())
 assert plistlib.loads((root/'CraneManager/Info.plist').read_bytes())['CFBundleVersion']=='103'
-print('PASS UI1: 21 on / 4 off defaults, independent screen store, UI labels, plist validation, 11 baseline jailbreak functions unchanged')
+print('PASS UI1.2: v187, 21 on / 5 off, exact telemetry block, 36 synchronized devices, UI1.2 package names, 11 baseline jailbreak functions unchanged')

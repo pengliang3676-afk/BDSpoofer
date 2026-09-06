@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>configVersion</key>
-	<integer>186</integer>
+	<integer>187</integer>
 	<key>enabled</key>
 	<true/>
 	<key>spoofScreen</key>
@@ -56,6 +56,8 @@
 	<false/>
 	<key>spoofBattery</key>
 	<true/>
+	<key>blockStatCashTelemetry</key>
+	<false/>
 	<key>spoofBaiduTargeted</key>
 	<false/>
 	<key>spoofBaiduTargetedSystem</key>

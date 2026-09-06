@@ -15,6 +15,8 @@ int main(int argc,char **argv) {
         assert([BDSMergedConfig(newA)[@"idfv"] isEqual:newA[@"idfv"]]);
         NSMutableDictionary *config=BDSMergedConfig(defaults);
         BDSSeedIdentityIfNeeded(config,YES);
+        assert([config[@"configVersion"] integerValue]==187);
+        assert(![config[@"blockStatCashTelemetry"] boolValue]);
         for(NSString *key in BDSRegularKeys()) assert([config[key] boolValue]);
         for(NSString *key in BDSRiskKeys()) assert(![config[key] boolValue]);
         NSString *retained=config[@"idfv"];config[@"idfa"]=@"";BDSSeedIdentityIfNeeded(config,NO);assert([retained isEqual:config[@"idfv"]]);assert([config[@"idfa"] length]>0);
@@ -39,9 +41,17 @@ int main(int argc,char **argv) {
             for(NSString *key in BDSTargetedKeys()) assert([next[key] boolValue]==[selection containsObject:key]);
         }
         assert(!BDSCreateRandomConfig(config,BDSRandomModeTargeted,[NSSet set]));
+        for(NSDictionary *device in BDSDeviceProfiles()) {
+            NSDictionary *generated=BDSCreateConfigForDevice(defaults,device,BDSRandomModeBasic,[NSSet set]);
+            assert([generated[@"deviceProfileName"] isEqual:device[@"name"]]);
+            assert([generated[@"hwMachine"] isEqual:device[@"machine"]]);
+            assert([generated[@"hwModel"] isEqual:device[@"model"]]);
+            assert([generated[@"screenWidth"] isEqual:device[@"width"]]);
+            assert([generated[@"screenHeight"] isEqual:device[@"height"]]);
+        }
         [config addEntriesFromDictionary:BDSSafeSwitchValues()];
         NSDictionary *reloaded=BDSMergedConfig(config);for(NSString *key in BDSSafeSwitchValues()) assert(![reloaded[key] boolValue]);
-        puts("PASS manager: defaults, partial identity seeding, 200 independent basic/advanced operations, all 32 targeted selections, preserved switches, safe restore");
+        puts("PASS manager: v187 defaults, synchronized device fields, independent random modes, targeted selections, preserved switches, safe restore");
     }
     return 0;
 }

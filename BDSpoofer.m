@@ -150,7 +150,7 @@ static NSDictionary *BDSDefaultConfig(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @186,
+            @"configVersion": @187,
             @"spoofBaiduTargeted": @NO,
             @"spoofBaiduTargetedSystem": @NO,
             @"spoofBaiduTargetedModel": @NO,
@@ -200,6 +200,7 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"spoofPrivacyPermissions": @YES,
             @"spoofWebKitCookie": @NO,
             @"spoofBattery": @YES,
+            @"blockStatCashTelemetry": @NO,
             @"wifiSSID": @"",
             @"bootTimeOffsetSeconds": @0,
             @"deviceProfileName": @"iPhone SE (3rd generation)",
@@ -478,6 +479,13 @@ static void loadConfig() {
         if (!loaded[@"targetedPushDeviceProfileName"]) merged[@"targetedPushDeviceProfileName"] = merged[@"targetedDeviceProfileName"] ?: @"iPhone SE (3rd generation)";
         if (!loaded[@"targetedPushHwMachine"]) merged[@"targetedPushHwMachine"] = merged[@"targetedHwMachine"] ?: @"iPhone14,6";
         if (!loaded[@"targetedPushHwModel"]) merged[@"targetedPushHwModel"] = merged[@"targetedHwModel"] ?: @"D49AP";
+        [merged writeToFile:p1 atomically:YES];
+    }
+    if (ver < 187 || !loaded[@"blockStatCashTelemetry"] || loaded[@"spoofStatCash"]) {
+        // 1.8.1 UI1.2：新增金额统计上报控制，默认不阻止；旧试验键不继承。
+        merged[@"configVersion"] = @187;
+        if (!loaded[@"blockStatCashTelemetry"]) merged[@"blockStatCashTelemetry"] = @NO;
+        [merged removeObjectForKey:@"spoofStatCash"];
         [merged writeToFile:p1 atomically:YES];
     }
     BDSApplyInitialDefaults(merged, loaded);
@@ -3234,6 +3242,8 @@ static NSString *BDSConfigSummary(void) {
         state(@"spoofBaiduTargetedPush"),
         cfgStr(@"targetedPushDeviceProfileName", @"未设置"), cfgStr(@"targetedPushHwMachine", @"未设置")];
     [summary appendString:@"\n总开关与对应子项均开启时才启用。\n以上为配置保存值，不代表已验证百度实际读取结果。"];
+    [summary appendFormat:@"\n\n反关联扩展\n金额统计上报：%@",
+        cfgBool(@"blockStatCashTelemetry", NO) ? @"阻止" : @"开启"];
     return summary;
 }
 
@@ -3393,10 +3403,12 @@ static NSString *BDSConfigSummary(void) {
 }
 
 - (void)openPanel {
+    // 卍解会直接更新当前容器的配置文件；打开面板前重新加载，避免显示旧机型。
+    loadConfig();
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"BDSpoofer 1.8.1 UI1.1";
+    page.title=@"BDSpoofer 1.8.1 UI1.2";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -4405,6 +4417,8 @@ static void BDSInstallUI(void) {
                                                            queue:NSOperationQueue.mainQueue
                                                       usingBlock:^(NSNotification *note) {
             (void)note;
+            // 从卍解返回百度时同步它刚写入的机型、系统和定向参数。
+            loadConfig();
             [[BDSUIController shared] attachButton];
         }];
         for (NSNumber *delay in @[@0.8, @2.0, @5.0]) {
@@ -4415,6 +4429,9 @@ static void BDSInstallUI(void) {
         }
     });
 }
+
+
+#import "Shared/BDSCashTelemetryBlocker.h"
 
 #pragma mark - 构造函数
 
@@ -4431,6 +4448,9 @@ static void bds_initialize() {
 
         // 配置入口始终安装
         BDSInstallUI();
+
+        // 默认保持金额统计上报；用户明确开启阻止开关后才安装拦截。
+        if (cfgBool(@"blockStatCashTelemetry", NO)) BDSInstallCashTelemetryBlocking();
 
         // 1.8.1 起，enabled 只代表“基础功能总开关”。
         // 高级功能仍按各自开关独立加载，不能因基础功能关闭而提前返回。

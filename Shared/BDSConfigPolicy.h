@@ -26,7 +26,8 @@ static NSArray<NSArray<NSDictionary *> *> *BDSSettingGroups(void) {
           @{@"key":@"spoofDlopen",@"name":@"dlopen 反检测"},
           @{@"key":@"spoofUbiquity",@"name":@"iCloud 隔离"},
           @{@"key":@"spoofPrivacyPermissions",@"name":@"通讯录与日历保护"},
-          @{@"key":@"spoofBattery",@"name":@"电池参数"}]
+          @{@"key":@"spoofBattery",@"name":@"电池参数"},
+          @{@"key":@"blockStatCashTelemetry",@"name":@"阻止金额统计上报",@"off":@YES}]
     ];
 }
 static NSArray<NSString *> *BDSRegularKeys(void) {
@@ -36,7 +37,8 @@ static NSArray<NSString *> *BDSRegularKeys(void) {
     return keys;
 }
 static NSArray<NSString *> *BDSRiskKeys(void) {
-    return @[@"spoofKeychain",@"spoofAppGroup",@"spoofWebKitCookie",@"spoofUserAgent"];
+    return @[@"spoofKeychain",@"spoofAppGroup",@"spoofWebKitCookie",@"spoofUserAgent",
+             @"blockStatCashTelemetry"];
 }
 static NSArray<NSString *> *BDSSelectedTargetKeys(void) {
     return @[@"spoofBaiduTargetedSystem",@"spoofBaiduTargetedModel",@"spoofBaiduTargetedScreen",@"spoofBaiduTargetedUA",@"spoofBaiduTargetedPush"];
@@ -67,5 +69,5 @@ static void BDSApplyInitialDefaults(NSMutableDictionary *config, NSDictionary *s
     config[@"spoofBaiduTargeted"]=saved[@"spoofBaiduTargeted"] ?: @NO;
     config[@"spoofScreen"]=@NO;
     config[@"targetedScreenHwMachine"]=saved[@"targetedScreenHwMachine"] ?: config[@"targetedHwMachine"] ?: @"iPhone14,6";
-    config[@"configVersion"]=@186;
+    config[@"configVersion"]=@187;
 }

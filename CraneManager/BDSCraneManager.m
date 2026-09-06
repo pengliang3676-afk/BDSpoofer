@@ -253,7 +253,7 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
     NSDictionary *system = BDSRandomSystemForDevice(device);
 
     [config addEntriesFromDictionary:@{
-        @"configVersion": @186,
+        @"configVersion": @187,
         @"managerGeneratedAt": @([[NSDate date] timeIntervalSince1970]),
         @"managerProfileVersion": @103,
         @"managerRandomMode": mode == BDSRandomModeTargeted ? @"targeted" : @"basic",
