@@ -33,8 +33,8 @@ int main(void) {
         for(NSString *key in BDSTargetedChildKeys()) config[key]=@YES;
         config[@"spoofBaiduTargeted"]=@YES;
         g_config=[config copy];
-        NSSet *identity=[NSSet setWithArray:@[@"idfa",@"idfv",@"deviceID",@"cuid",@"utdid"]];
-        NSSet *basic=[NSSet setWithArray:@[@"deviceProfileName",@"deviceModel",@"marketingModel",@"systemVersion",@"systemBuild",@"kernOSVersion",@"hwMachine",@"hwModel",@"memorySize",@"diskSize",@"deviceName",@"kernHostname",@"screenWidth",@"screenHeight",@"screenScale",@"nativeScreenWidth",@"nativeScreenHeight",@"bootTimeOffsetSeconds",@"carrierName",@"mcc",@"mnc",@"isoCountryCode",@"localeIdentifier"]];
+        NSSet *identity=[NSSet setWithArray:@[@"idfa",@"idfv",@"deviceID",@"cuid",@"utdid",@"didRandomizeAdvanced"]];
+        NSSet *basic=[NSSet setWithArray:@[@"deviceProfileName",@"deviceModel",@"marketingModel",@"systemVersion",@"systemBuild",@"kernOSVersion",@"hwMachine",@"hwModel",@"memorySize",@"diskSize",@"deviceName",@"kernHostname",@"screenWidth",@"screenHeight",@"screenScale",@"nativeScreenWidth",@"nativeScreenHeight",@"bootTimeOffsetSeconds",@"carrierName",@"mcc",@"mnc",@"isoCountryCode",@"localeIdentifier",@"didRandomizeBasic"]];
         for(int i=0;i<100;i++) {
             NSDictionary *before=g_config;
             NSMutableDictionary *after=[before mutableCopy]; [after addEntriesFromDictionary:BDSRandomBasicProfileValues()];
@@ -48,7 +48,7 @@ int main(void) {
         NSArray *groups=@[@[@"targetedSystemVersion",@"targetedSystemBuild"],@[@"targetedDeviceProfileName",@"targetedHwMachine",@"targetedHwModel"],@[@"targetedScreenWidth",@"targetedScreenHeight",@"targetedScreenScale",@"targetedNativeScreenWidth",@"targetedNativeScreenHeight",@"targetedScreenHwMachine"],@[@"targetedUASystemVersion",@"targetedUASystemBuild"],@[@"targetedPushDeviceProfileName",@"targetedPushHwMachine",@"targetedPushHwModel"]];
         for(NSUInteger mask=0;mask<32;mask++) {
             NSMutableDictionary *before=[g_config mutableCopy];
-            NSMutableSet *allowed=[NSMutableSet setWithArray:@[@"spoofBaiduTargeted",@"targetedGeneratedAt"]];
+            NSMutableSet *allowed=[NSMutableSet setWithArray:@[@"spoofBaiduTargeted",@"targetedGeneratedAt",@"didRandomizeTargeted"]];
             for(NSUInteger i=0;i<5;i++) { before[BDSTargetedChildKeys()[i]]=@((mask&(1<<i))!=0); if(mask&(1<<i)) [allowed addObjectsFromArray:groups[i]]; }
             g_config=before;
             NSDictionary *delta=BDSRandomTargetedProfileValues();
@@ -78,7 +78,18 @@ int main(void) {
         assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"other_page", @"c_pv", @"3.03")));
         assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"example.com", @10290, @"y_mission_index", @"c_pv", @"3.03")));
         assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_index", @"c_pv", nil)));
-        puts("PASS plugin: v187 defaults, safe restore, independent random modes, targeted selections, exact cash telemetry matcher, UA/Push/screen regressions");
+        NSMutableDictionary *unusedTarget=[BDSDefaultConfig() mutableCopy];
+        for(NSString *key in BDSSelectedTargetKeys()) unusedTarget[key]=@NO;
+        unusedTarget[@"spoofBaiduTargeted"]=@NO; unusedTarget[@"targetedGeneratedAt"]=@0;
+        NSDictionary *sparse=BDSConfigForPersistentStorage(unusedTarget);
+        for(NSString *key in BDSTargetedStoredValueKeys()) assert(!sparse[key]);
+        assert(!sparse[@"targetedGeneratedAt"]);
+        NSData *sparseData=[NSPropertyListSerialization dataWithPropertyList:sparse format:NSPropertyListXMLFormat_v1_0 options:0 error:nil];
+        assert(sparseData.length<4096);
+        unusedTarget[@"didRandomizeTargeted"]=@YES;
+        NSDictionary *preserved=BDSConfigForPersistentStorage(unusedTarget);
+        for(NSString *key in BDSTargetedStoredValueKeys()) assert(preserved[key]);
+        puts("PASS plugin: compact summary state, sparse unused targeted values, independent random modes, exact cash telemetry matcher, UA/Push/screen regressions");
     }
     return 0;
 }

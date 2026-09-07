@@ -43,6 +43,45 @@ static NSArray<NSString *> *BDSRiskKeys(void) {
 static NSArray<NSString *> *BDSSelectedTargetKeys(void) {
     return @[@"spoofBaiduTargetedSystem",@"spoofBaiduTargetedModel",@"spoofBaiduTargetedScreen",@"spoofBaiduTargetedUA",@"spoofBaiduTargetedPush"];
 }
+static NSArray<NSString *> *BDSTargetedStoredValueKeys(void) {
+    return @[@"targetedDeviceProfileName", @"targetedSystemVersion", @"targetedSystemBuild",
+             @"targetedHwMachine", @"targetedHwModel", @"targetedScreenHwMachine",
+             @"targetedScreenWidth", @"targetedScreenHeight", @"targetedScreenScale",
+             @"targetedNativeScreenWidth", @"targetedNativeScreenHeight",
+             @"targetedUASystemVersion", @"targetedUASystemBuild",
+             @"targetedPushDeviceProfileName", @"targetedPushHwMachine", @"targetedPushHwModel"];
+}
+static BOOL BDSRandomModeWasRun(NSDictionary *config, NSString *mode) {
+    if (![config isKindOfClass:NSDictionary.class] || !mode.length) return NO;
+    NSString *flag = [NSString stringWithFormat:@"didRandomize%@%@",
+                      [[mode substringToIndex:1] uppercaseString], [mode substringFromIndex:1]];
+    id stored = config[flag];
+    if (stored) return [stored boolValue];
+    if ([mode isEqualToString:@"targeted"] && [config[@"targetedGeneratedAt"] doubleValue] > 0) return YES;
+    return [config[@"managerRandomMode"] isEqualToString:mode] &&
+           [config[@"managerGeneratedAt"] doubleValue] > 0;
+}
+static void BDSMarkRandomModeRun(NSMutableDictionary *config, NSString *mode) {
+    if (!config || !mode.length) return;
+    NSString *flag = [NSString stringWithFormat:@"didRandomize%@%@",
+                      [[mode substringToIndex:1] uppercaseString], [mode substringFromIndex:1]];
+    config[flag] = @YES;
+}
+static NSMutableDictionary *BDSConfigForPersistentStorage(NSDictionary *config) {
+    NSMutableDictionary *stored = [config mutableCopy] ?: [NSMutableDictionary dictionary];
+    BOOL selected = [stored[@"spoofBaiduTargeted"] boolValue];
+    if (!selected) {
+        for (NSString *key in BDSSelectedTargetKeys()) {
+            if ([stored[key] boolValue]) { selected = YES; break; }
+        }
+    }
+    if (!selected && !BDSRandomModeWasRun(stored, @"targeted")) {
+        for (NSString *key in BDSTargetedStoredValueKeys()) [stored removeObjectForKey:key];
+        [stored removeObjectForKey:@"targetedGeneratedAt"];
+    }
+    [stored removeObjectForKey:@"managerResolvedPath"];
+    return stored;
+}
 static NSDictionary *BDSSafeSwitchValues(void) {
     NSMutableDictionary *values=[NSMutableDictionary dictionary];
     for(NSString *key in BDSRegularKeys()) values[key]=@NO;

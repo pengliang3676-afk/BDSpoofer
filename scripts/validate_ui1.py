@@ -21,6 +21,19 @@ assert '金额统计上报：%@' in plugin and '? @"阻止" : @"开启"' in plug
 assert all(config['spoofBaiduTargeted'+x] is False for x in ['', 'System','Model','Screen','UA','Push'])
 for text in ['一键随机整套基础参数','一键随机整套高级参数','一键随机定向指纹参数','反关联设置','恢复安全']:assert text in plugin,text
 for text in ['一键随机基础整套设置','一键随机高级整套设置','一键随机定向指纹设置','反关联设置','恢复安全']:assert text in manager,text
+for text in ['当前功能状态','高级功能：%@','百度身份参数','系统硬件参数','防越狱检测','尚未执行一键随机']:
+    assert text in plugin,text
+assert 'didRandomize%@%@' in policy
+for text in ['BDSMarkRandomModeRun','BDSRandomModeWasRun','BDSConfigForPersistentStorage']:
+    assert text in plugin+manager+policy,text
+assert 'BDSCleanContainerDisplayName' in manager and '（默认）' in manager
+assert 'numberOfLines = 3' in manager and 'sideInset=18.0' in manager
+targeted_values=['targetedDeviceProfileName','targetedSystemVersion','targetedSystemBuild','targetedHwMachine','targetedHwModel','targetedScreenHwMachine','targetedScreenWidth','targetedScreenHeight','targetedScreenScale','targetedNativeScreenWidth','targetedNativeScreenHeight','targetedUASystemVersion','targetedUASystemBuild','targetedPushDeviceProfileName','targetedPushHwMachine','targetedPushHwModel','targetedGeneratedAt']
+sparse=dict(config)
+for key in targeted_values:sparse.pop(key,None)
+sparse.pop('managerResolvedPath',None)
+sparse.update(managerContainerIdentifier='12345678-1234-1234-1234-123456789012',managerGeneratedAt=1.0,managerProfileVersion=103,managerRandomMode='basic',didRandomizeBasic=True)
+assert len(plistlib.dumps(sparse,fmt=plistlib.FMT_XML,sort_keys=False))<4096
 assert 'g_rewardProbe' not in plugin
 assert 'BDSInstallCashSpoofing' not in plugin and 'arc4random_uniform(101)' not in plugin
 assert 'dataTaskWithRequest' not in blocker and 'willPerformHTTPRedirection' not in blocker

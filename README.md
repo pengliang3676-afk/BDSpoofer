@@ -116,6 +116,9 @@ lipo -create BDSpoofer_1.8.1_arm64.dylib BDSpoofer_1.8.1_arm64e.dylib -output BD
 2. 用 Sileo 安装 `BDSpooferCraneManager_1.0.2_RootHide.deb`。
 3. 从桌面打开“卍解”，勾选一个或多个 Crane 容器并执行一键随机。
 4. 配置会直接写入各容器自己的 `Documents/bdspoofer_config.plist`。尚未运行的容器可直接首次打开；已在后台运行的百度需要彻底结束后再打开。
+5. 容器列表分别显示基础、高级、定向是否执行过随机；只给正在使用的容器标记“当前”。随机状态保存在各容器内部，删除容器时一并删除。
+
+从未使用定向指纹的容器不会写入备用定向参数；首次执行定向随机后才保存相应配置，基础或高级模式的配置文件保持在约 4KB。
 
 详细说明见 `CraneManager/README.md`。
 

@@ -20,7 +20,7 @@ int main(int argc,char **argv) {
         for(NSString *key in BDSRegularKeys()) assert([config[key] boolValue]);
         for(NSString *key in BDSRiskKeys()) assert(![config[key] boolValue]);
         NSString *retained=config[@"idfv"];config[@"idfa"]=@"";BDSSeedIdentityIfNeeded(config,NO);assert([retained isEqual:config[@"idfv"]]);assert([config[@"idfa"] length]>0);
-        NSMutableSet *meta=[NSMutableSet setWithArray:@[@"managerGeneratedAt",@"managerProfileVersion",@"managerRandomMode"]];
+        NSMutableSet *meta=[NSMutableSet setWithArray:@[@"managerGeneratedAt",@"managerProfileVersion",@"managerRandomMode",@"didRandomizeBasic",@"didRandomizeAdvanced",@"didRandomizeTargeted"]];
         NSMutableSet *advanced=[meta mutableCopy];[advanced addObjectsFromArray:@[@"idfa",@"idfv",@"deviceID",@"cuid",@"utdid"]];
         NSMutableSet *basic=[meta mutableCopy];[basic addObjectsFromArray:@[@"deviceProfileName",@"deviceModel",@"marketingModel",@"systemVersion",@"systemBuild",@"kernOSVersion",@"hwMachine",@"hwModel",@"memorySize",@"diskSize",@"deviceName",@"kernHostname",@"screenWidth",@"screenHeight",@"screenScale",@"nativeScreenWidth",@"nativeScreenHeight",@"bootTimeOffsetSeconds",@"carrierName",@"mcc",@"mnc",@"isoCountryCode"]];
         config[@"spoofBaiduTargeted"]=@YES;for(NSString *key in BDSTargetedKeys()) config[key]=@YES;
@@ -51,7 +51,17 @@ int main(int argc,char **argv) {
         }
         [config addEntriesFromDictionary:BDSSafeSwitchValues()];
         NSDictionary *reloaded=BDSMergedConfig(config);for(NSString *key in BDSSafeSwitchValues()) assert(![reloaded[key] boolValue]);
-        puts("PASS manager: v187 defaults, synchronized device fields, independent random modes, targeted selections, preserved switches, safe restore");
+        NSMutableDictionary *unusedTarget=BDSMergedConfig(defaults);
+        for(NSString *key in BDSSelectedTargetKeys()) unusedTarget[key]=@NO;
+        unusedTarget[@"spoofBaiduTargeted"]=@NO; unusedTarget[@"targetedGeneratedAt"]=@0;
+        NSDictionary *sparse=BDSConfigForPersistentStorage(unusedTarget);
+        for(NSString *key in BDSTargetedStoredValueKeys()) assert(!sparse[key]);
+        assert(!sparse[@"targetedGeneratedAt"]);
+        NSData *sparseData=[NSPropertyListSerialization dataWithPropertyList:sparse format:NSPropertyListXMLFormat_v1_0 options:0 error:nil];
+        assert(sparseData.length<4096);
+        assert([BDSCleanContainerDisplayName(@"01（默认）", @"fallback") isEqualToString:@"01"]);
+        assert([BDSCleanContainerDisplayName(@"默认", @"fallback") isEqualToString:@"默认"]);
+        puts("PASS manager: per-mode random state, clean current label, sparse unused targeted values, synchronized device fields and safe restore");
     }
     return 0;
 }

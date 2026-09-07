@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import <math.h>
 #import "BDSConfigPolicy.h"
 
 static UIColor *BDSRandomButtonColor(NSUInteger index) {
@@ -17,7 +18,7 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
     [super viewDidLoad];
     self.tableView.rowHeight=58;
     self.tableView.sectionHeaderHeight=UITableViewAutomaticDimension;
-    self.tableView.estimatedSectionHeaderHeight=420;
+    self.tableView.estimatedSectionHeaderHeight=250;
     self.tableView.separatorStyle=UITableViewCellSeparatorStyleNone;
     self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"关闭" style:UIBarButtonItemStylePlain target:self action:@selector(close)];
 }
@@ -28,13 +29,31 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
 }
 - (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return self.items.count; }
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section { return self.pageSummary; }
-- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
-    if([view isKindOfClass:UITableViewHeaderFooterView.class]) {
-        UILabel *label=((UITableViewHeaderFooterView *)view).textLabel;
-        label.numberOfLines=0;
-        label.text=self.pageSummary;
-    }
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
+    CGFloat textWidth=MAX(120, CGRectGetWidth(tableView.bounds)-68);
+    CGRect bounds=[self.pageSummary ?: @"" boundingRectWithSize:CGSizeMake(textWidth,CGFLOAT_MAX)
+                                                    options:NSStringDrawingUsesLineFragmentOrigin|NSStringDrawingUsesFontLeading
+                                                 attributes:@{NSFontAttributeName:[UIFont systemFontOfSize:14]}
+                                                    context:nil];
+    return MAX(44, ceil(bounds.size.height)+44);
+}
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+    CGFloat height=[self tableView:tableView heightForHeaderInSection:section];
+    UIView *header=[[UIView alloc] initWithFrame:CGRectMake(0,0,CGRectGetWidth(tableView.bounds),height)];
+    UIView *card=[[UIView alloc] initWithFrame:CGRectMake(8,6,CGRectGetWidth(header.bounds)-16,height-12)];
+    card.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+    card.backgroundColor=UIColor.secondarySystemGroupedBackgroundColor;
+    card.layer.cornerRadius=13;
+    card.layer.masksToBounds=YES;
+    UILabel *label=[[UILabel alloc] initWithFrame:CGRectInset(card.bounds,16,12)];
+    label.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+    label.numberOfLines=0;
+    label.font=[UIFont systemFontOfSize:14];
+    label.textColor=UIColor.labelColor;
+    label.text=self.pageSummary;
+    [card addSubview:label];
+    [header addSubview:card];
+    return header;
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];

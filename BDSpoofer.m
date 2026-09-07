@@ -490,7 +490,7 @@ static void loadConfig() {
     }
     BDSApplyInitialDefaults(merged, loaded);
     BDSSeedInitialIdentities(merged, loaded);
-    [merged writeToFile:p1 atomically:YES];
+    [BDSConfigForPersistentStorage(merged) writeToFile:p1 atomically:YES];
     g_config = [merged copy];
     bds_update_c_cache();
 }
@@ -499,7 +499,7 @@ static BOOL saveConfigValues(NSDictionary *values) {
     if (!values.count) return NO;
     NSMutableDictionary *next = [g_config mutableCopy] ?: [NSMutableDictionary dictionary];
     [next addEntriesFromDictionary:values];
-    BOOL saved = [next writeToFile:configPath() atomically:YES];
+    BOOL saved = [BDSConfigForPersistentStorage(next) writeToFile:configPath() atomically:YES];
     if (saved) {
         g_config = [next copy];
         bds_update_c_cache();
@@ -2870,7 +2870,8 @@ static NSDictionary *BDSRandomIdentityValues(void) {
         @"idfv": NSUUID.UUID.UUIDString.uppercaseString,
         @"deviceID": NSUUID.UUID.UUIDString.uppercaseString,
         @"cuid": BDSRandomHex32(YES),
-        @"utdid": BDSRandomHex32(NO)
+        @"utdid": BDSRandomHex32(NO),
+        @"didRandomizeAdvanced": @YES
     };
 }
 
@@ -3142,7 +3143,7 @@ static NSDictionary *BDSRandomBasicProfileValues(void) {
     NSDictionary *system = BDSRandomSystemProfileForDevice(device);
     NSMutableDictionary *values = BDSRandomBaseValuesForPair(device, system, YES);
     if (!values.count) return @{};
-
+    BDSMarkRandomModeRun(values, @"basic");
     return values;
 }
 
@@ -3177,7 +3178,8 @@ static NSDictionary *BDSRandomTargetedProfileValues(void) {
     NSMutableDictionary *values = [@{
 
         @"spoofBaiduTargeted": @YES,
-        @"targetedGeneratedAt": @((long long)NSDate.date.timeIntervalSince1970)
+        @"targetedGeneratedAt": @((long long)NSDate.date.timeIntervalSince1970),
+        @"didRandomizeTargeted": @YES
     } mutableCopy];
     if (cfgBool(@"spoofBaiduTargetedSystem", NO)) {
 
@@ -3211,38 +3213,40 @@ static NSDictionary *BDSRandomTargetedProfileValues(void) {
     return values;
 }
 
+static NSString *BDSRandomRunText(NSString *mode) {
+    return BDSRandomModeWasRun(g_config, mode) ? @"已执行一键随机" : @"尚未执行一键随机";
+}
+
 static NSString *BDSConfigSummary(void) {
-    NSMutableString *summary = [NSMutableString stringWithFormat:
-        @"基础参数（保存值）\n基础总开关：%@\n设备：%@\n系统：iOS %@ (%@)\n基础随机范围：%@",
+    NSMutableString *summary = [NSMutableString stringWithString:@"当前功能状态"];
+    [summary appendFormat:@"\n基础功能：%@\n%@ · iOS %@ · %@",
         cfgBool(@"enabled", NO) ? @"已开启" : @"已关闭",
-        cfgStr(@"deviceProfileName", @"iPhone SE (3rd generation)"),
-        cfgStr(@"systemVersion", @"15.4.1"),
-        cfgStr(@"systemBuild", @"19E258"),
-        BDSDeviceRangeName()];
-    [summary appendFormat:@"\n\n定向参数（保存值）\n定向总开关：%@",
-        cfgBool(@"spoofBaiduTargeted", NO) ? @"已开启" : @"已关闭"];
-    NSString *(^state)(NSString *) = ^NSString *(NSString *key) {
-        return cfgBool(key, NO) ? @"开" : @"关";
-    };
-    [summary appendFormat:@"\n机型 [%@]：%@（%@）",
-        state(@"spoofBaiduTargetedModel"),
-        cfgStr(@"targetedDeviceProfileName", @"未设置"), cfgStr(@"targetedHwMachine", @"未设置")];
-    [summary appendFormat:@"\n系统 [%@]：iOS %@（%@）",
-        state(@"spoofBaiduTargetedSystem"),
-        cfgStr(@"targetedSystemVersion", @"未设置"), cfgStr(@"targetedSystemBuild", @"未设置")];
-    [summary appendFormat:@"\n屏幕 [%@]：%ld×%ld @%ldx\n物理像素：%ld×%ld",
-        state(@"spoofBaiduTargetedScreen"),
-        (long)cfgInt(@"targetedScreenWidth", 0), (long)cfgInt(@"targetedScreenHeight", 0),
-        (long)cfgInt(@"targetedScreenScale", 0),
-        (long)cfgInt(@"targetedNativeScreenWidth", 0), (long)cfgInt(@"targetedNativeScreenHeight", 0)];
-    [summary appendFormat:@"\nUA 系统 [%@]：iOS %@（%@）",
-        state(@"spoofBaiduTargetedUA"),
-        cfgStr(@"targetedUASystemVersion", @"未设置"), cfgStr(@"targetedUASystemBuild", @"未设置")];
-    [summary appendFormat:@"\nPush 机型 [%@]：%@（%@）",
-        state(@"spoofBaiduTargetedPush"),
-        cfgStr(@"targetedPushDeviceProfileName", @"未设置"), cfgStr(@"targetedPushHwMachine", @"未设置")];
-    [summary appendString:@"\n总开关与对应子项均开启时才启用。\n以上为配置保存值，不代表已验证百度实际读取结果。"];
-    [summary appendFormat:@"\n\n反关联扩展\n金额统计上报：%@",
+        cfgStr(@"hwMachine", @"未设置"), cfgStr(@"systemVersion", @"未设置"),
+        BDSRandomRunText(@"basic")];
+
+    NSArray<NSString *> *advancedKeys = @[@"spoofBaiduSDK", @"spoofSysctl", @"bypassJailbreakDetect"];
+    NSArray<NSString *> *advancedNames = @[@"百度身份参数", @"系统硬件参数", @"防越狱检测"];
+    NSMutableArray<NSString *> *enabledAdvanced = [NSMutableArray array];
+    for (NSUInteger i = 0; i < advancedKeys.count; i++) {
+        if (cfgBool(advancedKeys[i], NO)) [enabledAdvanced addObject:advancedNames[i]];
+    }
+    [summary appendFormat:@"\n\n高级功能：%@",
+        enabledAdvanced.count ? [NSString stringWithFormat:@"已开启（%lu 项）", (unsigned long)enabledAdvanced.count] : @"已关闭"];
+    if (enabledAdvanced.count) [summary appendFormat:@"\n%@", [enabledAdvanced componentsJoinedByString:@" · "]];
+    [summary appendFormat:@"\n%@", BDSRandomRunText(@"advanced")];
+
+    [summary appendFormat:@"\n\n定向指纹：%@\n%@ · iOS %@ · %@",
+        cfgBool(@"spoofBaiduTargeted", NO) ? @"已开启" : @"已关闭",
+        cfgStr(@"targetedHwMachine", @"未设置"), cfgStr(@"targetedSystemVersion", @"未设置"),
+        BDSRandomRunText(@"targeted")];
+
+    NSUInteger associationEnabled = 0;
+    NSArray<NSDictionary *> *associationItems = BDSSettingGroups()[2];
+    for (NSDictionary *item in associationItems) {
+        if (![item[@"off"] boolValue] && cfgBool(item[@"key"], NO)) associationEnabled++;
+    }
+    [summary appendFormat:@"\n\n反关联增强：%@\n金额统计上报：%@",
+        associationEnabled ? @"已开启" : @"已关闭",
         cfgBool(@"blockStatCashTelemetry", NO) ? @"阻止" : @"开启"];
     return summary;
 }

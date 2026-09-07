@@ -260,6 +260,7 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
     }];
 
     if (mode == BDSRandomModeBasic) {
+        BDSMarkRandomModeRun(config, @"basic");
         NSArray *disks = device[@"disks"];
         if (![disks isKindOfClass:NSArray.class] || !disks.count) return nil;
         NSNumber *disk = disks[arc4random_uniform((uint32_t)disks.count)];
@@ -287,6 +288,7 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
         [config addEntriesFromDictionary:BDSRandomCarrier()];
     } else {
 
+        BDSMarkRandomModeRun(config, @"targeted");
         config[@"spoofBaiduTargeted"] = @YES;
         for (NSString *key in BDSTargetedKeys()) config[key] = @([selectedTargetedKeys containsObject:key]);
         config[@"targetedGeneratedAt"] = @([[NSDate date] timeIntervalSince1970]);
@@ -332,6 +334,7 @@ static NSMutableDictionary *BDSCreateRandomConfig(NSDictionary *existing,
         config[@"managerGeneratedAt"] = @([[NSDate date] timeIntervalSince1970]);
         config[@"managerProfileVersion"] = @103;
         config[@"managerRandomMode"] = @"advanced";
+        BDSMarkRandomModeRun(config, @"advanced");
         // 与插件“一键高级”一致：只更换五个长期身份值，所有参数和开关保持原状态。
         BDSSeedIdentityIfNeeded(config, YES);
         return config;
@@ -423,29 +426,44 @@ static void *BDSLoadCraneLibrary(void) {
 
 static NSString *BDSContainerSummary(NSDictionary *config) {
     if (![config isKindOfClass:NSDictionary.class]) return @"尚未写入参数";
-
-    NSString *basicName = config[@"deviceProfileName"] ?: @"未知机型";
-    NSString *basicSystem = config[@"systemVersion"] ?: @"未知";
-    NSMutableString *summary = [NSMutableString stringWithFormat:@"基础：%@ · iOS %@", basicName, basicSystem];
-
-    if ([config[@"spoofBaiduTargeted"] boolValue]) {
+    NSMutableString *summary = [NSMutableString string];
+    if (BDSRandomModeWasRun(config, @"basic")) {
+        [summary appendFormat:@"基础（已随机）：%@ · iOS %@",
+            config[@"hwMachine"] ?: @"未知机型", config[@"systemVersion"] ?: @"未知"];
+    } else {
+        [summary appendString:@"基础：未随机"];
+    }
+    [summary appendFormat:@"\n高级：%@",
+        BDSRandomModeWasRun(config, @"advanced") ? @"已随机" : @"未随机"];
+    if (BDSRandomModeWasRun(config, @"targeted")) {
         NSMutableArray<NSString *> *targeted = [NSMutableArray array];
         if ([config[@"spoofBaiduTargetedModel"] boolValue]) {
-            [targeted addObject:config[@"targetedDeviceProfileName"] ?: @"未知机型"];
+            [targeted addObject:config[@"targetedHwMachine"] ?: @"未知机型"];
         }
         if ([config[@"spoofBaiduTargetedSystem"] boolValue]) {
             [targeted addObject:[NSString stringWithFormat:@"iOS %@", config[@"targetedSystemVersion"] ?: @"未知"]];
         }
-        if (!targeted.count) {
-            NSArray<NSString *> *keys = BDSTargetedKeys();
-            NSArray<NSString *> *names = BDSTargetedNames();
-            for (NSUInteger i = 0; i < keys.count && i < names.count; i++) {
-                if ([config[keys[i]] boolValue]) [targeted addObject:names[i]];
-            }
-        }
-        if (targeted.count) [summary appendFormat:@"\n定向：%@", [targeted componentsJoinedByString:@" · "]];
+        if (!targeted.count) [targeted addObject:@"已保存定向参数"];
+        [summary appendFormat:@"\n定向（已随机）：%@%@",
+            [targeted componentsJoinedByString:@" · "],
+            [config[@"spoofBaiduTargeted"] boolValue] ? @"" : @" · 当前关闭"];
+    } else {
+        [summary appendString:@"\n定向：未随机"];
     }
     return summary;
+}
+
+static NSString *BDSCleanContainerDisplayName(NSString *name, NSString *fallback) {
+    NSString *clean = name.length ? name : fallback;
+    clean = [clean stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    for (NSString *suffix in @[@"（默认）", @"(默认)", @"（Default）", @"(Default)"]) {
+        if ([clean hasSuffix:suffix] && ![clean isEqualToString:suffix]) {
+            clean = [clean substringToIndex:clean.length-suffix.length];
+            clean = [clean stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            break;
+        }
+    }
+    return clean.length ? clean : fallback;
 }
 
 static NSString *BDSTargetedResultDetail(NSDictionary *config, NSSet<NSString *> *selection) {
@@ -501,7 +519,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];
-    self.tableView.rowHeight = 68.0;
+    self.tableView.rowHeight = 96.0;
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh target:self action:@selector(reloadContainers)];
     [self buildHeaderAndFooter];
@@ -509,7 +527,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 }
 
 - (void)buildHeaderAndFooter {
-    CGFloat width=UIScreen.mainScreen.bounds.size.width;
+    CGFloat width=CGRectGetWidth(self.tableView.bounds);
     UIView *header=[[UIView alloc] initWithFrame:CGRectMake(0,0,width,100)];
     UILabel *label=[[UILabel alloc] initWithFrame:CGRectInset(header.bounds,18,10)];
     label.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
@@ -525,7 +543,9 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
         UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem];
         button.frame=CGRectMake(18,8+i*64,width-36,52);
         button.autoresizingMask=UIViewAutoresizingFlexibleWidth;
+        button.tag=1000+i;
         button.layer.cornerRadius=12;
+        button.layer.masksToBounds=YES;
         button.backgroundColor=i<3?BDSRandomButtonColor(i):UIColor.secondarySystemGroupedBackgroundColor;
         [button setTitleColor:i<3?UIColor.whiteColor:UIColor.labelColor forState:UIControlStateNormal];
         [button setTitle:titles[i] forState:UIControlStateNormal];
@@ -539,6 +559,25 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
         else if(i==2) self.targetedButton=button;
     }
     self.tableView.tableFooterView=footer;
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    UIView *footer=self.tableView.tableFooterView;
+    if(!footer) return;
+    CGFloat width=CGRectGetWidth(self.tableView.bounds);
+    CGRect footerFrame=footer.frame;
+    if(fabs(footerFrame.size.width-width)>0.5) {
+        footerFrame.size.width=width;
+        footer.frame=footerFrame;
+        self.tableView.tableFooterView=footer;
+    }
+    CGFloat sideInset=18.0;
+    CGFloat buttonWidth=MAX(0,CGRectGetWidth(footer.bounds)-sideInset*2.0);
+    for(NSUInteger i=0;i<5;i++) {
+        UIButton *button=[footer viewWithTag:1000+i];
+        button.frame=CGRectMake(sideInset,8+i*64,buttonWidth,52);
+    }
 }
 
 - (NSString *)appPathForContainerID:(NSString *)containerID {
@@ -652,12 +691,13 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
         NSString *name = [self.crane displayNameForContainerWithIdentifier:containerID
                                                ofApplicationWithIdentifier:BDSBaiduBundleID
                                                      shouldUseShortVersion:NO];
+        name = BDSCleanContainerDisplayName(name, containerID);
         NSString *path = [self configPathForContainerID:containerID];
         NSDictionary *config = path.length ? [NSDictionary dictionaryWithContentsOfFile:path] : nil;
         NSMutableDictionary *initialized=BDSMergedConfig(config);
         BDSSeedIdentityIfNeeded(initialized,NO);
         initialized[@"managerContainerIdentifier"]=containerID;
-        initialized[@"managerResolvedPath"]=path ?: @"";
+        initialized=BDSConfigForPersistentStorage(initialized);
         BOOL ready=[initialized isEqualToDictionary:config] || BDSWriteContainerConfig(path,initialized);
         if(ready) config=initialized;
         NSString *summary = ready ? BDSContainerSummary(config) : @"初始化保存失败，请刷新重试";
@@ -689,7 +729,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     BOOL active = [containerID isEqualToString:self.activeContainerID];
     cell.textLabel.text = active ? [NSString stringWithFormat:@"%@（当前）", row[@"name"]] : row[@"name"];
     cell.detailTextLabel.text = row[@"summary"];
-    cell.detailTextLabel.numberOfLines = 2;
+    cell.detailTextLabel.numberOfLines = 3;
     cell.accessoryType = selected ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
     return cell;
 }
@@ -801,7 +841,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
             continue;
         }
         config[@"managerContainerIdentifier"] = containerID;
-        config[@"managerResolvedPath"] = configPath;
+        config = BDSConfigForPersistentStorage(config);
         NSError *serializationError = nil;
         NSData *data = [NSPropertyListSerialization dataWithPropertyList:config
                                                                    format:NSPropertyListXMLFormat_v1_0
