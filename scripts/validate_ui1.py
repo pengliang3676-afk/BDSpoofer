@@ -20,13 +20,20 @@ assert 'blockStatCashTelemetry' in policy and 'blockStatCashTelemetry' in plugin
 assert '收益额上报：%@' in plugin and '? @"已开启" : @"已关闭"' in plugin
 assert all(config['spoofBaiduTargeted'+x] is False for x in ['', 'System','Model','Screen','UA','Push'])
 for text in ['一键随机整套基础参数','一键随机整套高级参数','一键随机定向指纹参数','反关联项','诊断自检','恢复安全']:assert text in plugin,text
-for text in ['一键随机基础整套设置','一键随机高级整套设置','一键随机定向指纹设置','反关联设置','恢复安全']:assert text in manager,text
+for text in ['一键随机基础整套设置','一键随机高级整套设置','一键随机定向指纹设置','反关联项','恢复安全','关闭']:assert text in manager,text
 for text in ['基础功能：当前功能状态  %@','高级功能：%@','定向指纹：%@','反关联增强：%@','尚未执行一键随机']:
     assert text in plugin,text
 assert '百度身份参数 · 系统硬件参数 · 防越狱检测' not in plugin
+assert '已开启（%lu 项）' not in plugin
+assert 'cfgStr(@"deviceProfileName", cfgStr(@"hwMachine", @"未设置"))' in plugin
+assert 'cfgStr(@"targetedDeviceProfileName", cfgStr(@"targetedHwMachine", @"未设置"))' in plugin
 settings_ui=(root/'Shared/BDSSettingsUI.h').read_text(encoding='utf-8')
 assert 'usesCompactActionRow' in settings_ui and 'UIStackViewDistributionFillEqually' in settings_ui
+assert 'i==5 ? UIColor.systemRedColor' not in settings_ui
 assert 'CGRectMake(0,0,width,8)' in manager and 'CGRectMake(0,0,width,100)' not in manager
+assert 'CGRectMake(0,0,width,288)' in manager and 'layoutFooterButtons' in manager
+assert 'viewWithTag:1003' in manager and 'viewWithTag:1004' in manager and 'viewWithTag:1005' in manager
+assert 'exit(EXIT_SUCCESS);' in manager
 assert 'page.title=@"卐解 1.8.1 UI1.2"' in plugin
 assert 'didRandomize%@%@' in policy
 for text in ['BDSMarkRandomModeRun','BDSRandomModeWasRun','BDSConfigForPersistentStorage']:

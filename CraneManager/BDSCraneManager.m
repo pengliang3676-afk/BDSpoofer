@@ -530,12 +530,11 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     CGFloat width=CGRectGetWidth(self.tableView.bounds);
     UIView *header=[[UIView alloc] initWithFrame:CGRectMake(0,0,width,8)];
     self.tableView.tableHeaderView=header;
-    UIView *footer=[[UIView alloc] initWithFrame:CGRectMake(0,0,width,328)];
-    NSArray *titles=@[@"一键随机基础整套设置",@"一键随机高级整套设置",@"一键随机定向指纹设置",@"反关联设置",@"恢复安全"];
-    NSArray *selectors=@[NSStringFromSelector(@selector(randomizeBasicForSelectedContainers)),NSStringFromSelector(@selector(randomizeAdvancedForSelectedContainers)),NSStringFromSelector(@selector(randomizeTargetedForSelectedContainers)),NSStringFromSelector(@selector(showAssociationSettings)),NSStringFromSelector(@selector(restoreSafeSettings))];
+    UIView *footer=[[UIView alloc] initWithFrame:CGRectMake(0,0,width,288)];
+    NSArray *titles=@[@"一键随机基础整套设置",@"一键随机高级整套设置",@"一键随机定向指纹设置",@"反关联项",@"恢复安全",@"关闭"];
+    NSArray *selectors=@[NSStringFromSelector(@selector(randomizeBasicForSelectedContainers)),NSStringFromSelector(@selector(randomizeAdvancedForSelectedContainers)),NSStringFromSelector(@selector(randomizeTargetedForSelectedContainers)),NSStringFromSelector(@selector(showAssociationSettings)),NSStringFromSelector(@selector(restoreSafeSettings)),NSStringFromSelector(@selector(closeApp))];
     for(NSUInteger i=0;i<titles.count;i++) {
         UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem];
-        button.frame=CGRectMake(18,8+i*64,width-36,52);
         button.autoresizingMask=UIViewAutoresizingFlexibleWidth;
         button.tag=1000+i;
         button.layer.cornerRadius=12;
@@ -553,10 +552,10 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
         else if(i==2) self.targetedButton=button;
     }
     self.tableView.tableFooterView=footer;
+    [self layoutFooterButtons];
 }
 
-- (void)viewDidLayoutSubviews {
-    [super viewDidLayoutSubviews];
+- (void)layoutFooterButtons {
     UIView *footer=self.tableView.tableFooterView;
     if(!footer) return;
     CGFloat width=CGRectGetWidth(self.tableView.bounds);
@@ -568,10 +567,26 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     }
     CGFloat sideInset=18.0;
     CGFloat buttonWidth=MAX(0,CGRectGetWidth(footer.bounds)-sideInset*2.0);
-    for(NSUInteger i=0;i<5;i++) {
+    CGFloat buttonHeight=48.0;
+    CGFloat rowStep=56.0;
+    for(NSUInteger i=0;i<3;i++) {
         UIButton *button=[footer viewWithTag:1000+i];
-        button.frame=CGRectMake(sideInset,8+i*64,buttonWidth,52);
+        button.frame=CGRectMake(sideInset,6+i*rowStep,buttonWidth,buttonHeight);
     }
+    CGFloat pairGap=6.0;
+    CGFloat pairWidth=MAX(0,(buttonWidth-pairGap)/2.0);
+    [footer viewWithTag:1003].frame=CGRectMake(sideInset,6+3*rowStep,pairWidth,buttonHeight);
+    [footer viewWithTag:1004].frame=CGRectMake(sideInset+pairWidth+pairGap,6+3*rowStep,pairWidth,buttonHeight);
+    [footer viewWithTag:1005].frame=CGRectMake(sideInset,6+4*rowStep,buttonWidth,buttonHeight);
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self layoutFooterButtons];
+}
+
+- (void)closeApp {
+    exit(EXIT_SUCCESS);
 }
 
 - (NSString *)appPathForContainerID:(NSString *)containerID {

@@ -76,7 +76,7 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
             button.titleLabel.adjustsFontSizeToFitWidth=YES;
             button.titleLabel.minimumScaleFactor=0.72;
             [button setTitle:self.items[i][@"title"] forState:UIControlStateNormal];
-            [button setTitleColor:(i==5 ? UIColor.systemRedColor : UIColor.labelColor) forState:UIControlStateNormal];
+            [button setTitleColor:UIColor.labelColor forState:UIControlStateNormal];
             [button addTarget:self action:@selector(runCompactAction:) forControlEvents:UIControlEventTouchUpInside];
             [row addArrangedSubview:button];
         }

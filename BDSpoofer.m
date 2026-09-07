@@ -3221,20 +3221,26 @@ static NSString *BDSConfigSummary(void) {
     NSMutableString *summary = [NSMutableString string];
     [summary appendFormat:@"基础功能：当前功能状态  %@\n%@ · iOS %@ · %@",
         cfgBool(@"enabled", NO) ? @"已开启" : @"已关闭",
-        cfgStr(@"hwMachine", @"未设置"), cfgStr(@"systemVersion", @"未设置"),
+        cfgStr(@"deviceProfileName", cfgStr(@"hwMachine", @"未设置")), cfgStr(@"systemVersion", @"未设置"),
         BDSRandomRunText(@"basic")];
 
     NSArray<NSString *> *advancedKeys = @[@"spoofBaiduSDK", @"spoofSysctl", @"bypassJailbreakDetect"];
-    NSUInteger enabledAdvanced = 0;
-    for (NSString *key in advancedKeys) if (cfgBool(key, NO)) enabledAdvanced++;
+    BOOL advancedEnabled = NO;
+    for (NSString *key in advancedKeys) if (cfgBool(key, NO)) { advancedEnabled = YES; break; }
     [summary appendFormat:@"\n\n高级功能：%@",
-        enabledAdvanced ? [NSString stringWithFormat:@"已开启（%lu 项）", (unsigned long)enabledAdvanced] : @"已关闭"];
+        advancedEnabled ? @"已开启" : @"已关闭"];
     [summary appendFormat:@"\n%@", BDSRandomRunText(@"advanced")];
 
-    [summary appendFormat:@"\n\n定向指纹：%@\n%@ · iOS %@ · %@",
-        cfgBool(@"spoofBaiduTargeted", NO) ? @"已开启" : @"已关闭",
-        cfgStr(@"targetedHwMachine", @"未设置"), cfgStr(@"targetedSystemVersion", @"未设置"),
-        BDSRandomRunText(@"targeted")];
+    BOOL targetedWasRun = BDSRandomModeWasRun(g_config, @"targeted");
+    [summary appendFormat:@"\n\n定向指纹：%@",
+        cfgBool(@"spoofBaiduTargeted", NO) ? @"已开启" : @"已关闭"];
+    if (targetedWasRun) {
+        [summary appendFormat:@"\n%@ · iOS %@ · 已执行一键随机",
+            cfgStr(@"targetedDeviceProfileName", cfgStr(@"targetedHwMachine", @"未设置")),
+            cfgStr(@"targetedSystemVersion", @"未设置")];
+    } else {
+        [summary appendString:@"\n尚未执行一键随机"];
+    }
 
     NSUInteger associationEnabled = 0;
     NSArray<NSDictionary *> *associationItems = BDSSettingGroups()[2];
