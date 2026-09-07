@@ -34,6 +34,8 @@ assert 'CGRectMake(0,0,width,8)' in manager and 'CGRectMake(0,0,width,100)' not 
 assert 'CGRectMake(0,0,width,288)' in manager and 'layoutFooterButtons' in manager
 assert 'viewWithTag:1003' in manager and 'viewWithTag:1004' in manager and 'viewWithTag:1005' in manager
 assert 'exit(EXIT_SUCCESS);' in manager
+assert 'config[@"deviceProfileName"] ?: config[@"hwMachine"]' in manager
+assert 'config[@"targetedDeviceProfileName"] ?: config[@"targetedHwMachine"]' in manager
 assert 'page.title=@"卐解 1.8.1 UI1.2"' in plugin
 assert 'didRandomize%@%@' in policy
 for text in ['BDSMarkRandomModeRun','BDSRandomModeWasRun','BDSConfigForPersistentStorage']:

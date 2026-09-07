@@ -429,7 +429,8 @@ static NSString *BDSContainerSummary(NSDictionary *config) {
     NSMutableString *summary = [NSMutableString string];
     if (BDSRandomModeWasRun(config, @"basic")) {
         [summary appendFormat:@"基础（已随机）：%@ · iOS %@",
-            config[@"hwMachine"] ?: @"未知机型", config[@"systemVersion"] ?: @"未知"];
+            config[@"deviceProfileName"] ?: config[@"hwMachine"] ?: @"未知机型",
+            config[@"systemVersion"] ?: @"未知"];
     } else {
         [summary appendString:@"基础：未随机"];
     }
@@ -438,7 +439,7 @@ static NSString *BDSContainerSummary(NSDictionary *config) {
     if (BDSRandomModeWasRun(config, @"targeted")) {
         NSMutableArray<NSString *> *targeted = [NSMutableArray array];
         if ([config[@"spoofBaiduTargetedModel"] boolValue]) {
-            [targeted addObject:config[@"targetedHwMachine"] ?: @"未知机型"];
+            [targeted addObject:config[@"targetedDeviceProfileName"] ?: config[@"targetedHwMachine"] ?: @"未知机型"];
         }
         if ([config[@"spoofBaiduTargetedSystem"] boolValue]) {
             [targeted addObject:[NSString stringWithFormat:@"iOS %@", config[@"targetedSystemVersion"] ?: @"未知"]];
