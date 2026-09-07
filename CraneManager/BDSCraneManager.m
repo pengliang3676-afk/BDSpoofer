@@ -2,6 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <dlfcn.h>
 #import <limits.h>
+#import <objc/message.h>
 #import <stdlib.h>
 #import "../Shared/BDSSettingsUI.h"
 
@@ -587,7 +588,13 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 }
 
 - (void)closeApp {
-    exit(EXIT_SUCCESS);
+    UIApplication *application=UIApplication.sharedApplication;
+    SEL suspendSelector=NSSelectorFromString(@"suspend");
+    if([application respondsToSelector:suspendSelector]) {
+        ((void (*)(id, SEL))objc_msgSend)(application,suspendSelector);
+    } else {
+        exit(EXIT_SUCCESS);
+    }
 }
 
 - (NSString *)appPathForContainerID:(NSString *)containerID {

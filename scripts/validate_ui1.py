@@ -33,7 +33,7 @@ assert 'i==5 ? UIColor.systemRedColor' not in settings_ui
 assert 'CGRectMake(0,0,width,8)' in manager and 'CGRectMake(0,0,width,100)' not in manager
 assert 'CGRectMake(0,0,width,288)' in manager and 'layoutFooterButtons' in manager
 assert 'viewWithTag:1003' in manager and 'viewWithTag:1004' in manager and 'viewWithTag:1005' in manager
-assert 'exit(EXIT_SUCCESS);' in manager
+assert 'NSSelectorFromString(@"suspend")' in manager and 'objc_msgSend' in manager
 assert 'config[@"deviceProfileName"] ?: config[@"hwMachine"]' in manager
 assert 'config[@"targetedDeviceProfileName"] ?: config[@"targetedHwMachine"]' in manager
 assert 'page.title=@"卐解 1.8.1 UI1.2"' in plugin
@@ -103,5 +103,6 @@ base=subprocess.check_output(['git','show','b65d42ab33948455ef84e57d109d0dbede2a
 names=['bds_c_is_jailbreak_path','bds_is_suspicious_dlopen_path','bds_my_dlopen','bds_my_dlopen_preflight','bds_my_stat','bds_my_lstat','bds_my_access','bds_my_fopen','bds_my_opendir','bds_perform_rebinding_with_section','bds_rebind_symbols_for_image']
 for name in names:assert function(plugin,name)==function(base,name),name
 for path in ['bdspoofer_config.plist','CraneManager/Info.plist','CraneManager/BDSCraneManager.entitlements','CraneManager/BDSCraneManager.libSandy.plist']:plistlib.loads((root/path).read_bytes())
-assert plistlib.loads((root/'CraneManager/Info.plist').read_bytes())['CFBundleVersion']=='103'
+manager_info=plistlib.loads((root/'CraneManager/Info.plist').read_bytes())
+assert manager_info['CFBundleVersion']=='103' and manager_info['UIApplicationExitsOnSuspend'] is True
 print('PASS UI1.2: v187, 21 on / 5 off, exact telemetry block, 36 synchronized devices, UI1.2 package names, 11 baseline jailbreak functions unchanged')
