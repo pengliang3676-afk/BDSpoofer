@@ -2,7 +2,6 @@
 #import <UIKit/UIKit.h>
 #import <dlfcn.h>
 #import <limits.h>
-#import <objc/message.h>
 #import <stdlib.h>
 #import "../Shared/BDSSettingsUI.h"
 
@@ -532,9 +531,9 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     CGFloat width=CGRectGetWidth(self.tableView.bounds);
     UIView *header=[[UIView alloc] initWithFrame:CGRectMake(0,0,width,8)];
     self.tableView.tableHeaderView=header;
-    UIView *footer=[[UIView alloc] initWithFrame:CGRectMake(0,0,width,288)];
-    NSArray *titles=@[@"一键随机基础整套设置",@"一键随机高级整套设置",@"一键随机定向指纹设置",@"反关联项",@"恢复安全",@"关闭"];
-    NSArray *selectors=@[NSStringFromSelector(@selector(randomizeBasicForSelectedContainers)),NSStringFromSelector(@selector(randomizeAdvancedForSelectedContainers)),NSStringFromSelector(@selector(randomizeTargetedForSelectedContainers)),NSStringFromSelector(@selector(showAssociationSettings)),NSStringFromSelector(@selector(restoreSafeSettings)),NSStringFromSelector(@selector(closeApp))];
+    UIView *footer=[[UIView alloc] initWithFrame:CGRectMake(0,0,width,232)];
+    NSArray *titles=@[@"一键随机基础整套设置",@"一键随机高级整套设置",@"一键随机定向指纹设置",@"反关联项",@"恢复安全"];
+    NSArray *selectors=@[NSStringFromSelector(@selector(randomizeBasicForSelectedContainers)),NSStringFromSelector(@selector(randomizeAdvancedForSelectedContainers)),NSStringFromSelector(@selector(randomizeTargetedForSelectedContainers)),NSStringFromSelector(@selector(showAssociationSettings)),NSStringFromSelector(@selector(restoreSafeSettings))];
     for(NSUInteger i=0;i<titles.count;i++) {
         UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem];
         button.autoresizingMask=UIViewAutoresizingFlexibleWidth;
@@ -579,22 +578,11 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     CGFloat pairWidth=MAX(0,(buttonWidth-pairGap)/2.0);
     [footer viewWithTag:1003].frame=CGRectMake(sideInset,6+3*rowStep,pairWidth,buttonHeight);
     [footer viewWithTag:1004].frame=CGRectMake(sideInset+pairWidth+pairGap,6+3*rowStep,pairWidth,buttonHeight);
-    [footer viewWithTag:1005].frame=CGRectMake(sideInset,6+4*rowStep,buttonWidth,buttonHeight);
 }
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     [self layoutFooterButtons];
-}
-
-- (void)closeApp {
-    UIApplication *application=UIApplication.sharedApplication;
-    SEL suspendSelector=NSSelectorFromString(@"suspend");
-    if([application respondsToSelector:suspendSelector]) {
-        ((void (*)(id, SEL))objc_msgSend)(application,suspendSelector);
-    } else {
-        exit(EXIT_SUCCESS);
-    }
 }
 
 - (NSString *)appPathForContainerID:(NSString *)containerID {
@@ -744,7 +732,15 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     NSString *containerID = row[@"id"];
     BOOL selected = [self.selectedContainerIDs containsObject:containerID];
     BOOL active = [containerID isEqualToString:self.activeContainerID];
-    cell.textLabel.text = active ? [NSString stringWithFormat:@"%@（当前）", row[@"name"]] : row[@"name"];
+    NSString *currentSuffix = @"（当前）";
+    NSString *title = active ? [NSString stringWithFormat:@"%@%@", row[@"name"], currentSuffix] : row[@"name"];
+    NSMutableAttributedString *styledTitle = [[NSMutableAttributedString alloc] initWithString:title];
+    if (active) {
+        [styledTitle addAttribute:NSForegroundColorAttributeName
+                           value:UIColor.systemRedColor
+                           range:NSMakeRange(title.length-currentSuffix.length, currentSuffix.length)];
+    }
+    cell.textLabel.attributedText = styledTitle;
     cell.detailTextLabel.text = row[@"summary"];
     cell.detailTextLabel.numberOfLines = 3;
     cell.accessoryType = selected ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;

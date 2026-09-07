@@ -20,7 +20,7 @@ assert 'blockStatCashTelemetry' in policy and 'blockStatCashTelemetry' in plugin
 assert '收益额上报：%@' in plugin and '? @"已开启" : @"已关闭"' in plugin
 assert all(config['spoofBaiduTargeted'+x] is False for x in ['', 'System','Model','Screen','UA','Push'])
 for text in ['一键随机整套基础参数','一键随机整套高级参数','一键随机定向指纹参数','反关联项','诊断自检','恢复安全']:assert text in plugin,text
-for text in ['一键随机基础整套设置','一键随机高级整套设置','一键随机定向指纹设置','反关联项','恢复安全','关闭']:assert text in manager,text
+for text in ['一键随机基础整套设置','一键随机高级整套设置','一键随机定向指纹设置','反关联项','恢复安全']:assert text in manager,text
 for text in ['基础功能：当前功能状态  %@','高级功能：%@','定向指纹：%@','反关联增强：%@','尚未执行一键随机']:
     assert text in plugin,text
 assert '百度身份参数 · 系统硬件参数 · 防越狱检测' not in plugin
@@ -31,11 +31,12 @@ settings_ui=(root/'Shared/BDSSettingsUI.h').read_text(encoding='utf-8')
 assert 'usesCompactActionRow' in settings_ui and 'UIStackViewDistributionFillEqually' in settings_ui
 assert 'i==5 ? UIColor.systemRedColor' not in settings_ui
 assert 'CGRectMake(0,0,width,8)' in manager and 'CGRectMake(0,0,width,100)' not in manager
-assert 'CGRectMake(0,0,width,288)' in manager and 'layoutFooterButtons' in manager
-assert 'viewWithTag:1003' in manager and 'viewWithTag:1004' in manager and 'viewWithTag:1005' in manager
-assert 'NSSelectorFromString(@"suspend")' in manager and 'objc_msgSend' in manager
+assert 'CGRectMake(0,0,width,232)' in manager and 'layoutFooterButtons' in manager
+assert 'viewWithTag:1003' in manager and 'viewWithTag:1004' in manager and 'viewWithTag:1005' not in manager
+assert 'closeApp' not in manager and 'NSSelectorFromString(@"suspend")' not in manager
 assert 'config[@"deviceProfileName"] ?: config[@"hwMachine"]' in manager
 assert 'config[@"targetedDeviceProfileName"] ?: config[@"targetedHwMachine"]' in manager
+assert 'NSString *currentSuffix = @"（当前）"' in manager and 'UIColor.systemRedColor' in manager
 assert 'page.title=@"卐解 1.8.1 UI1.2"' in plugin
 assert 'didRandomize%@%@' in policy
 for text in ['BDSMarkRandomModeRun','BDSRandomModeWasRun','BDSConfigForPersistentStorage']:
@@ -104,5 +105,5 @@ names=['bds_c_is_jailbreak_path','bds_is_suspicious_dlopen_path','bds_my_dlopen'
 for name in names:assert function(plugin,name)==function(base,name),name
 for path in ['bdspoofer_config.plist','CraneManager/Info.plist','CraneManager/BDSCraneManager.entitlements','CraneManager/BDSCraneManager.libSandy.plist']:plistlib.loads((root/path).read_bytes())
 manager_info=plistlib.loads((root/'CraneManager/Info.plist').read_bytes())
-assert manager_info['CFBundleVersion']=='103' and manager_info['UIApplicationExitsOnSuspend'] is True
+assert manager_info['CFBundleVersion']=='103' and 'UIApplicationExitsOnSuspend' not in manager_info
 print('PASS UI1.2: v187, 21 on / 5 off, exact telemetry block, 36 synchronized devices, UI1.2 package names, 11 baseline jailbreak functions unchanged')

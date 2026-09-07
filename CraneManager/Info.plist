@@ -36,8 +36,6 @@
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-	<key>UIApplicationExitsOnSuspend</key>
-	<true/>
 	<key>MinimumOSVersion</key>
 	<string>15.0</string>
 	<key>UIDeviceFamily</key>
