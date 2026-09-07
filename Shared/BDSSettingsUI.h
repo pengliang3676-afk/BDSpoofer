@@ -16,7 +16,7 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
 @implementation BDSActionPage
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.tableView.rowHeight=58;
+    self.tableView.rowHeight=56;
     self.tableView.sectionHeaderHeight=UITableViewAutomaticDimension;
     self.tableView.estimatedSectionHeaderHeight=250;
     self.tableView.separatorStyle=UITableViewCellSeparatorStyleNone;
@@ -28,7 +28,8 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
     [self.tableView reloadData];
 }
 - (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return self.items.count; }
+- (BOOL)usesCompactActionRow { return self.items.count==7; }
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return [self usesCompactActionRow] ? 5 : self.items.count; }
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
     CGFloat textWidth=MAX(120, CGRectGetWidth(tableView.bounds)-68);
     CGRect bounds=[self.pageSummary ?: @"" boundingRectWithSize:CGSizeMake(textWidth,CGFLOAT_MAX)
@@ -57,7 +58,38 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-    NSDictionary *item=self.items[indexPath.row];
+    cell.backgroundColor=UIColor.clearColor;
+    cell.selectionStyle=UITableViewCellSelectionStyleNone;
+    if([self usesCompactActionRow] && indexPath.row==3) {
+        UIStackView *row=[[UIStackView alloc] init];
+        row.translatesAutoresizingMaskIntoConstraints=NO;
+        row.axis=UILayoutConstraintAxisHorizontal;
+        row.distribution=UIStackViewDistributionFillEqually;
+        row.spacing=6;
+        for(NSUInteger i=3;i<=5;i++) {
+            UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem];
+            button.tag=i;
+            button.backgroundColor=UIColor.secondarySystemGroupedBackgroundColor;
+            button.layer.cornerRadius=11;
+            button.layer.masksToBounds=YES;
+            button.titleLabel.font=[UIFont boldSystemFontOfSize:15];
+            button.titleLabel.adjustsFontSizeToFitWidth=YES;
+            button.titleLabel.minimumScaleFactor=0.72;
+            [button setTitle:self.items[i][@"title"] forState:UIControlStateNormal];
+            [button setTitleColor:(i==5 ? UIColor.systemRedColor : UIColor.labelColor) forState:UIControlStateNormal];
+            [button addTarget:self action:@selector(runCompactAction:) forControlEvents:UIControlEventTouchUpInside];
+            [row addArrangedSubview:button];
+        }
+        [cell.contentView addSubview:row];
+        [NSLayoutConstraint activateConstraints:@[
+            [row.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:8],
+            [row.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-8],
+            [row.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:5],
+            [row.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-5]]];
+        return cell;
+    }
+    NSUInteger itemIndex=([self usesCompactActionRow] && indexPath.row==4) ? 6 : indexPath.row;
+    NSDictionary *item=self.items[itemIndex];
     UILabel *label=[[UILabel alloc] init];
     label.translatesAutoresizingMaskIntoConstraints=NO;
     label.text=item[@"title"];
@@ -75,12 +107,17 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
         [label.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-8],
         [label.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:5],
         [label.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-5]]];
-    cell.backgroundColor=UIColor.clearColor;
-    cell.selectionStyle=UITableViewCellSelectionStyleNone;
     return cell;
 }
+- (void)runCompactAction:(UIButton *)sender {
+    if(sender.tag>=self.items.count) return;
+    void (^action)(void)=self.items[sender.tag][@"action"];
+    if(action) action();
+}
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    void (^action)(void)=self.items[indexPath.row][@"action"];
+    if([self usesCompactActionRow] && indexPath.row==3) return;
+    NSUInteger itemIndex=([self usesCompactActionRow] && indexPath.row==4) ? 6 : indexPath.row;
+    void (^action)(void)=self.items[itemIndex][@"action"];
     if(action) action();
 }
 @end

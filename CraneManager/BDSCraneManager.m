@@ -528,14 +528,8 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)buildHeaderAndFooter {
     CGFloat width=CGRectGetWidth(self.tableView.bounds);
-    UIView *header=[[UIView alloc] initWithFrame:CGRectMake(0,0,width,100)];
-    UILabel *label=[[UILabel alloc] initWithFrame:CGRectInset(header.bounds,18,10)];
-    label.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
-    label.numberOfLines=0;
-    label.font=[UIFont systemFontOfSize:14];
-    label.textColor=UIColor.secondaryLabelColor;
-    label.text=@"选择要配置的百度容器。基础、高级、定向分别随机，参数互不覆盖。常规开关在初始化时开启，已保存的手动选择会保留。";
-    [header addSubview:label]; self.tableView.tableHeaderView=header;
+    UIView *header=[[UIView alloc] initWithFrame:CGRectMake(0,0,width,8)];
+    self.tableView.tableHeaderView=header;
     UIView *footer=[[UIView alloc] initWithFrame:CGRectMake(0,0,width,328)];
     NSArray *titles=@[@"一键随机基础整套设置",@"一键随机高级整套设置",@"一键随机定向指纹设置",@"反关联设置",@"恢复安全"];
     NSArray *selectors=@[NSStringFromSelector(@selector(randomizeBasicForSelectedContainers)),NSStringFromSelector(@selector(randomizeAdvancedForSelectedContainers)),NSStringFromSelector(@selector(randomizeTargetedForSelectedContainers)),NSStringFromSelector(@selector(showAssociationSettings)),NSStringFromSelector(@selector(restoreSafeSettings))];

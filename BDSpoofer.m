@@ -3218,21 +3218,17 @@ static NSString *BDSRandomRunText(NSString *mode) {
 }
 
 static NSString *BDSConfigSummary(void) {
-    NSMutableString *summary = [NSMutableString stringWithString:@"当前功能状态"];
-    [summary appendFormat:@"\n基础功能：%@\n%@ · iOS %@ · %@",
+    NSMutableString *summary = [NSMutableString string];
+    [summary appendFormat:@"基础功能：当前功能状态  %@\n%@ · iOS %@ · %@",
         cfgBool(@"enabled", NO) ? @"已开启" : @"已关闭",
         cfgStr(@"hwMachine", @"未设置"), cfgStr(@"systemVersion", @"未设置"),
         BDSRandomRunText(@"basic")];
 
     NSArray<NSString *> *advancedKeys = @[@"spoofBaiduSDK", @"spoofSysctl", @"bypassJailbreakDetect"];
-    NSArray<NSString *> *advancedNames = @[@"百度身份参数", @"系统硬件参数", @"防越狱检测"];
-    NSMutableArray<NSString *> *enabledAdvanced = [NSMutableArray array];
-    for (NSUInteger i = 0; i < advancedKeys.count; i++) {
-        if (cfgBool(advancedKeys[i], NO)) [enabledAdvanced addObject:advancedNames[i]];
-    }
+    NSUInteger enabledAdvanced = 0;
+    for (NSString *key in advancedKeys) if (cfgBool(key, NO)) enabledAdvanced++;
     [summary appendFormat:@"\n\n高级功能：%@",
-        enabledAdvanced.count ? [NSString stringWithFormat:@"已开启（%lu 项）", (unsigned long)enabledAdvanced.count] : @"已关闭"];
-    if (enabledAdvanced.count) [summary appendFormat:@"\n%@", [enabledAdvanced componentsJoinedByString:@" · "]];
+        enabledAdvanced ? [NSString stringWithFormat:@"已开启（%lu 项）", (unsigned long)enabledAdvanced] : @"已关闭"];
     [summary appendFormat:@"\n%@", BDSRandomRunText(@"advanced")];
 
     [summary appendFormat:@"\n\n定向指纹：%@\n%@ · iOS %@ · %@",
@@ -3245,9 +3241,9 @@ static NSString *BDSConfigSummary(void) {
     for (NSDictionary *item in associationItems) {
         if (![item[@"off"] boolValue] && cfgBool(item[@"key"], NO)) associationEnabled++;
     }
-    [summary appendFormat:@"\n\n反关联增强：%@\n金额统计上报：%@",
+    [summary appendFormat:@"\n\n反关联增强：%@\n收益额上报：%@",
         associationEnabled ? @"已开启" : @"已关闭",
-        cfgBool(@"blockStatCashTelemetry", NO) ? @"阻止" : @"开启"];
+        cfgBool(@"blockStatCashTelemetry", NO) ? @"已开启" : @"已关闭"];
     return summary;
 }
 
@@ -3416,7 +3412,7 @@ static NSString *BDSConfigSummary(void) {
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
-    NSArray *titles=@[@"一键随机整套基础参数",@"一键随机整套高级参数",@"一键随机定向指纹参数",@"反关联设置",@"诊断与自检",@"恢复安全",@"关闭"];
+    NSArray *titles=@[@"一键随机整套基础参数",@"一键随机整套高级参数",@"一键随机定向指纹参数",@"反关联项",@"诊断自检",@"恢复安全",@"关闭"];
     NSMutableArray *items=[NSMutableArray array];
     for(NSUInteger i=0;i<titles.count;i++) {
         NSMutableDictionary *item=[@{@"title":titles[i]} mutableCopy];
