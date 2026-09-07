@@ -23,6 +23,7 @@ for text in ['一键随机整套基础参数','一键随机整套高级参数','
 for text in ['一键随机基础整套设置','一键随机高级整套设置','一键随机定向指纹设置','反关联设置','恢复安全']:assert text in manager,text
 for text in ['当前功能状态','高级功能：%@','百度身份参数','系统硬件参数','防越狱检测','尚未执行一键随机']:
     assert text in plugin,text
+assert 'page.title=@"卐解 1.8.1 UI1.2"' in plugin
 assert 'didRandomize%@%@' in policy
 for text in ['BDSMarkRandomModeRun','BDSRandomModeWasRun','BDSConfigForPersistentStorage']:
     assert text in plugin+manager+policy,text

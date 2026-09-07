@@ -1,4 +1,4 @@
-name: Build BDSpoofer UI1 and Crane Manager
+name: Build 卐解 UI1 and 卍解
 on:
   push:
     branches: ["**"]
