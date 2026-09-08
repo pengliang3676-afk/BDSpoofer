@@ -698,10 +698,12 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     NSArray *identifiers = [self.crane containerIdentifiersOfApplicationWithIdentifier:BDSBaiduBundleID] ?: @[];
     NSString *actuallyActiveID = [self.crane activeContainerIdentifierForApplicationWithIdentifier:BDSBaiduBundleID];
     NSString *configuredDefaultID = nil;
+    NSString *systemDefaultID = nil;
     NSMutableArray *rows = [NSMutableArray array];
     for (id rawID in identifiers) {
         if (![rawID isKindOfClass:NSString.class] || ![rawID length]) continue;
         NSString *containerID = rawID;
+        if([containerID.uppercaseString isEqualToString:@"DEFAULT"]) systemDefaultID=containerID;
         NSString *rawName = [self.crane displayNameForContainerWithIdentifier:containerID
                                                   ofApplicationWithIdentifier:BDSBaiduBundleID
                                                         shouldUseShortVersion:NO];
@@ -722,7 +724,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     [rows sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
         return [left[@"name"] localizedStandardCompare:right[@"name"]];
     }];
-    self.displayCurrentContainerID = configuredDefaultID ?: actuallyActiveID;
+    self.displayCurrentContainerID = configuredDefaultID ?: systemDefaultID ?: actuallyActiveID;
     self.containers = rows;
     [self.selectedContainerIDs intersectSet:[NSSet setWithArray:[rows valueForKey:@"id"]]];
     self.basicButton.enabled = rows.count > 0;
