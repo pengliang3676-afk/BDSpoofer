@@ -407,7 +407,7 @@ static void *BDSLoadCraneLibrary(void) {
 @property(nonatomic, strong) CraneManager *crane;
 @property(nonatomic, strong) NSArray<NSDictionary *> *containers;
 @property(nonatomic, strong) NSMutableSet<NSString *> *selectedContainerIDs;
-@property(nonatomic, copy) NSString *activeContainerID;
+@property(nonatomic, copy) NSString *displayCurrentContainerID;
 @property(nonatomic, copy) NSString *baiduBaseDataPath;
 @property(nonatomic, strong) UILabel *statusLabel;
 @property(nonatomic, strong) UIButton *basicButton;
@@ -465,6 +465,14 @@ static NSString *BDSCleanContainerDisplayName(NSString *name, NSString *fallback
         }
     }
     return clean.length ? clean : fallback;
+}
+
+static BOOL BDSContainerHasDefaultMarker(NSString *name) {
+    NSString *candidate=[name stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    for(NSString *suffix in @[@"（默认）", @"(默认)", @"（Default）", @"(Default)"]) {
+        if([candidate hasSuffix:suffix] && candidate.length>suffix.length) return YES;
+    }
+    return NO;
 }
 
 static NSString *BDSTargetedResultDetail(NSDictionary *config, NSSet<NSString *> *selection) {
@@ -688,15 +696,17 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     }
 
     NSArray *identifiers = [self.crane containerIdentifiersOfApplicationWithIdentifier:BDSBaiduBundleID] ?: @[];
-    self.activeContainerID = [self.crane activeContainerIdentifierForApplicationWithIdentifier:BDSBaiduBundleID];
+    NSString *actuallyActiveID = [self.crane activeContainerIdentifierForApplicationWithIdentifier:BDSBaiduBundleID];
+    NSString *configuredDefaultID = nil;
     NSMutableArray *rows = [NSMutableArray array];
     for (id rawID in identifiers) {
         if (![rawID isKindOfClass:NSString.class] || ![rawID length]) continue;
         NSString *containerID = rawID;
-        NSString *name = [self.crane displayNameForContainerWithIdentifier:containerID
-                                               ofApplicationWithIdentifier:BDSBaiduBundleID
-                                                     shouldUseShortVersion:NO];
-        name = BDSCleanContainerDisplayName(name, containerID);
+        NSString *rawName = [self.crane displayNameForContainerWithIdentifier:containerID
+                                                  ofApplicationWithIdentifier:BDSBaiduBundleID
+                                                        shouldUseShortVersion:NO];
+        if(BDSContainerHasDefaultMarker(rawName)) configuredDefaultID=containerID;
+        NSString *name = BDSCleanContainerDisplayName(rawName, containerID);
         NSString *path = [self configPathForContainerID:containerID];
         NSDictionary *config = path.length ? [NSDictionary dictionaryWithContentsOfFile:path] : nil;
         NSMutableDictionary *initialized=BDSMergedConfig(config);
@@ -712,6 +722,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     [rows sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
         return [left[@"name"] localizedStandardCompare:right[@"name"]];
     }];
+    self.displayCurrentContainerID = configuredDefaultID ?: actuallyActiveID;
     self.containers = rows;
     [self.selectedContainerIDs intersectSet:[NSSet setWithArray:[rows valueForKey:@"id"]]];
     self.basicButton.enabled = rows.count > 0;
@@ -731,7 +742,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     NSDictionary *row = self.containers[indexPath.row];
     NSString *containerID = row[@"id"];
     BOOL selected = [self.selectedContainerIDs containsObject:containerID];
-    BOOL active = [containerID isEqualToString:self.activeContainerID];
+    BOOL active = [containerID isEqualToString:self.displayCurrentContainerID];
     NSString *currentSuffix = @"（当前）";
     NSString *title = active ? [NSString stringWithFormat:@"%@%@", row[@"name"], currentSuffix] : row[@"name"];
     NSMutableAttributedString *styledTitle = [[NSMutableAttributedString alloc] initWithString:title];

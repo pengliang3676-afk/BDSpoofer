@@ -37,6 +37,8 @@ assert 'closeApp' not in manager and 'NSSelectorFromString(@"suspend")' not in m
 assert 'config[@"deviceProfileName"] ?: config[@"hwMachine"]' in manager
 assert 'config[@"targetedDeviceProfileName"] ?: config[@"targetedHwMachine"]' in manager
 assert 'NSString *currentSuffix = @"（当前）"' in manager and 'UIColor.systemRedColor' in manager
+assert 'BDSContainerHasDefaultMarker' in manager and 'configuredDefaultID ?: actuallyActiveID' in manager
+assert 'displayCurrentContainerID' in manager and 'self.activeContainerID' not in manager
 assert 'page.title=@"卐解 1.8.1 UI1.2"' in plugin
 assert 'didRandomize%@%@' in policy
 for text in ['BDSMarkRandomModeRun','BDSRandomModeWasRun','BDSConfigForPersistentStorage']:
