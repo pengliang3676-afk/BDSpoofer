@@ -17,12 +17,13 @@ assert all(config[k] is False for k in risk)
 assert config['spoofScreen'] is False and config['configVersion']==187
 assert config['blockStatCashTelemetry'] is False
 assert 'blockStatCashTelemetry' in policy and 'blockStatCashTelemetry' in plugin
-assert '收益额上报：%@' in plugin and '? @"已开启" : @"已关闭"' in plugin
+assert '金额上报：%@' in plugin and '? @"已开启" : @"已关闭"' in plugin
 assert all(config['spoofBaiduTargeted'+x] is False for x in ['', 'System','Model','Screen','UA','Push'])
 for text in ['一键随机整套基础参数','一键随机整套高级参数','一键随机定向指纹参数','反关联项','诊断自检','恢复安全']:assert text in plugin,text
 for text in ['一键随机基础整套设置','一键随机高级整套设置','一键随机定向指纹设置','反关联项','恢复安全']:assert text in manager,text
-for text in ['基础功能：当前功能状态  %@','高级功能：%@','定向指纹：%@','反关联增强：%@','尚未执行一键随机']:
+for text in ['基础功能：当前功能状态  %@','高级功能：%@','定向指纹：%@','反关联项：%@','尚未执行一键随机']:
     assert text in plugin,text
+assert '反关联增强：%@' not in plugin and '收益额上报：%@' not in plugin
 assert '百度身份参数 · 系统硬件参数 · 防越狱检测' not in plugin
 assert '已开启（%lu 项）' not in plugin
 assert 'cfgStr(@"deviceProfileName", cfgStr(@"hwMachine", @"未设置"))' in plugin

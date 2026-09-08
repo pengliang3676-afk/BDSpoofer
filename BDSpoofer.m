@@ -3247,7 +3247,7 @@ static NSString *BDSConfigSummary(void) {
     for (NSDictionary *item in associationItems) {
         if (![item[@"off"] boolValue] && cfgBool(item[@"key"], NO)) associationEnabled++;
     }
-    [summary appendFormat:@"\n\n反关联增强：%@\n收益额上报：%@",
+    [summary appendFormat:@"\n\n反关联项：%@\n金额上报：%@",
         associationEnabled ? @"已开启" : @"已关闭",
         cfgBool(@"blockStatCashTelemetry", NO) ? @"已开启" : @"已关闭"];
     return summary;
