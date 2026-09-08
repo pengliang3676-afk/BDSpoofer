@@ -41,6 +41,17 @@ assert 'NSString *currentSuffix = @"（当前）"' in manager and 'UIColor.syste
 assert 'BDSContainerHasDefaultMarker' in manager and 'configuredDefaultID ?: systemDefaultID ?: actuallyActiveID' in manager
 assert 'containerID.uppercaseString isEqualToString:@"DEFAULT"' in manager
 assert 'displayCurrentContainerID' in manager and 'self.activeContainerID' not in manager
+reload_start=manager.index('- (void)reloadContainers')
+reload_end=manager.index('- (NSInteger)tableView:',reload_start)
+reload_body=manager[reload_start:reload_end]
+assert 'BDSWriteContainerConfig' not in reload_body and 'BDSMergedConfig' not in reload_body
+assert 'NSString *summary = BDSContainerSummary(config);' in reload_body
+assert 'selectedContainersHaveConfig' in manager and '请先对选中容器执行一次一键随机' in manager
+load_start=plugin.index('static void loadConfig()')
+load_end=plugin.index('static BOOL saveConfigValues',load_start)
+load_body=plugin[load_start:load_end]
+assert 'BOOL hasPersistentConfig' in load_body and 'if (!hasPersistentConfig)' in load_body
+assert load_body.index('return;') < load_body.index('NSInteger ver =')
 assert 'page.title=@"卐解 1.8.1 UI1.2"' in plugin
 assert 'didRandomize%@%@' in policy
 for text in ['BDSMarkRandomModeRun','BDSRandomModeWasRun','BDSConfigForPersistentStorage']:

@@ -273,10 +273,18 @@ static void bds_update_c_cache(void) {
 static void loadConfig() {
     NSString *p1 = configPath();
     NSString *p2 = [[NSBundle mainBundle] pathForResource:@"bdspoofer_config" ofType:@"plist"];
-    NSString *path = [[NSFileManager defaultManager] fileExistsAtPath:p1] ? p1 : p2;
+    BOOL hasPersistentConfig = [[NSFileManager defaultManager] fileExistsAtPath:p1];
+    NSString *path = hasPersistentConfig ? p1 : p2;
     NSDictionary *loaded = path ? [NSDictionary dictionaryWithContentsOfFile:path] : nil;
     NSMutableDictionary *merged = [BDSDefaultConfig() mutableCopy];
     if (loaded) [merged addEntriesFromDictionary:loaded];
+    if (!hasPersistentConfig) {
+        BDSApplyInitialDefaults(merged, loaded);
+        BDSSeedInitialIdentities(merged, loaded);
+        g_config = [merged copy];
+        bds_update_c_cache();
+        return;
+    }
     NSInteger ver = [loaded[@"configVersion"] integerValue];
     if (ver < 150) {
         [merged addEntriesFromDictionary:@{

@@ -425,7 +425,7 @@ static void *BDSLoadCraneLibrary(void) {
 @end
 
 static NSString *BDSContainerSummary(NSDictionary *config) {
-    if (![config isKindOfClass:NSDictionary.class]) return @"尚未写入参数";
+    if (![config isKindOfClass:NSDictionary.class]) return @"基础：未随机\n高级：未随机\n定向：未随机";
     NSMutableString *summary = [NSMutableString string];
     if (BDSRandomModeWasRun(config, @"basic")) {
         [summary appendFormat:@"基础（已随机）：%@ · iOS %@",
@@ -711,13 +711,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
         NSString *name = BDSCleanContainerDisplayName(rawName, containerID);
         NSString *path = [self configPathForContainerID:containerID];
         NSDictionary *config = path.length ? [NSDictionary dictionaryWithContentsOfFile:path] : nil;
-        NSMutableDictionary *initialized=BDSMergedConfig(config);
-        BDSSeedIdentityIfNeeded(initialized,NO);
-        initialized[@"managerContainerIdentifier"]=containerID;
-        initialized=BDSConfigForPersistentStorage(initialized);
-        BOOL ready=[initialized isEqualToDictionary:config] || BDSWriteContainerConfig(path,initialized);
-        if(ready) config=initialized;
-        NSString *summary = ready ? BDSContainerSummary(config) : @"初始化保存失败，请刷新重试";
+        NSString *summary = BDSContainerSummary(config);
         [rows addObject:@{@"id": containerID, @"name": name ?: containerID,
                           @"summary": summary, @"path": path ?: @""}];
     }
@@ -800,6 +794,14 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     return combined ?: @{};
 }
 
+- (BOOL)selectedContainersHaveConfig {
+    for(NSDictionary *row in self.containers) {
+        if(![self.selectedContainerIDs containsObject:row[@"id"]]) continue;
+        if(![NSDictionary dictionaryWithContentsOfFile:row[@"path"]]) return NO;
+    }
+    return self.selectedContainerIDs.count>0;
+}
+
 - (BOOL)saveSwitchChanges:(NSDictionary *)changes {
     if(!self.selectedContainerIDs.count) return NO;
     BOOL saved=YES;
@@ -818,6 +820,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)showAssociationSettings {
     if(!self.selectedContainerIDs.count) { [self showMessage:@"尚未选择容器" detail:@"请先选择需要配置的容器。"]; return; }
+    if(![self selectedContainersHaveConfig]) { [self showMessage:@"尚未生成配置" detail:@"请先对选中容器执行一次一键随机。"]; return; }
     BDSAssociationPage *page=[[BDSAssociationPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
     page.configuration=[self selectedSwitchConfiguration];
     __weak BDSManagerViewController *weakSelf=self;
@@ -827,6 +830,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)restoreSafeSettings {
     if(!self.selectedContainerIDs.count) { [self showMessage:@"尚未选择容器" detail:@"请先选择需要恢复安全设置的容器。"]; return; }
+    if(![self selectedContainersHaveConfig]) { [self showMessage:@"尚未生成配置" detail:@"请先对选中容器执行一次一键随机。"]; return; }
     BOOL saved=[self saveSwitchChanges:BDSSafeSwitchValues()];
     [self showMessage:saved?@"已恢复安全":@"部分保存失败" detail:saved?@"选中容器的所有开关已关闭，参数值保留。请彻底关闭百度后重新打开。":@"请刷新容器列表后检查设置。"];
 }
