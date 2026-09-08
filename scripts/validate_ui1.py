@@ -11,9 +11,12 @@ config=plistlib.loads((root/'bdspoofer_config.plist').read_bytes())
 items=re.findall(r'@\{@"key":@"([^"]+)",@"name":@"[^"]+"(,@"off":@YES)?\}',policy)
 assert len(items)==26
 regular=[key for key,off in items if not off];risk=[key for key,off in items if off]
-assert len(regular)==21 and len(risk)==5
+assert len(regular)==18 and len(risk)==8
 assert all(config[k] is True for k in regular)
 assert all(config[k] is False for k in risk)
+advanced_keys=['spoofBaiduSDK','spoofSysctl','bypassJailbreakDetect','spoofKeychain','spoofAppGroup','spoofWebKitCookie','spoofUserAgent']
+default_block=plugin.split('static NSDictionary *BDSDefaultConfig(void)',1)[1].split('static void bds_update_c_cache(void)',1)[0]
+assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@NO',default_block) for key in advanced_keys)
 assert config['spoofScreen'] is False and config['configVersion']==187
 assert config['blockStatCashTelemetry'] is False
 assert 'blockStatCashTelemetry' in policy and 'blockStatCashTelemetry' in plugin
@@ -121,4 +124,4 @@ for name in names:assert function(plugin,name)==function(base,name),name
 for path in ['bdspoofer_config.plist','CraneManager/Info.plist','CraneManager/BDSCraneManager.entitlements','CraneManager/BDSCraneManager.libSandy.plist']:plistlib.loads((root/path).read_bytes())
 manager_info=plistlib.loads((root/'CraneManager/Info.plist').read_bytes())
 assert manager_info['CFBundleVersion']=='103' and 'UIApplicationExitsOnSuspend' not in manager_info
-print('PASS UI1.2: v187, 21 on / 5 off, exact telemetry block, 36 synchronized devices, UI1.2 package names, 11 baseline jailbreak functions unchanged')
+print('PASS UI1.2: v187, 18 on / 8 off, all 7 advanced defaults off, exact telemetry block, 36 synchronized devices, UI1.2 package names, 11 baseline jailbreak functions unchanged')

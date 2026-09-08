@@ -19,15 +19,15 @@
 	<key>spoofStorage</key>
 	<true/>
 	<key>spoofBaiduSDK</key>
-	<true/>
+	<false/>
 	<key>spoofSysctl</key>
-	<true/>
+	<false/>
 	<key>spoofKeychain</key>
 	<false/>
 	<key>spoofUserAgent</key>
 	<false/>
 	<key>bypassJailbreakDetect</key>
-	<true/>
+	<false/>
 	<key>spoofWiFi</key>
 	<true/>
 	<key>spoofLocalIP</key>

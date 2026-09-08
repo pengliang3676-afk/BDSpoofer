@@ -5,7 +5,7 @@
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
 //  1.8.1 UI1：基于 1.8.1 合入独立定向指纹与统一设置界面。
-//    三组随机互不改写；21 个常规开关首次初始化开启，保留已保存的手动选择。
+//    三组随机互不改写；基础与反关联常规开关首次初始化开启，高级 7 项默认关闭。
 //    修复 UA 缓存短串、Push device_name 字段和独立屏幕元数据。
 //    反越狱检测的底层实现保持 1.8.1 原样，相关排查暂停。
 //  1.8.1：
@@ -181,11 +181,11 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"spoofCarrier": @YES,
             @"spoofScreen": @NO,
             @"spoofStorage": @YES,
-            @"spoofBaiduSDK": @YES,
-            @"spoofSysctl": @YES,
+            @"spoofBaiduSDK": @NO,
+            @"spoofSysctl": @NO,
             @"spoofKeychain": @NO,
             @"spoofUserAgent": @NO,
-            @"bypassJailbreakDetect": @YES,
+            @"bypassJailbreakDetect": @NO,
             @"spoofWiFi": @YES,
             @"spoofLocalIP": @YES,
             @"spoofAppGroup": @NO,

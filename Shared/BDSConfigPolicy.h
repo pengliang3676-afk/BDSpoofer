@@ -8,9 +8,9 @@ static NSArray<NSArray<NSDictionary *> *> *BDSSettingGroups(void) {
           @{@"key":@"spoofLocale",@"name":@"语言与地区参数"},
           @{@"key":@"spoofCarrier",@"name":@"运营商参数"},
           @{@"key":@"spoofStorage",@"name":@"存储参数"}],
-        @[@{@"key":@"spoofBaiduSDK",@"name":@"百度身份参数"},
-          @{@"key":@"spoofSysctl",@"name":@"系统硬件参数"},
-          @{@"key":@"bypassJailbreakDetect",@"name":@"防越狱检测"},
+        @[@{@"key":@"spoofBaiduSDK",@"name":@"百度身份参数",@"off":@YES},
+          @{@"key":@"spoofSysctl",@"name":@"系统硬件参数",@"off":@YES},
+          @{@"key":@"bypassJailbreakDetect",@"name":@"防越狱检测",@"off":@YES},
           @{@"key":@"spoofKeychain",@"name":@"Keychain 拦截",@"off":@YES},
           @{@"key":@"spoofAppGroup",@"name":@"App Group 隔离",@"off":@YES},
           @{@"key":@"spoofWebKitCookie",@"name":@"WebKit Cookie 过滤",@"off":@YES},
@@ -37,7 +37,8 @@ static NSArray<NSString *> *BDSRegularKeys(void) {
     return keys;
 }
 static NSArray<NSString *> *BDSRiskKeys(void) {
-    return @[@"spoofKeychain",@"spoofAppGroup",@"spoofWebKitCookie",@"spoofUserAgent",
+    return @[@"spoofBaiduSDK",@"spoofSysctl",@"bypassJailbreakDetect",
+             @"spoofKeychain",@"spoofAppGroup",@"spoofWebKitCookie",@"spoofUserAgent",
              @"blockStatCashTelemetry"];
 }
 static NSArray<NSString *> *BDSSelectedTargetKeys(void) {
