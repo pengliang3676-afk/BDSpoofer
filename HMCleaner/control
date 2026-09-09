@@ -1,0 +1,10 @@
+Package: com.codex.hmcleaner
+Name: 河马清理
+Version: 0.1.0
+Architecture: iphoneos-arm64e
+Description: Preview, back up and clean selected local files in a verified Crane container.
+Maintainer: Codex
+Author: Codex
+Section: Utilities
+Depends: firmware (>= 15.0), rootless-compat (>= 0.9)
+

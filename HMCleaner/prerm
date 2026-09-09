@@ -1,0 +1,4 @@
+#!/bin/sh
+set -e
+# Backups are user data and are deliberately retained when uninstalling.
+exit 0

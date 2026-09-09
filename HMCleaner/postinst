@@ -1,0 +1,7 @@
+#!/bin/sh
+set -e
+# RootHide relocates the /Applications payload using rootless-compat.
+if command -v uicache >/dev/null 2>&1; then
+    uicache -a >/dev/null 2>&1 || true
+fi
+exit 0
