@@ -15,10 +15,12 @@ int main(int argc,char **argv) {
         assert([BDSMergedConfig(newA)[@"idfv"] isEqual:newA[@"idfv"]]);
         NSMutableDictionary *config=BDSMergedConfig(defaults);
         BDSSeedIdentityIfNeeded(config,YES);
-        assert([config[@"configVersion"] integerValue]==187);
+        assert([config[@"configVersion"] integerValue]==188);
         assert(![config[@"blockStatCashTelemetry"] boolValue]);
         for(NSString *key in BDSRegularKeys()) assert([config[key] boolValue]);
         for(NSString *key in BDSRiskKeys()) assert(![config[key] boolValue]);
+        assert(![config[@"spoofBaiduTargeted"] boolValue]);
+        for(NSString *key in BDSSelectedTargetKeys()) assert(![config[key] boolValue]);
         NSString *retained=config[@"idfv"];config[@"idfa"]=@"";BDSSeedIdentityIfNeeded(config,NO);assert([retained isEqual:config[@"idfv"]]);assert([config[@"idfa"] length]>0);
         NSMutableSet *meta=[NSMutableSet setWithArray:@[@"managerGeneratedAt",@"managerProfileVersion",@"managerRandomMode",@"didRandomizeBasic",@"didRandomizeAdvanced",@"didRandomizeTargeted"]];
         NSMutableSet *advanced=[meta mutableCopy];[advanced addObjectsFromArray:@[@"idfa",@"idfv",@"deviceID",@"cuid",@"utdid"]];
@@ -32,15 +34,14 @@ int main(int argc,char **argv) {
             unchangedOutside(config,next,advanced);config=[next mutableCopy];
         }
         NSArray *groups=@[@[@"targetedSystemVersion",@"targetedSystemBuild"],@[@"targetedDeviceProfileName",@"targetedHwMachine",@"targetedHwModel"],@[@"targetedScreenWidth",@"targetedScreenHeight",@"targetedScreenScale",@"targetedNativeScreenWidth",@"targetedNativeScreenHeight",@"targetedScreenHwMachine"],@[@"targetedUASystemVersion",@"targetedUASystemBuild"],@[@"targetedPushDeviceProfileName",@"targetedPushHwMachine",@"targetedPushHwModel"]];
-        for(NSUInteger mask=1;mask<32;mask++) {
-            NSMutableSet *selection=[NSMutableSet set];NSMutableSet *allowed=[meta mutableCopy];
-            [allowed addObjectsFromArray:BDSTargetedKeys()];[allowed addObjectsFromArray:@[@"spoofBaiduTargeted",@"targetedGeneratedAt"]];
-            for(NSUInteger i=0;i<5;i++) if(mask&(1<<i)) { [selection addObject:BDSTargetedKeys()[i]];[allowed addObjectsFromArray:groups[i]]; }
-            NSDictionary *next=BDSCreateRandomConfig(config,BDSRandomModeTargeted,selection);
-            unchangedOutside(config,next,allowed);
-            for(NSString *key in BDSTargetedKeys()) assert([next[key] boolValue]==[selection containsObject:key]);
-        }
-        assert(!BDSCreateRandomConfig(config,BDSRandomModeTargeted,[NSSet set]));
+        NSMutableSet *targetedAllowed=[meta mutableCopy];
+        [targetedAllowed addObjectsFromArray:BDSTargetedKeys()];[targetedAllowed addObjectsFromArray:@[@"spoofBaiduTargeted",@"targetedGeneratedAt"]];
+        for(NSArray *group in groups) [targetedAllowed addObjectsFromArray:group];
+        NSDictionary *targeted=BDSCreateRandomConfig(config,BDSRandomModeTargeted,[NSSet set]);
+        unchangedOutside(config,targeted,targetedAllowed);
+        assert([targeted[@"spoofBaiduTargeted"] boolValue]);
+        for(NSString *key in BDSTargetedKeys()) assert([targeted[key] boolValue]);
+        for(NSArray *group in groups) for(NSString *key in group) assert(targeted[key]);
         for(NSDictionary *device in BDSDeviceProfiles()) {
             NSDictionary *generated=BDSCreateConfigForDevice(defaults,device,BDSRandomModeBasic,[NSSet set]);
             assert([generated[@"deviceProfileName"] isEqual:device[@"name"]]);

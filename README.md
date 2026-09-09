@@ -1,4 +1,4 @@
-# 当前交付：1.8.1 UI1
+# 当前交付：1.8.2 UI1.2
 
 插件与卍解的配套修改、默认开关和独立随机规则见 [UI1 发布说明](RELEASE_UI1.md)。反越狱检测底层实现本次保持原样。
 
@@ -8,7 +8,7 @@
 
 通过 TrollFools 注入到百度极速版，虚拟化设备信息。
 
-## 当前版本：1.8.1 基础按需启用版
+## 当前版本：1.8.2 UI1.2
 
 > 基础功能和反关联常规开关默认开启。
 > 高级参数组 7 项全部默认关闭，只在用户手动打开时生效。
@@ -89,7 +89,7 @@ xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK_PATH" -miphoneos-version-
   -framework Foundation -framework UIKit -framework CoreGraphics \
   -framework AdSupport -framework CoreTelephony -framework Security -framework WebKit \
   -framework SystemConfiguration -framework CoreLocation -framework Contacts -framework EventKit \
-  -install_name @rpath/BDSpoofer_1.8.1.dylib -o BDSpoofer_1.8.1_arm64.dylib BDSpoofer.m
+  -install_name @rpath/BDSpoofer_1.8.2_UI1.2.dylib -o BDSpoofer_1.8.2_arm64.dylib BDSpoofer.m
 
 # arm64e
 xcrun --sdk iphoneos clang -arch arm64e -isysroot "$SDK_PATH" -miphoneos-version-min=15.0 \
@@ -97,10 +97,10 @@ xcrun --sdk iphoneos clang -arch arm64e -isysroot "$SDK_PATH" -miphoneos-version
   -framework Foundation -framework UIKit -framework CoreGraphics \
   -framework AdSupport -framework CoreTelephony -framework Security -framework WebKit \
   -framework SystemConfiguration -framework CoreLocation -framework Contacts -framework EventKit \
-  -install_name @rpath/BDSpoofer_1.8.1.dylib -o BDSpoofer_1.8.1_arm64e.dylib BDSpoofer.m
+  -install_name @rpath/BDSpoofer_1.8.2_UI1.2.dylib -o BDSpoofer_1.8.2_arm64e.dylib BDSpoofer.m
 
 # 合并
-lipo -create BDSpoofer_1.8.1_arm64.dylib BDSpoofer_1.8.1_arm64e.dylib -output BDSpoofer_1.8.1.dylib
+lipo -create BDSpoofer_1.8.2_arm64.dylib BDSpoofer_1.8.2_arm64e.dylib -output BDSpoofer_1.8.2_UI1.2.dylib
 ```
 
 ## 安装
@@ -113,12 +113,12 @@ lipo -create BDSpoofer_1.8.1_arm64.dylib BDSpoofer_1.8.1_arm64e.dylib -output BD
 ### 外部配置 Crane 容器（可选）
 
 1. 保持上面的 dylib 注入不变。
-2. 用 Sileo 安装 `BDSpooferCraneManager_1.0.2_RootHide.deb`。
+2. 用 Sileo 安装 `BDSpooferCraneManager_1.0.3-ui1_RootHide.deb`。
 3. 从桌面打开“卍解”，勾选一个或多个 Crane 容器并执行一键随机。
 4. 配置会直接写入各容器自己的 `Documents/bdspoofer_config.plist`。尚未运行的容器可直接首次打开；已在后台运行的百度需要彻底结束后再打开。
 5. 容器列表分别显示基础、高级、定向是否执行过随机；只给正在使用的容器标记“当前”。随机状态保存在各容器内部，删除容器时一并删除。
 
-从未使用定向指纹的容器不会写入备用定向参数；首次执行定向随机后才保存相应配置，基础或高级模式的配置文件保持在约 4KB。
+从未使用定向指纹的容器不会写入备用定向参数；执行定向一键随机时自动开启总开关和全部 5 个子开关，并写入一套匹配的系统、机型、屏幕、User-Agent 与 Push 参数。基础或高级模式的配置文件保持在约 4KB。
 
 详细说明见 `CraneManager/README.md`。
 

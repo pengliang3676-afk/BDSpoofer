@@ -222,7 +222,7 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
     [button addTarget:self action:@selector(runRandom) forControlEvents:UIControlEventTouchUpInside];
     self.tableView.tableFooterView=button;
 }
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section { return @"选择需要随机的项目；只更换已选项目的参数。"; }
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section { return @"未执行时保持当前开关；执行一键随机后自动开启全部 5 项。"; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return 5; }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
@@ -241,11 +241,6 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
     else sender.on=!sender.on;
 }
 - (void)runRandom {
-    if(!self.selection.count) {
-        UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"尚未选择项目" message:@"请先开启至少一项。" preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleCancel handler:nil]];
-        [self presentViewController:alert animated:YES completion:nil]; return;
-    }
     if(self.randomize) self.randomize();
 }
 @end

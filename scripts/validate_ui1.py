@@ -15,9 +15,11 @@ assert len(regular)==18 and len(risk)==8
 assert all(config[k] is True for k in regular)
 assert all(config[k] is False for k in risk)
 advanced_keys=['spoofBaiduSDK','spoofSysctl','bypassJailbreakDetect','spoofKeychain','spoofAppGroup','spoofWebKitCookie','spoofUserAgent']
+targeted_keys=['spoofBaiduTargeted','spoofBaiduTargetedSystem','spoofBaiduTargetedModel','spoofBaiduTargetedScreen','spoofBaiduTargetedUA','spoofBaiduTargetedPush']
 default_block=plugin.split('static NSDictionary *BDSDefaultConfig(void)',1)[1].split('static void bds_update_c_cache(void)',1)[0]
 assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@NO',default_block) for key in advanced_keys)
-assert config['spoofScreen'] is False and config['configVersion']==187
+assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@NO',default_block) for key in targeted_keys)
+assert config['spoofScreen'] is False and config['configVersion']==188
 assert config['blockStatCashTelemetry'] is False
 assert 'blockStatCashTelemetry' in policy and 'blockStatCashTelemetry' in plugin
 assert '金额上报：%@' in plugin and '? @"已开启" : @"已关闭"' in plugin
@@ -55,7 +57,10 @@ load_end=plugin.index('static BOOL saveConfigValues',load_start)
 load_body=plugin[load_start:load_end]
 assert 'BOOL hasPersistentConfig' in load_body and 'if (!hasPersistentConfig)' in load_body
 assert load_body.index('return;') < load_body.index('NSInteger ver =')
-assert 'page.title=@"卐解 1.8.1 UI1.2"' in plugin
+assert 'page.title=@"卐解 1.8.2 UI1.2"' in plugin
+assert '定向总开关及 5 个子开关已全部开启' in plugin
+assert 'selectedTargetedKeys = [NSSet setWithArray:BDSTargetedKeys()]' in manager
+assert '执行一键随机后自动开启全部 5 项' in (root/'Shared/BDSSettingsUI.h').read_text(encoding='utf-8')
 assert 'didRandomize%@%@' in policy
 for text in ['BDSMarkRandomModeRun','BDSRandomModeWasRun','BDSConfigForPersistentStorage']:
     assert text in plugin+manager+policy,text
@@ -65,7 +70,7 @@ targeted_values=['targetedDeviceProfileName','targetedSystemVersion','targetedSy
 sparse=dict(config)
 for key in targeted_values:sparse.pop(key,None)
 sparse.pop('managerResolvedPath',None)
-sparse.update(managerContainerIdentifier='12345678-1234-1234-1234-123456789012',managerGeneratedAt=1.0,managerProfileVersion=103,managerRandomMode='basic',didRandomizeBasic=True)
+sparse.update(managerContainerIdentifier='12345678-1234-1234-1234-123456789012',managerGeneratedAt=1.0,managerProfileVersion=104,managerRandomMode='basic',didRandomizeBasic=True)
 assert len(plistlib.dumps(sparse,fmt=plistlib.FMT_XML,sort_keys=False))<4096
 assert 'g_rewardProbe' not in plugin
 assert 'BDSInstallCashSpoofing' not in plugin and 'arc4random_uniform(101)' not in plugin
@@ -75,7 +80,7 @@ for text in ['h2tcbox.baidu.com','/ztbox','zpblog','10290','y_mission_index','c_
 assert 'BDSInstallCashTelemetryBlocking();' in plugin
 assert plugin.count('loadConfig();') >= 3
 assert '0.50' not in release and '触发风控' not in release
-assert 'BDSpoofer_1.8.1_UI1.2.dylib' in build and 'UI1.1.dylib' not in build
+assert 'BDSpoofer_1.8.2_UI1.2.dylib' in build and 'BDSpoofer_1.8.1_UI1.2.dylib' not in build
 assert '[verified isEqualToDictionary:config]' in manager
 assert 'targetedScreenHwMachine' in plugin and 'targetedScreenHwMachine' in manager
 def function(text,name):
@@ -87,6 +92,12 @@ def function(text,name):
         depth+=(stripped[i]=='{')-(stripped[i]=='}')
         if depth==0:return text[match.start():i+1]
     raise AssertionError(name)
+targeted_random=function(plugin,'BDSRandomTargetedProfileValues')
+for key in targeted_keys:
+    assert re.search(r'@"'+re.escape(key)+r'"\s*:\s*@YES',targeted_random),key
+assert 'cfgBool(' not in targeted_random
+manager_random=function(manager,'BDSCreateRandomConfig')
+assert 'selectedTargetedKeys = [NSSet setWithArray:BDSTargetedKeys()]' in manager_random
 def plugin_devices(text):
     body=function(text,'BDSDeviceProfiles')
     blocks=re.findall(r'@\{@"name":\s*@"[^"]+".*?@"disks":\s*@\[(.*?)\]\}',body,re.S)
@@ -123,5 +134,5 @@ names=['bds_c_is_jailbreak_path','bds_is_suspicious_dlopen_path','bds_my_dlopen'
 for name in names:assert function(plugin,name)==function(base,name),name
 for path in ['bdspoofer_config.plist','CraneManager/Info.plist','CraneManager/BDSCraneManager.entitlements','CraneManager/BDSCraneManager.libSandy.plist']:plistlib.loads((root/path).read_bytes())
 manager_info=plistlib.loads((root/'CraneManager/Info.plist').read_bytes())
-assert manager_info['CFBundleVersion']=='103' and 'UIApplicationExitsOnSuspend' not in manager_info
-print('PASS UI1.2: v187, 18 on / 8 off, all 7 advanced defaults off, exact telemetry block, 36 synchronized devices, UI1.2 package names, 11 baseline jailbreak functions unchanged')
+assert manager_info['CFBundleShortVersionString']=='1.0.3' and manager_info['CFBundleVersion']=='104' and 'UIApplicationExitsOnSuspend' not in manager_info
+print('PASS 1.8.2 UI1.2 / manager 1.0.3: v188, targeted defaults off and one-click enables all 5, all 7 advanced defaults off, 36 synchronized devices')

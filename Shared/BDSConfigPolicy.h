@@ -109,5 +109,5 @@ static void BDSApplyInitialDefaults(NSMutableDictionary *config, NSDictionary *s
     config[@"spoofBaiduTargeted"]=saved[@"spoofBaiduTargeted"] ?: @NO;
     config[@"spoofScreen"]=@NO;
     config[@"targetedScreenHwMachine"]=saved[@"targetedScreenHwMachine"] ?: config[@"targetedHwMachine"] ?: @"iPhone14,6";
-    config[@"configVersion"]=@187;
+    config[@"configVersion"]=@188;
 }

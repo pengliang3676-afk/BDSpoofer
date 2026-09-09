@@ -4,6 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  1.8.2 UI1.2：定向一键随机自动开启全部五项并生成整套定向参数。
 //  1.8.1 UI1：基于 1.8.1 合入独立定向指纹与统一设置界面。
 //    三组随机互不改写；基础与反关联常规开关首次初始化开启，高级 7 项默认关闭。
 //    修复 UA 缓存短串、Push device_name 字段和独立屏幕元数据。
@@ -150,7 +151,7 @@ static NSDictionary *BDSDefaultConfig(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @187,
+            @"configVersion": @188,
             @"spoofBaiduTargeted": @NO,
             @"spoofBaiduTargetedSystem": @NO,
             @"spoofBaiduTargetedModel": @NO,
@@ -494,6 +495,12 @@ static void loadConfig() {
         merged[@"configVersion"] = @187;
         if (!loaded[@"blockStatCashTelemetry"]) merged[@"blockStatCashTelemetry"] = @NO;
         [merged removeObjectForKey:@"spoofStatCash"];
+        [merged writeToFile:p1 atomically:YES];
+    }
+    if (ver < 188) {
+        // 1.8.2：只升级配置格式；现有定向开关保持原值。
+        // 定向总开关和五个子开关仅在用户执行定向一键随机时全部开启。
+        merged[@"configVersion"] = @188;
         [merged writeToFile:p1 atomically:YES];
     }
     BDSApplyInitialDefaults(merged, loaded);
@@ -3166,17 +3173,9 @@ static NSArray<NSString *> *BDSTargetedChildKeys(void) {
     return keys;
 }
 
-static BOOL BDSAnyTargetedChildEnabled(void) {
-    for (NSString *key in BDSTargetedChildKeys()) {
-        if (cfgBool(key, NO)) return YES;
-    }
-    return NO;
-}
-
-// 先选择、再随机：只更新已开启的定向类别；未选类别的参数和值均保持不变。
-// 一次操作只抽取一个兼容机型/iOS 组合，因此同时选中的类别彼此一致。
+// 定向一键随机会开启全部五个子项，并用同一个兼容机型/iOS 组合生成整套参数。
+// 未执行定向随机时，现有开关和值保持不变。
 static NSDictionary *BDSRandomTargetedProfileValues(void) {
-    if (!BDSAnyTargetedChildEnabled()) return @{};
     NSArray<NSDictionary *> *allDevices = BDSUnifiedDeviceProfiles();
     if (!allDevices.count) return @{};
     NSDictionary *device = allDevices[arc4random_uniform((uint32_t)allDevices.count)];
@@ -3186,38 +3185,30 @@ static NSDictionary *BDSRandomTargetedProfileValues(void) {
     NSMutableDictionary *values = [@{
 
         @"spoofBaiduTargeted": @YES,
+        @"spoofBaiduTargetedSystem": @YES,
+        @"spoofBaiduTargetedModel": @YES,
+        @"spoofBaiduTargetedScreen": @YES,
+        @"spoofBaiduTargetedUA": @YES,
+        @"spoofBaiduTargetedPush": @YES,
         @"targetedGeneratedAt": @((long long)NSDate.date.timeIntervalSince1970),
-        @"didRandomizeTargeted": @YES
+        @"didRandomizeTargeted": @YES,
+        @"targetedSystemVersion": system[@"version"] ?: @"15.4.1",
+        @"targetedSystemBuild": system[@"build"] ?: @"19E258",
+        @"targetedDeviceProfileName": device[@"name"] ?: @"iPhone",
+        @"targetedHwMachine": device[@"machine"] ?: @"iPhone14,6",
+        @"targetedHwModel": device[@"model"] ?: @"D49AP",
+        @"targetedScreenHwMachine": device[@"machine"] ?: @"iPhone14,6",
+        @"targetedScreenWidth": device[@"width"] ?: @375,
+        @"targetedScreenHeight": device[@"height"] ?: @667,
+        @"targetedScreenScale": device[@"scale"] ?: @2,
+        @"targetedNativeScreenWidth": device[@"nativeWidth"] ?: @750,
+        @"targetedNativeScreenHeight": device[@"nativeHeight"] ?: @1334,
+        @"targetedUASystemVersion": system[@"version"] ?: @"15.4.1",
+        @"targetedUASystemBuild": system[@"build"] ?: @"19E258",
+        @"targetedPushDeviceProfileName": device[@"name"] ?: @"iPhone",
+        @"targetedPushHwMachine": device[@"machine"] ?: @"iPhone14,6",
+        @"targetedPushHwModel": device[@"model"] ?: @"D49AP"
     } mutableCopy];
-    if (cfgBool(@"spoofBaiduTargetedSystem", NO)) {
-
-        values[@"targetedSystemVersion"] = system[@"version"] ?: @"15.4.1";
-        values[@"targetedSystemBuild"] = system[@"build"] ?: @"19E258";
-    }
-    if (cfgBool(@"spoofBaiduTargetedModel", NO)) {
-
-        values[@"targetedDeviceProfileName"] = device[@"name"] ?: @"iPhone";
-        values[@"targetedHwMachine"] = device[@"machine"] ?: @"iPhone14,6";
-        values[@"targetedHwModel"] = device[@"model"] ?: @"D49AP";
-    }
-    if (cfgBool(@"spoofBaiduTargetedScreen", NO)) {
-
-        values[@"targetedScreenHwMachine"] = device[@"machine"];
-        values[@"targetedScreenWidth"] = device[@"width"] ?: @375;
-        values[@"targetedScreenHeight"] = device[@"height"] ?: @667;
-        values[@"targetedScreenScale"] = device[@"scale"] ?: @2;
-        values[@"targetedNativeScreenWidth"] = device[@"nativeWidth"] ?: @750;
-        values[@"targetedNativeScreenHeight"] = device[@"nativeHeight"] ?: @1334;
-    }
-    if (cfgBool(@"spoofBaiduTargetedUA", NO)) {
-        values[@"targetedUASystemVersion"] = system[@"version"] ?: @"15.4.1";
-        values[@"targetedUASystemBuild"] = system[@"build"] ?: @"19E258";
-    }
-    if (cfgBool(@"spoofBaiduTargetedPush", NO)) {
-        values[@"targetedPushDeviceProfileName"] = device[@"name"] ?: @"iPhone";
-        values[@"targetedPushHwMachine"] = device[@"machine"] ?: @"iPhone14,6";
-        values[@"targetedPushHwModel"] = device[@"model"] ?: @"D49AP";
-    }
     return values;
 }
 
@@ -3422,7 +3413,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.2";
+    page.title=@"卐解 1.8.2 UI1.2";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -3658,21 +3649,6 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
 }
 
 - (void)randomizeTargetedProfile {
-    if (!BDSAnyTargetedChildEnabled()) {
-        [self presentMessage:@"请先开启至少一个项目，再执行定向随机。" title:@"尚未选择定向项目"];
-        return;
-    }
-    NSMutableArray<NSString *> *selectedNames = [NSMutableArray array];
-    NSDictionary<NSString *, NSString *> *names = @{
-        @"spoofBaiduTargetedSystem": @"系统版本",
-        @"spoofBaiduTargetedModel": @"机型标识",
-        @"spoofBaiduTargetedScreen": @"屏幕参数",
-        @"spoofBaiduTargetedUA": @"User-Agent",
-        @"spoofBaiduTargetedPush": @"Push参数"
-    };
-    for (NSString *key in BDSTargetedChildKeys()) {
-        if (cfgBool(key, NO)) [selectedNames addObject:names[key]];
-    }
     NSDictionary *values = BDSRandomTargetedProfileValues();
     if (!values.count) {
         [self presentMessage:@"没有找到可用的机型与兼容 iOS 组合。" title:@"定向随机失败"];
@@ -3682,11 +3658,11 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
         [self presentMessage:@"配置文件写入失败，定向参数没有更换。" title:@"保存失败"];
         return;
     }
-    NSString *message = [NSString stringWithFormat:
-        @"本次只随机：%@。\n未选择的定向项目保持关闭，原参数不变。\n\n"
-         "基础参数、高级身份参数和常规开关保持不变；全局屏幕 Hook 保持关闭。\n"
-         "长期身份值与兼容风险测试 4 项没有更换。请彻底关闭百度极速版后重新打开。",
-        [selectedNames componentsJoinedByString:@"、"]];
+    NSString *message =
+        @"定向总开关及 5 个子开关已全部开启。\n"
+         "系统、机型、屏幕、User-Agent 和 Push 参数已使用同一套兼容组合随机。\n\n"
+         "基础参数、高级身份参数和其他开关保持不变；全局屏幕 Hook 保持关闭。\n"
+         "请彻底关闭百度极速版后重新打开。";
     [self presentMessage:message title:@"定向指纹参数已更换"];
 }
 

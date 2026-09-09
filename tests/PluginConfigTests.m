@@ -24,11 +24,13 @@ int main(void) {
     @autoreleasepool {
         NSMutableDictionary *config=[BDSDefaultConfig() mutableCopy];
         BDSApplyInitialDefaults(config,nil);
-        assert(BDSRegularKeys().count==21 && BDSRiskKeys().count==5);
-        assert([config[@"configVersion"] integerValue]==187);
+        assert(BDSRegularKeys().count==18 && BDSRiskKeys().count==8);
+        assert([config[@"configVersion"] integerValue]==188);
         assert(![config[@"blockStatCashTelemetry"] boolValue]);
         for(NSString *key in BDSRegularKeys()) assert([config[key] boolValue]);
         for(NSString *key in BDSRiskKeys()) assert(![config[key] boolValue]);
+        assert(![config[@"spoofBaiduTargeted"] boolValue]);
+        for(NSString *key in BDSSelectedTargetKeys()) assert(![config[key] boolValue]);
         [config addEntriesFromDictionary:BDSRandomIdentityValues()];
         for(NSString *key in BDSTargetedChildKeys()) config[key]=@YES;
         config[@"spoofBaiduTargeted"]=@YES;
@@ -49,10 +51,12 @@ int main(void) {
         for(NSUInteger mask=0;mask<32;mask++) {
             NSMutableDictionary *before=[g_config mutableCopy];
             NSMutableSet *allowed=[NSMutableSet setWithArray:@[@"spoofBaiduTargeted",@"targetedGeneratedAt",@"didRandomizeTargeted"]];
-            for(NSUInteger i=0;i<5;i++) { before[BDSTargetedChildKeys()[i]]=@((mask&(1<<i))!=0); if(mask&(1<<i)) [allowed addObjectsFromArray:groups[i]]; }
+            for(NSUInteger i=0;i<5;i++) { before[BDSTargetedChildKeys()[i]]=@((mask&(1<<i))!=0); [allowed addObject:BDSTargetedChildKeys()[i]]; [allowed addObjectsFromArray:groups[i]]; }
             g_config=before;
             NSDictionary *delta=BDSRandomTargetedProfileValues();
-            if(!mask) assert(delta.count==0);
+            assert(delta.count>0 && [delta[@"spoofBaiduTargeted"] boolValue]);
+            for(NSString *key in BDSTargetedChildKeys()) assert([delta[key] boolValue]);
+            for(NSArray *group in groups) for(NSString *key in group) assert(delta[key]);
             NSMutableDictionary *after=[before mutableCopy];[after addEntriesFromDictionary:delta];
             checkUnchanged(before,after,allowed);
         }

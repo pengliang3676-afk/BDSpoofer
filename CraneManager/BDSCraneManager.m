@@ -253,9 +253,9 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
     NSDictionary *system = BDSRandomSystemForDevice(device);
 
     [config addEntriesFromDictionary:@{
-        @"configVersion": @187,
+        @"configVersion": @188,
         @"managerGeneratedAt": @([[NSDate date] timeIntervalSince1970]),
-        @"managerProfileVersion": @103,
+        @"managerProfileVersion": @104,
         @"managerRandomMode": mode == BDSRandomModeTargeted ? @"targeted" : @"basic",
     }];
 
@@ -332,12 +332,15 @@ static NSMutableDictionary *BDSCreateRandomConfig(NSDictionary *existing,
     if (mode == BDSRandomModeAdvanced) {
         NSMutableDictionary *config = BDSMergedConfig(existing);
         config[@"managerGeneratedAt"] = @([[NSDate date] timeIntervalSince1970]);
-        config[@"managerProfileVersion"] = @103;
+        config[@"managerProfileVersion"] = @104;
         config[@"managerRandomMode"] = @"advanced";
         BDSMarkRandomModeRun(config, @"advanced");
         // 与插件“一键高级”一致：只更换五个长期身份值，所有参数和开关保持原状态。
         BDSSeedIdentityIfNeeded(config, YES);
         return config;
+    }
+    if (mode == BDSRandomModeTargeted) {
+        selectedTargetedKeys = [NSSet setWithArray:BDSTargetedKeys()];
     }
     NSArray<NSDictionary *> *devices = BDSDeviceProfiles();
     if (!devices.count) return nil;
@@ -777,6 +780,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     __weak BDSManagerViewController *weakSelf=self;
     page.selectionChanged=^BOOL(NSSet *selected) { weakSelf.targetedSelectionKeys=[selected mutableCopy]; return YES; };
     page.randomize=^{
+        weakSelf.targetedSelectionKeys=[NSMutableSet setWithArray:BDSTargetedKeys()];
         [weakSelf.navigationController popViewControllerAnimated:NO];
         [weakSelf applySelectedContainersWithMode:BDSRandomModeTargeted];
     };
@@ -925,7 +929,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
         } else if (mode == BDSRandomModeAdvanced) {
             [detail appendString:@"\n\n只更换 IDFA、IDFV、DeviceID、CUID、UTDID；其他参数和开关均未改变。"];
         } else {
-            [detail appendString:@"\n\n仅已选择的定向参数已更换；基础参数、高级身份及常规开关保持不变。"];
+            [detail appendString:@"\n\n定向总开关和 5 个子开关已全部开启并随机；基础参数、高级身份及其他开关保持不变。"];
         }
         [detail appendString:@"\n未运行的容器可直接首次打开；已在后台运行的百度仍需彻底结束一次再打开。"];
     }
