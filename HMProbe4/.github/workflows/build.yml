@@ -1,0 +1,44 @@
+name: Build HMProbe4 (Hema read-only probe v4 dylib)
+
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build universal dylib (arm64 + arm64e)
+        run: |
+          set -e
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          SRC=$(find . -name 'HMProbe4.m' -not -path '*/.*' | head -1)
+          echo "SDK=$SDK"; echo "SRC=$SRC"; test -n "$SRC"
+          for ARCH in arm64 arm64e; do
+            xcrun clang -arch $ARCH -isysroot "$SDK" -target $ARCH-apple-ios15.0 \
+              -fobjc-arc -fno-inline \
+              -dynamiclib \
+              -framework Foundation -framework UIKit -framework CoreGraphics -framework Security \
+              -O2 -Wno-unused -Wno-unused-function \
+              -o HMProbe4-$ARCH.dylib "$SRC"
+          done
+          xcrun lipo -create HMProbe4-arm64.dylib HMProbe4-arm64e.dylib -output HMProbe4.dylib
+          codesign --force --sign - --timestamp=none HMProbe4.dylib
+          echo "---- arch ----"; xcrun lipo -info HMProbe4.dylib
+          echo "---- deps ----"; otool -L HMProbe4.dylib | head -20
+          echo "---- interpose ----"; otool -l HMProbe4.dylib | grep -A3 __interpose || true
+          echo "---- file ----"; file HMProbe4.dylib
+
+      - name: Verify artifact exists
+        run: |
+          test -f HMProbe4.dylib
+          ls -la HMProbe4.dylib
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HMProbe4-dylib
+          path: HMProbe4.dylib
+          if-no-files-found: error

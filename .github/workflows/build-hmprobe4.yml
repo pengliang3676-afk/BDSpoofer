@@ -1,0 +1,50 @@
+name: Build HMProbe4
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "HMProbe4/**"
+      - ".github/workflows/build-hmprobe4.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build universal iOS dylib
+        run: |
+          set -euo pipefail
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          SRC=HMProbe4/HMProbe4.m
+          test -f "$SRC"
+          for ARCH in arm64 arm64e; do
+            xcrun clang -arch "$ARCH" -isysroot "$SDK" -target "$ARCH-apple-ios15.0" \
+              -fobjc-arc -fno-inline -dynamiclib \
+              -framework Foundation -framework UIKit -framework CoreGraphics -framework Security \
+              -O2 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
+              -install_name @rpath/HMProbe4.dylib \
+              -o "HMProbe4-$ARCH.dylib" "$SRC"
+          done
+          xcrun lipo -create HMProbe4-arm64.dylib HMProbe4-arm64e.dylib -output HMProbe4.dylib
+          codesign --force --sign - --timestamp=none HMProbe4.dylib
+
+      - name: Verify artifact
+        run: |
+          set -euo pipefail
+          xcrun lipo HMProbe4.dylib -verify_arch arm64 arm64e
+          codesign --verify --strict HMProbe4.dylib
+          xcrun lipo -info HMProbe4.dylib
+          file HMProbe4.dylib
+          otool -L HMProbe4.dylib
+          otool -l HMProbe4.dylib | grep -A3 __interpose
+          nm -u HMProbe4.dylib | grep -E '(_open|_openat|_fopen)$'
+          shasum -a 256 HMProbe4.dylib
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HMProbe4-dylib
+          path: HMProbe4.dylib
+          if-no-files-found: error
