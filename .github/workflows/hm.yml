@@ -79,7 +79,7 @@ jobs:
             -output ${LIB_NAME}.dylib
           codesign -s - -f ${LIB_NAME}.dylib
           codesign --verify --strict ${LIB_NAME}.dylib
-          xcrun lipo -verify_arch arm64 arm64e ${LIB_NAME}.dylib
+          xcrun lipo ${LIB_NAME}.dylib -verify_arch arm64 arm64e
           xcrun lipo -archs ${LIB_NAME}.dylib | tee lipo-archs.txt
           file ${LIB_NAME}.dylib
           otool -L ${LIB_NAME}.dylib
