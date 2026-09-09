@@ -1,0 +1,96 @@
+name: hm
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "HMProbe/HMProbe.m"
+      - ".github/workflows/hm.yml"
+
+permissions:
+  contents: read
+
+env:
+  LIB_NAME: HMProbe
+  SOURCE_FILE: HMProbe/HMProbe.m
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode and SDK info
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphoneos --show-sdk-version
+          test -f "$SOURCE_FILE"
+
+      - name: Build arm64
+        run: |
+          set -euo pipefail
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          xcrun --sdk iphoneos clang \
+            -arch arm64 \
+            -isysroot "$SDK_PATH" \
+            -miphoneos-version-min=15.0 \
+            -fobjc-arc \
+            -fblocks \
+            -dynamiclib \
+            -framework Foundation \
+            -framework UIKit \
+            -framework CoreGraphics \
+            -framework AdSupport \
+            -framework CoreTelephony \
+            -install_name @rpath/${LIB_NAME}.dylib \
+            -o ${LIB_NAME}_arm64.dylib \
+            "$SOURCE_FILE"
+
+      - name: Build arm64e
+        run: |
+          set -euo pipefail
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          xcrun --sdk iphoneos clang \
+            -arch arm64e \
+            -isysroot "$SDK_PATH" \
+            -miphoneos-version-min=15.0 \
+            -fobjc-arc \
+            -fblocks \
+            -dynamiclib \
+            -framework Foundation \
+            -framework UIKit \
+            -framework CoreGraphics \
+            -framework AdSupport \
+            -framework CoreTelephony \
+            -install_name @rpath/${LIB_NAME}.dylib \
+            -o ${LIB_NAME}_arm64e.dylib \
+            "$SOURCE_FILE"
+
+      - name: Merge, sign and verify
+        run: |
+          set -euo pipefail
+          xcrun lipo -create \
+            ${LIB_NAME}_arm64.dylib \
+            ${LIB_NAME}_arm64e.dylib \
+            -output ${LIB_NAME}.dylib
+          codesign -s - -f ${LIB_NAME}.dylib
+          codesign --verify --strict ${LIB_NAME}.dylib
+          xcrun lipo -verify_arch arm64 arm64e ${LIB_NAME}.dylib
+          xcrun lipo -archs ${LIB_NAME}.dylib | tee lipo-archs.txt
+          file ${LIB_NAME}.dylib
+          otool -L ${LIB_NAME}.dylib
+          shasum -a 256 ${LIB_NAME}.dylib | tee SHA256SUMS.txt
+
+      - name: Upload hm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hm
+          path: |
+            HMProbe.dylib
+            lipo-archs.txt
+            SHA256SUMS.txt
+          if-no-files-found: error
