@@ -173,10 +173,14 @@ static BOOL HMWithin(NSString *path, NSString *parent) {
         if (sysctl(mib, 4, list, &size, NULL, 0)) {
             free(list); if (error) *error = HMError(@"进程列表变化或无权限，请稍后重试。"); return NO;
         }
+        if (!size || size % sizeof(*list)) {
+            free(list); if (error) *error = HMError(@"进程列表为空或格式不完整，不能确认 App 已退出。"); return NO;
+        }
         typedef int (*PathFunction)(int, void *, uint32_t);
         PathFunction getPath = (PathFunction)dlsym(RTLD_DEFAULT, "proc_pidpath");
-        BOOL running = NO;
+        BOOL running = NO, sawSelf = NO;
         for (size_t i = 0; i < size / sizeof(*list); i++) {
+            if (list[i].kp_proc.p_pid == getpid()) sawSelf = YES;
             for (NSString *name in names) {
                 // p_comm is byte-truncated, including UTF-8 names; compare the same prefix.
                 if (!strncmp(list[i].kp_proc.p_comm, name.UTF8String, sizeof(list[i].kp_proc.p_comm) - 1)) running = YES;
@@ -188,6 +192,9 @@ static BOOL HMWithin(NSString *path, NSString *parent) {
             }
         }
         free(list);
+        if (!sawSelf) {
+            if (error) *error = HMError(@"进程列表缺少本工具进程，结果不可信，已停止操作。"); return NO;
+        }
         if (running && error) *error = HMError(@"河马剧场或其扩展仍在运行。请从多任务界面划掉河马剧场，再重试；操作期间不要重新打开。");
         return !running;
     } @catch (NSException *exception) {

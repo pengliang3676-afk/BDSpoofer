@@ -7,4 +7,3 @@ Maintainer: Codex
 Author: Codex
 Section: Utilities
 Depends: firmware (>= 15.0), rootless-compat (>= 0.9)
-

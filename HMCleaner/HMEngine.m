@@ -55,7 +55,9 @@ static BOOL HMWritePlist(int dir, NSString *name, NSDictionary *object, NSError 
     int p = hm_open_dir(parent.fileSystemRepresentation);
     if (p < 0) { if (error) *error = HMError([@"备份父目录无法访问：" stringByAppendingString:HMErrnoText(errno)]); return -1; }
     int app = HMChildDirectory(p, [[self.storePath stringByDeletingLastPathComponent].lastPathComponent UTF8String], create);
-    int e = errno; close(p);
+    int e = errno;
+    if (create && app >= 0 && fsync(p)) { e = errno; close(app); app = -1; }
+    close(p);
     if (app < 0) { if (error) *error = HMError(HMErrnoText(e)); return -1; }
     int dir = HMChildDirectory(app, self.storePath.lastPathComponent.UTF8String, create);
     e = errno; if (create && dir >= 0 && fsync(app)) { e = errno; close(dir); dir = -1; }

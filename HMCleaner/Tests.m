@@ -130,6 +130,19 @@ int main(void) {
         CHECK(![engine clean:container items:items error:&error]);
         root = hm_open_dir(env.root.fileSystemRepresentation);
         CHECK(hm_read_candidate(root, 1, &now, NULL) == 0); close(root);
+        // Preflight is batch-wide: changing the second selected file must leave the first intact.
+        container = Fixture(base, @"batch"); env.root = container[@"root"];
+        engine.cancelRequested = NO;
+        root = hm_open_dir(env.root.fileSystemRepresentation); docs = hm_documents(root);
+        Put(docs, 0, "keep-first"); Put(docs, 1, "old-second");
+        error = nil; items = [engine scan:container error:&error];
+        ((HMScanItem *)items[0]).selected = YES; ((HMScanItem *)items[1]).selected = YES;
+        raw = openat(docs, hm_names[1], O_WRONLY | O_TRUNC); CHECK(raw >= 0);
+        CHECK(write(raw, "new-second", 10) == 10); close(raw);
+        CHECK(![engine clean:container items:items error:&error]);
+        CHECK(hm_read_candidate(root, 0, &now, NULL) == 0 && now.st.st_size == 10);
+        CHECK(hm_read_candidate(root, 1, &now, NULL) == 0 && now.st.st_size == 10);
+        close(docs); close(root);
         printf("PASS %d checks; fixture directory: %s\n", checks, temporary);
     }
     return 0;
