@@ -1,0 +1,50 @@
+name: Build HMProbe3
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "HMProbe3/**"
+      - ".github/workflows/build-hmprobe3.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build universal iOS dylib
+        run: |
+          set -euo pipefail
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          SRC=HMProbe3/HMProbe3.m
+          test -f "$SRC"
+          for ARCH in arm64 arm64e; do
+            xcrun clang -arch "$ARCH" -isysroot "$SDK" -target "$ARCH-apple-ios15.0" \
+              -fobjc-arc -fno-inline -dynamiclib \
+              -framework Foundation -framework UIKit -framework CoreGraphics -framework Security \
+              -O2 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
+              -install_name @rpath/HMProbe3.dylib \
+              -o "HMProbe3-$ARCH.dylib" "$SRC"
+          done
+          xcrun lipo -create HMProbe3-arm64.dylib HMProbe3-arm64e.dylib -output HMProbe3.dylib
+          codesign --force --sign - --timestamp=none HMProbe3.dylib
+
+      - name: Verify artifact
+        run: |
+          set -euo pipefail
+          xcrun lipo HMProbe3.dylib -verify_arch arm64 arm64e
+          codesign --verify --strict HMProbe3.dylib
+          xcrun lipo -info HMProbe3.dylib
+          file HMProbe3.dylib
+          otool -L HMProbe3.dylib
+          otool -l HMProbe3.dylib | grep -A3 __interpose
+          nm -u HMProbe3.dylib | grep -E '(_open|_openat|_fopen)$'
+          shasum -a 256 HMProbe3.dylib
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HMProbe3-dylib
+          path: HMProbe3.dylib
+          if-no-files-found: error
