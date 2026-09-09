@@ -781,7 +781,7 @@ static NSString *hm_machineName(void) {
     [s appendString:@"河马剧场 只读诊断探针 HMProbe v1 报告\n"];
     [s appendFormat:@"生成时间: %@\n",[NSDate date]];
     [s appendString:@"========== 一、运行环境 ==========\n"];
-    [s appendFormat:@"App显示名: %@\n", info[@"CFBundleDisplayName"]?:info[@"CFBundleName"]:@"?"];
+    [s appendFormat:@"App显示名: %@\n", info[@"CFBundleDisplayName"] ?: info[@"CFBundleName"] ?: @"?"];
     [s appendFormat:@"BundleID: %@\n", mb.bundleIdentifier?:@"?"];
     [s appendFormat:@"App版本: %@ (%@)\n", info[@"CFBundleShortVersionString"]?:@"?", info[@"CFBundleVersion"]?:@"?"];
     [s appendFormat:@"iOS: %@ | 机型: %@\n", UIDevice.currentDevice.systemVersion, hm_machineName()];
