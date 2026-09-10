@@ -29,8 +29,9 @@ hmcleaner keychain   # 只清钥匙串访问组
 - hm_pathClass 锚定容器根对整条路径做四态分类：干净缺失(0)/真实目录(1)/不安全(2，链接、非目录、中间级缺失)/I-O错误(3)；
   任一级是符号链接或读取报错都计失败，绝不靠"再 lstat 一次末级"把错误吞成"不存在"；
 - Crane 入口覆盖 c→Library→___Crane_Containers 整条链，偏好覆盖容器根→Preferences 的每一级；
-- Crane 递归中普通文件（plist/数据库）正常跳过，只有符号链接/lstat 失败才计失败；
-- Crane 副本递归收集；先清副本、最后清主容器；主容器清空 Library 时跳过 ___Crane_Containers。
+- Crane 只收集 `___Crane_Containers` 直属的真实副本根，并校验其 Documents/Library；
+  不递归扫描副本内容，因此 WebKit/IndexedDB 等内部正常链接不会被误当成容器发现失败；
+- 先清 Crane 副本、最后清主容器；主容器清空 Library 时跳过 ___Crane_Containers。
 
 **备份与恢复（1.1.2 修复）**
 - 备份根固定 `/var/mobile/Library/Application Support/HMCleaner/Backups`（修复双层 HMCleaner）：

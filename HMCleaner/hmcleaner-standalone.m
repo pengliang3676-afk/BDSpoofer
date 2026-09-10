@@ -236,11 +236,18 @@ static void hm_collectCrane(NSString *dir, NSMutableArray<NSString *> *out, NSUI
             printf("  [!] lstat 失败: %s\n", p.UTF8String); (*failures)++; continue;
         }
         if (S_ISLNK(cst.st_mode)) { printf("  [!] 符号链接: %s\n", p.UTF8String); (*failures)++; continue; }
-        if (!S_ISDIR(cst.st_mode)) continue; // 普通文件（plist/数据库等）正常跳过，不计失败
-        BOOL hasDocs = [fm fileExistsAtPath:[p stringByAppendingPathComponent:@"Documents"]],
-             hasLib  = [fm fileExistsAtPath:[p stringByAppendingPathComponent:@"Library"]];
-        if (hasDocs || hasLib) [out addObject:p];
-        hm_collectCrane(p, out, failures);
+        if (!S_ISDIR(cst.st_mode)) continue; // Crane 根直属普通文件正常跳过
+
+        // ___Crane_Containers 的直属目录就是副本容器根。
+        // 只校验该根的 Documents/Library，不递归遍历容器内容；
+        // WebKit 等数据内的正常链接不应影响“发现容器根”。
+        int dpc = hm_pathClass(p, [p stringByAppendingPathComponent:@"Documents"]);
+        int lpc = hm_pathClass(p, [p stringByAppendingPathComponent:@"Library"]);
+        if (dpc == 2 || dpc == 3 || lpc == 2 || lpc == 3) {
+            printf("  [!] Crane 副本根不安全/读取失败: %s\n", p.UTF8String);
+            (*failures)++; continue;
+        }
+        if (dpc == 1 || lpc == 1) [out addObject:p];
     }
 }
 
