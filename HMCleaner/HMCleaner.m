@@ -7,8 +7,11 @@
 
 extern char **environ;
 
-static NSString *const HMHelperPath = @"/usr/local/bin/hmcleaner";
-static const char *const HMGUIBuildMarker __attribute__((used)) = "HMCLEANER_GUI_1_2_0";
+static const char *const HMGUIBuildMarker __attribute__((used)) = "HMCLEANER_GUI_1_2_1";
+
+static NSString *HMHelperPath(void) {
+    return [NSBundle.mainBundle pathForResource:@"hmcleaner-helper" ofType:nil];
+}
 
 static void HMShowMessage(UIViewController *controller, NSString *title, NSString *message) {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
@@ -39,7 +42,7 @@ static void HMShowMessage(UIViewController *controller, NSString *title, NSStrin
 
     UILabel *titleLabel = [UILabel new];
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    titleLabel.text = @"河马清理 1.2.0";
+    titleLabel.text = @"河马清理 1.2.1";
     titleLabel.font = [UIFont systemFontOfSize:28 weight:UIFontWeightBold];
     titleLabel.textAlignment = NSTextAlignmentCenter;
 
@@ -156,14 +159,14 @@ static void HMShowMessage(UIViewController *controller, NSString *title, NSStrin
         HMShowMessage(self, @"拒绝执行", @"App 只允许固定的检测和全部清理模式。");
         return;
     }
-    if (![[NSFileManager defaultManager] isExecutableFileAtPath:HMHelperPath]) {
-        HMShowMessage(self, @"清理助手缺失", @"请通过 Sileo 重新安装完整的 HMCleaner 1.2.0 软件包。");
+    NSString *path = HMHelperPath();
+    if (!path || ![[NSFileManager defaultManager] isExecutableFileAtPath:path]) {
+        HMShowMessage(self, @"清理助手缺失", @"请通过 Sileo 重新安装完整的 HMCleaner 1.2.1 软件包。");
         return;
     }
 
     [self setBusy:YES label:destructive ? @"正在清理，请勿打开河马…" : @"正在检测容器…"];
     self.outputView.text = @"";
-    NSString *path = HMHelperPath;
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         int pipes[2] = {-1, -1};

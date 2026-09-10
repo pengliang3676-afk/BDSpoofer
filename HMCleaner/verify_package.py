@@ -1,4 +1,4 @@
-"""Read-only validation for the HMCleaner 1.2.0 desktop App package."""
+"""Read-only validation for the HMCleaner 1.2.1 desktop App package."""
 import hashlib
 import io
 import pathlib
@@ -10,7 +10,7 @@ import tarfile
 
 
 artifact = pathlib.Path(sys.argv[1])
-package = artifact / "HMCleaner_1.2.0_RootHide.deb"
+package = artifact / "HMCleaner_1.2.1_RootHide.deb"
 blob = package.read_bytes()
 digest = hashlib.sha256(blob).hexdigest()
 hash_lines = (artifact / "SHA256SUMS.txt").read_text().splitlines()
@@ -40,9 +40,10 @@ with tarfile.open(fileobj=io.BytesIO(members["control.tar.gz"]), mode="r:gz") as
     control = tar.extractfile("./control").read().decode()
     assert "Architecture: iphoneos-arm64e" in control
     assert "Package: com.peng.hmcleaner" in control
-    assert "Version: 1.2.0" in control
+    assert "Version: 1.2.1" in control
     postinst = tar.extractfile("./postinst").read().decode()
     assert "chmod 4755 /usr/local/bin/hmcleaner" in postinst
+    assert "chmod 4755 /Applications/HMCleaner.app/hmcleaner-helper" in postinst
     assert "uicache -a" in postinst
 
 
@@ -79,17 +80,25 @@ with tarfile.open(fileobj=io.BytesIO(members["data.tar.gz"]), mode="r:gz") as ta
     app = "./Applications/HMCleaner.app/"
     info = plistlib.loads(tar.extractfile(app + "Info.plist").read())
     assert info["CFBundleIdentifier"] == "com.peng.hmcleaner"
-    assert info["CFBundleShortVersionString"] == "1.2.0"
+    assert info["CFBundleShortVersionString"] == "1.2.1"
     assert info["MinimumOSVersion"] == "15.0"
     app_binary = tar.extractfile(app + "HMCleaner").read()
-    assert b"HMCLEANER_GUI_1_2_0" in app_binary
+    assert b"HMCLEANER_GUI_1_2_1" in app_binary
     verify_fat_macho(app_binary)
+
+    app_helper_name = app + "hmcleaner-helper"
+    app_helper = entries[app_helper_name]
+    assert stat.S_IMODE(app_helper.mode) == 0o4755, oct(stat.S_IMODE(app_helper.mode))
+    app_helper_binary = tar.extractfile(app_helper_name).read()
+    assert b"HMCLEANER_GUI_1_2_1" not in app_helper_binary
+    verify_fat_macho(app_helper_binary)
 
     helper_name = "./usr/local/bin/hmcleaner"
     helper = entries[helper_name]
     assert stat.S_IMODE(helper.mode) == 0o4755, oct(stat.S_IMODE(helper.mode))
     helper_binary = tar.extractfile(helper_name).read()
-    assert b"HMCLEANER_GUI_1_2_0" not in helper_binary
+    assert helper_binary == app_helper_binary
+    assert b"HMCLEANER_GUI_1_2_1" not in helper_binary
     verify_fat_macho(helper_binary)
 
 print("PASS: package metadata, desktop App, setuid helper, arm64 + arm64e and signatures")

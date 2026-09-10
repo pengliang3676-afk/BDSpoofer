@@ -1,4 +1,4 @@
-# 河马清理 1.2.0
+# 河马清理 1.2.1
 
 RootHide 越狱环境的桌面 App，目标固定为河马剧场 `com.cbn.hmjc`。通过 Sileo 安装后显示“河马清理”图标，不注入河马 App。
 
@@ -33,13 +33,13 @@ hmcleaner keychain
 
 ## 权限设计
 
-桌面 App 本身以普通移动用户运行；包内 `/usr/local/bin/hmcleaner` 是固定目标、固定模式的提权助手。安装脚本将其设为 `root:wheel`、模式 `4755`。助手不执行外部 shell，不接受路径参数，只处理编译时写死的河马 Bundle ID、容器和钥匙串访问组。
+桌面 App 本身以普通移动用户运行；App 内置 `hmcleaner-helper` 是固定目标、固定模式的提权助手，另在 `/usr/local/bin/hmcleaner` 保留同一助手的命令行副本。安装脚本将两者设为 `root:wheel`、模式 `4755`。助手不执行外部 shell，不接受路径参数，只处理编译时写死的河马 Bundle ID、容器和钥匙串访问组。
 
 路径安全、失败中止和钥匙串事务逻辑沿用真机验证过的 1.1.4 核心：路径逐级 `lstat` 四态分类，任何链接、不确定或 I/O 错误都计失败；文件阶段失败不会继续进入钥匙串阶段。已经完成的普通文件删除不会自动回滚。
 
 ## 安装与构建
 
-软件包 ID 为 `com.peng.hmcleaner`，1.2.0 会直接升级现有 CLI 1.1.4，避免两个包同时占用 `/usr/local/bin/hmcleaner`。同时声明替换旧 GUI 包 `com.codex.hmcleaner`。
+软件包 ID 为 `com.peng.hmcleaner`，1.2.1 会直接升级现有 CLI 1.1.4/桌面版 1.2.0，避免两个包同时占用 `/usr/local/bin/hmcleaner`。同时声明替换旧 GUI 包 `com.codex.hmcleaner`。
 
 在带 iPhoneOS SDK 的 macOS 上运行：
 

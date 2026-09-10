@@ -1,6 +1,6 @@
 Package: com.peng.hmcleaner
 Name: 河马清理
-Version: 1.2.0
+Version: 1.2.1
 Architecture: iphoneos-arm64e
 Description: One-tap external cleanup app for Hema (com.cbn.hmjc), including Crane containers and the verified keychain access group.
 Maintainer: peng

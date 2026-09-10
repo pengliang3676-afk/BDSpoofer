@@ -1,7 +1,7 @@
 //
 //  hmcleaner-standalone.m
-//  HMCleaner —— 河马剧场 (com.cbn.hmjc) 独立外部清理工具（RootHide / root CLI）1.2.0
-//  1.2.0 增加桌面 App 包装；清理规则沿用真机验证过的 1.1.4 核心，无参数时改为只显示用法并拒绝执行。
+//  HMCleaner —— 河马剧场 (com.cbn.hmjc) 独立外部清理工具（RootHide / root CLI）1.2.1
+//  1.2.1 增加桌面 App 与内置助手；清理规则沿用真机验证过的 1.1.4 核心，无参数时改为只显示用法并拒绝执行。
 //  1.1.4 按 Codex 第五轮只读复审修复：
 //   - 新增 hm_pathClass 锚定容器根做整条路径四态分类（干净缺失/真实目录/不安全/I-O错误），
 //     Crane 入口不再"safeWithin 失败后二次 lstat 吞错"，I/O 与中间层链接一律计失败；
@@ -647,7 +647,7 @@ static int hm_cleanKeychain(NSUInteger *failures) {
 #pragma mark - main
 
 static void hm_usage(const char *argv0) {
-    printf("HMCleaner 1.2.0 —— 河马剧场(com.cbn.hmjc) 外部清理\n");
+    printf("HMCleaner 1.2.1 —— 河马剧场(com.cbn.hmjc) 外部清理\n");
     printf("用法（root；先杀进程并确认停止，任何不确定或失败立即中止）：\n");
     printf("  %s list       只列出匹配容器，不修改\n", argv0);
     printf("  %s all        清空全部容器数据(保留 Crane 结构) + 清钥匙串访问组\n", argv0);

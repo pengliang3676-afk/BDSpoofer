@@ -1,13 +1,13 @@
-# HMCleaner 1.2.0 命令行助手 —— 河马剧场外部清理（RootHide）
+# HMCleaner 1.2.1 命令行助手 —— 河马剧场外部清理（RootHide）
 
-只对 `com.cbn.hmjc`（含 com.cbn.hmjc.* 扩展）生效，不注入 App。1.2.0 软件包已包含桌面 GUI；本文件记录包内助手的命令行接口。
+只对 `com.cbn.hmjc`（含 com.cbn.hmjc.* 扩展）生效，不注入 App。1.2.1 软件包已包含桌面 GUI；本文件记录包内助手的命令行接口。
 
 ## 为什么需要它
 Crane 新容器只给新沙盒文件，但 **Keychain 跨容器共享**（访问组 `WU3L875P4M.com.cbn.hmjc`）。
 数美 FP_SEQ、听云 token、App 自有 local_deviceId 等钥匙串项在新容器仍可读，必须从外部按组清掉。
 
 ## 安装与使用
-1. 安装桌面版 `HMCleaner_1.2.0_RootHide.deb`；它会直接升级原 CLI 1.1.4。
+1. 安装桌面版 `HMCleaner_1.2.1_RootHide.deb`；它会直接升级原 CLI 1.1.4 或桌面版 1.2.0。
 2. NewTerm / SSH（root）：
 
 ```

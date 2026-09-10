@@ -1,8 +1,8 @@
 Package: com.peng.hmcleaner
 Name: HMCleaner (legacy CLI)
-Version: 1.2.0
+Version: 1.2.1
 Architecture: iphoneos-arm64e
-Description: Legacy command-line metadata retained for source compatibility. Use the 1.2.0 desktop App package.
+Description: Legacy command-line metadata retained for source compatibility. Use the 1.2.1 desktop App package.
 Maintainer: peng
 Author: peng
 Section: Utilities
