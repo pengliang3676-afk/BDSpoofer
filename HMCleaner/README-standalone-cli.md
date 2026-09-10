@@ -1,14 +1,13 @@
-# HMCleaner CLI 1.1.4 —— 河马剧场外部清理（RootHide deb，root 命令行）
+# HMCleaner 1.2.0 命令行助手 —— 河马剧场外部清理（RootHide）
 
-只对 `com.cbn.hmjc`（含 com.cbn.hmjc.* 扩展）生效。**在 App 停止状态下由 root 运行**，不注入 App。
-与 Codex 的 GUI 版（HMCleaner.m/HMEngine，桌面 App、只清 5 个文件、不碰钥匙串）并存，互不覆盖。
+只对 `com.cbn.hmjc`（含 com.cbn.hmjc.* 扩展）生效，不注入 App。1.2.0 软件包已包含桌面 GUI；本文件记录包内助手的命令行接口。
 
 ## 为什么需要它
 Crane 新容器只给新沙盒文件，但 **Keychain 跨容器共享**（访问组 `WU3L875P4M.com.cbn.hmjc`）。
 数美 FP_SEQ、听云 token、App 自有 local_deviceId 等钥匙串项在新容器仍可读，必须从外部按组清掉。
 
 ## 安装与使用
-1. Actions 编译（**HMCleaner 目录需作为独立 git 仓库根推送**），安装 `HMCleaner_1.1.4_iphoneos-arm64e.deb`。
+1. 安装桌面版 `HMCleaner_1.2.0_RootHide.deb`；它会直接升级原 CLI 1.1.4。
 2. NewTerm / SSH（root）：
 
 ```
@@ -17,6 +16,8 @@ hmcleaner all        # 推荐：杀进程并确认停止 + 清空全部容器数
 hmcleaner ids        # 杀进程 + 只删已取证 ID 残留文件/偏好键 + 清钥匙串
 hmcleaner keychain   # 只清钥匙串访问组
 ```
+
+无参数运行只显示用法并返回失败，不再默认为 `all`。
 
 ## 安全设计
 **失败立即中止（1.1.3 强化）**

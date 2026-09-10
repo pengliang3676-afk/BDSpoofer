@@ -1,287 +1,263 @@
 #import <UIKit/UIKit.h>
-#import "HMEngine.h"
+#import <errno.h>
+#import <spawn.h>
+#import <string.h>
+#import <sys/wait.h>
+#import <unistd.h>
 
-static HMEngine *gEngine;
-static dispatch_queue_t gWorker;
+extern char **environ;
 
-static void HMMessage(UIViewController *vc, NSString *title, NSString *message) {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleCancel handler:nil]];
-    [vc presentViewController:alert animated:YES completion:nil];
+static NSString *const HMHelperPath = @"/usr/local/bin/hmcleaner";
+
+static void HMShowMessage(UIViewController *controller, NSString *title, NSString *message) {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"知道了"
+                                              style:UIAlertActionStyleDefault
+                                            handler:nil]];
+    [controller presentViewController:alert animated:YES completion:nil];
 }
-static NSString *HMReportText(NSDictionary *report) {
-    if (!report) return @"没有结果";
-    NSMutableString *text = [NSMutableString stringWithFormat:@"容器：%@\n编号：%@\n\n", report[@"container"][@"name"] ?: @"—", report[@"id"] ?: @"—"];
-    for (NSDictionary *entry in report[@"results"]) [text appendFormat:@"%@%@%@\n\n", entry[@"name"] ?: @"", entry[@"name"] ? @"\n" : @"", entry[@"result"] ?: @"未知状态"];
-    [text appendString:report[@"note"] ?: @"备份保存在本机。钥匙串未操作。"];
-    return text;
-}
 
-@interface HMBaseController : UITableViewController
-@property(nonatomic) BOOL busy;
-- (void)run:(id (^)(NSError **error))work finish:(void (^)(id result, NSError *error))finish;
+@interface HMHomeController : UIViewController
+@property(nonatomic, strong) UILabel *stateLabel;
+@property(nonatomic, strong) UILabel *detailLabel;
+@property(nonatomic, strong) UIButton *cleanButton;
+@property(nonatomic, strong) UIButton *scanButton;
+@property(nonatomic, strong) UITextView *outputView;
+@property(nonatomic, strong) UIActivityIndicatorView *spinner;
+@property(nonatomic) BOOL running;
 @end
-@implementation HMBaseController
-- (instancetype)init { return [super initWithStyle:UITableViewStyleInsetGrouped]; }
+
+@implementation HMHomeController
+
 - (void)viewDidLoad {
-    [super viewDidLoad]; self.tableView.rowHeight = UITableViewAutomaticDimension;
-    self.tableView.estimatedRowHeight = 75;
+    [super viewDidLoad];
+    self.title = @"河马清理";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
+
+    UILabel *titleLabel = [UILabel new];
+    titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    titleLabel.text = @"河马清理 1.2.0";
+    titleLabel.font = [UIFont systemFontOfSize:28 weight:UIFontWeightBold];
+    titleLabel.textAlignment = NSTextAlignmentCenter;
+
+    self.stateLabel = [UILabel new];
+    self.stateLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.stateLabel.text = @"准备就绪";
+    self.stateLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
+    self.stateLabel.textAlignment = NSTextAlignmentCenter;
+
+    self.detailLabel = [UILabel new];
+    self.detailLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.detailLabel.text = @"目标固定为河马剧场 com.cbn.hmjc\n自动处理主容器和全部 Crane 分身";
+    self.detailLabel.font = [UIFont systemFontOfSize:14];
+    self.detailLabel.textColor = UIColor.secondaryLabelColor;
+    self.detailLabel.textAlignment = NSTextAlignmentCenter;
+    self.detailLabel.numberOfLines = 0;
+
+    self.cleanButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.cleanButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.cleanButton setTitle:@"执行全部清理" forState:UIControlStateNormal];
+    [self.cleanButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    self.cleanButton.titleLabel.font = [UIFont systemFontOfSize:20 weight:UIFontWeightBold];
+    self.cleanButton.backgroundColor = UIColor.systemRedColor;
+    self.cleanButton.layer.cornerRadius = 14;
+    [self.cleanButton addTarget:self action:@selector(confirmClean) forControlEvents:UIControlEventTouchUpInside];
+
+    self.scanButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.scanButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.scanButton setTitle:@"只读检测容器" forState:UIControlStateNormal];
+    self.scanButton.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+    [self.scanButton addTarget:self action:@selector(scanOnly) forControlEvents:UIControlEventTouchUpInside];
+
+    self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+    self.spinner.translatesAutoresizingMaskIntoConstraints = NO;
+    self.spinner.hidesWhenStopped = YES;
+
+    self.outputView = [UITextView new];
+    self.outputView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.outputView.editable = NO;
+    self.outputView.selectable = YES;
+    self.outputView.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+    self.outputView.textColor = UIColor.labelColor;
+    self.outputView.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
+    self.outputView.layer.cornerRadius = 12;
+    self.outputView.textContainerInset = UIEdgeInsetsMake(12, 10, 12, 10);
+    self.outputView.text = @"点“只读检测容器”可先核对范围；点红色按钮执行完整清理。";
+
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[
+        titleLabel, self.stateLabel, self.detailLabel, self.cleanButton,
+        self.scanButton, self.spinner, self.outputView
+    ]];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 12;
+    [self.view addSubview:stack];
+
+    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:18],
+        [stack.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-18],
+        [stack.topAnchor constraintEqualToAnchor:safe.topAnchor constant:20],
+        [stack.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-16],
+        [self.cleanButton.heightAnchor constraintEqualToConstant:58],
+        [self.scanButton.heightAnchor constraintEqualToConstant:42],
+        [self.outputView.heightAnchor constraintGreaterThanOrEqualToConstant:240]
+    ]];
+    [titleLabel setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
+    [self.stateLabel setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
+    [self.detailLabel setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
+    [self.cleanButton setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
+    [self.scanButton setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
+    [self.spinner setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
 }
-- (void)run:(id (^)(NSError **error))work finish:(void (^)(id result, NSError *error))finish {
-    if (self.busy) return;
-    self.busy = YES; gEngine.cancelRequested = NO;
-    self.tableView.userInteractionEnabled = NO; self.navigationItem.hidesBackButton = YES;
-    for (UIBarButtonItem *button in self.toolbarItems) button.enabled = NO;
-    for (UIBarButtonItem *button in self.navigationItem.rightBarButtonItems) button.enabled = NO;
-    UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
-    [spinner startAnimating]; self.navigationItem.titleView = spinner;
-    __block UIBackgroundTaskIdentifier task = UIBackgroundTaskInvalid;
-    task = [UIApplication.sharedApplication beginBackgroundTaskWithName:@"HMCleaner operation" expirationHandler:^{
-        gEngine.cancelRequested = YES;
-        if (task != UIBackgroundTaskInvalid) { [UIApplication.sharedApplication endBackgroundTask:task]; task = UIBackgroundTaskInvalid; }
-    }];
-    dispatch_async(gWorker, ^{
-        @autoreleasepool {
-            NSError *error = nil; id result = nil;
-            @try { result = work(&error); }
-            @catch (NSException *exception) { error = HMError([@"操作异常，已停止：" stringByAppendingString:exception.reason ?: @"未知"]); }
+
+- (void)setBusy:(BOOL)busy label:(NSString *)label {
+    self.running = busy;
+    self.cleanButton.enabled = !busy;
+    self.scanButton.enabled = !busy;
+    self.cleanButton.alpha = busy ? 0.55 : 1.0;
+    self.scanButton.alpha = busy ? 0.55 : 1.0;
+    self.stateLabel.text = label;
+    if (busy) [self.spinner startAnimating]; else [self.spinner stopAnimating];
+}
+
+- (void)scanOnly {
+    [self runMode:@"list" destructive:NO];
+}
+
+- (void)confirmClean {
+    if (self.running) return;
+    NSString *message = @"将结束河马剧场，清空主容器和全部 Crane 分身，并删除河马钥匙串访问组。\n\n普通文件不会逐个备份，删除后不可恢复；钥匙串会先生成容器外备份。";
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"确认执行全部清理？"
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"执行清理"
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(UIAlertAction *action) {
+        [weakSelf runMode:@"all" destructive:YES];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)appendOutput:(NSString *)text {
+    self.outputView.text = text.length ? text : @"（没有输出）";
+    NSRange end = NSMakeRange(self.outputView.text.length, 0);
+    [self.outputView scrollRangeToVisible:end];
+}
+
+- (void)runMode:(NSString *)mode destructive:(BOOL)destructive {
+    if (self.running) return;
+    if (![@[@"list", @"all"] containsObject:mode]) {
+        HMShowMessage(self, @"拒绝执行", @"App 只允许固定的检测和全部清理模式。");
+        return;
+    }
+    if (![[NSFileManager defaultManager] isExecutableFileAtPath:HMHelperPath]) {
+        HMShowMessage(self, @"清理助手缺失", @"请通过 Sileo 重新安装完整的 HMCleaner 1.2.0 软件包。");
+        return;
+    }
+
+    [self setBusy:YES label:destructive ? @"正在清理，请勿打开河马…" : @"正在检测容器…"];
+    self.outputView.text = @"";
+    NSString *path = HMHelperPath;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        int pipes[2] = {-1, -1};
+        if (pipe(pipes) != 0) {
+            int saved = errno;
             dispatch_async(dispatch_get_main_queue(), ^{
-                if (task != UIBackgroundTaskInvalid) { [UIApplication.sharedApplication endBackgroundTask:task]; task = UIBackgroundTaskInvalid; }
-                self.busy = NO; self.tableView.userInteractionEnabled = YES; self.navigationItem.hidesBackButton = NO;
-                self.navigationItem.titleView = nil;
-                for (UIBarButtonItem *button in self.toolbarItems) button.enabled = YES;
-                for (UIBarButtonItem *button in self.navigationItem.rightBarButtonItems) button.enabled = YES;
-                finish(result, error);
+                [weakSelf finishMode:mode status:127 output:@"" launchError:saved];
             });
+            return;
         }
+
+        posix_spawn_file_actions_t actions;
+        posix_spawn_file_actions_init(&actions);
+        posix_spawn_file_actions_adddup2(&actions, pipes[1], STDOUT_FILENO);
+        posix_spawn_file_actions_adddup2(&actions, pipes[1], STDERR_FILENO);
+        posix_spawn_file_actions_addclose(&actions, pipes[0]);
+        posix_spawn_file_actions_addclose(&actions, pipes[1]);
+
+        pid_t pid = 0;
+        const char *executable = path.fileSystemRepresentation;
+        const char *argument = mode.UTF8String;
+        char *const argv[] = {(char *)executable, (char *)argument, NULL};
+        int spawnResult = posix_spawn(&pid, executable, &actions, NULL, argv, environ);
+        posix_spawn_file_actions_destroy(&actions);
+        close(pipes[1]);
+
+        if (spawnResult != 0) {
+            close(pipes[0]);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf finishMode:mode status:127 output:@"" launchError:spawnResult];
+            });
+            return;
+        }
+
+        NSMutableData *data = [NSMutableData data];
+        uint8_t buffer[4096];
+        ssize_t count = 0;
+        while ((count = read(pipes[0], buffer, sizeof(buffer))) > 0) {
+            [data appendBytes:buffer length:(NSUInteger)count];
+            NSString *partial = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+            if (partial) {
+                dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf appendOutput:partial]; });
+            }
+        }
+        close(pipes[0]);
+
+        int waitStatus = 0;
+        pid_t waited = 0;
+        do { waited = waitpid(pid, &waitStatus, 0); } while (waited < 0 && errno == EINTR);
+        int exitCode = waited < 0 ? 127 : (WIFEXITED(waitStatus) ? WEXITSTATUS(waitStatus) : 128 + WTERMSIG(waitStatus));
+        NSString *output = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"输出不是有效的 UTF-8";
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf finishMode:mode status:exitCode output:output launchError:0];
+        });
     });
 }
-@end
 
-@interface HMRecordController : HMBaseController
-@property(nonatomic, strong) NSDictionary *record;
-@property(nonatomic, copy) NSString *report;
-@end
-@implementation HMRecordController
-- (void)viewDidLoad {
-    [super viewDidLoad]; self.title = @"备份与验证";
-    self.report = HMReportText(self.record);
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"导出记录" style:UIBarButtonItemStylePlain target:self action:@selector(exportReport)];
-    self.toolbarItems = @[[[UIBarButtonItem alloc] initWithTitle:@"重新验证" style:UIBarButtonItemStylePlain target:self action:@selector(verify)],
-                         [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil],
-                         [[UIBarButtonItem alloc] initWithTitle:@"恢复缺失文件" style:UIBarButtonItemStylePlain target:self action:@selector(restore)]];
-}
-- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self.navigationController setToolbarHidden:NO animated:animated]; }
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return 2; }
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
-    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-    cell.selectionStyle = UITableViewCellSelectionStyleNone; cell.textLabel.numberOfLines = 0;
-    cell.textLabel.font = [UIFont systemFontOfSize:14];
-    cell.textLabel.text = path.row == 0 ? self.report : [NSString stringWithFormat:@"目标：%@\n容器 ID：%@\n主目录：%@\n\n恢复仅处理仍不存在的文件；不会覆盖重新生成的内容。恢复内容及基本权限，不恢复时间戳、ACL 和扩展属性。",
-                                                       HMTargetID, self.record[@"container"][@"id"], self.record[@"container"][@"root"]];
-    return cell;
-}
-- (void)verify {
-    [self run:^id(NSError **error) { return [gEngine verify:self.record error:error]; } finish:^(id result, NSError *error) {
-        if (result) { self.report = HMReportText(result); [self.tableView reloadData]; }
-        if (error) HMMessage(self, @"验证未完成", error.localizedDescription);
-    }];
-}
-- (void)restore {
-    NSString *message = [NSString stringWithFormat:@"容器：%@\n\n仅恢复这份备份中当前不存在的文件。已有内容不覆盖。请先划掉河马剧场。", self.record[@"container"][@"name"]];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"恢复文件内容" message:message preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"恢复缺失文件" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        [self run:^id(NSError **error) { return [gEngine restore:self.record error:error]; } finish:^(id result, NSError *error) {
-            if (result) { self.report = HMReportText(result); [self.tableView reloadData]; }
-            if (error) HMMessage(self, @"恢复未全部完成", error.localizedDescription);
-        }];
-    }]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
-- (void)exportReport {
-    // Sharing is user initiated; file contents and Keychain values are never included.
-    UIActivityViewController *share = [[UIActivityViewController alloc] initWithActivityItems:@[self.report] applicationActivities:nil];
-    share.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItem;
-    [self presentViewController:share animated:YES completion:nil];
-}
-@end
+- (void)finishMode:(NSString *)mode status:(int)status output:(NSString *)output launchError:(int)launchError {
+    if (launchError) {
+        NSString *reason = [NSString stringWithUTF8String:strerror(launchError)] ?: @"未知错误";
+        [self appendOutput:[NSString stringWithFormat:@"无法启动清理助手：%@ (%d)", reason, launchError]];
+        [self setBusy:NO label:@"启动失败"];
+        HMShowMessage(self, @"无法执行", self.outputView.text);
+        return;
+    }
 
-@interface HMScanController : HMBaseController
-@property(nonatomic, strong) NSDictionary *container;
-@property(nonatomic, strong) NSArray<HMScanItem *> *items;
-@property(nonatomic, copy) NSString *scanStatus;
-@end
-@implementation HMScanController
-- (void)viewDidLoad {
-    [super viewDidLoad]; self.title = self.container[@"name"];
-    self.scanStatus = @"尚未扫描";
-    self.toolbarItems = @[[[UIBarButtonItem alloc] initWithTitle:@"重新扫描" style:UIBarButtonItemStylePlain target:self action:@selector(scan)],
-                         [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil],
-                         [[UIBarButtonItem alloc] initWithTitle:@"备份并清理勾选项" style:UIBarButtonItemStylePlain target:self action:@selector(clean)]];
-    [self scan];
-}
-- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self.navigationController setToolbarHidden:NO animated:animated]; }
-- (void)scan {
-    self.items = nil; [self.tableView reloadData];
-    [self run:^id(NSError **error) { return [gEngine scan:self.container error:error]; } finish:^(id result, NSError *error) {
-        self.items = result;
-        self.scanStatus = error ? error.localizedDescription : @"扫描完成；勾选后才会清理。SDK 归属尚未证实，按文件证据分组。";
-        [self.tableView reloadData];
-    }];
-}
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 6; }
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0 || section == 4) return 1;
-    if (section == 5) return [self.container[@"paths"] count];
-    if (!self.items.count) return 0;
-    return section == 3 ? 1 : 2;
-}
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return @[@"所选容器", @"PID4SM / FP_SEQ", @"come2 / PdnuLKiM", @"缓存文件", @"钥匙串（待核实）", @"Crane 返回的目录（只读）"][section];
-}
-- (HMScanItem *)itemAt:(NSIndexPath *)path { return self.items[(path.section - 1) * 2 + path.row]; }
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
-    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
-    cell.textLabel.numberOfLines = 0; cell.detailTextLabel.numberOfLines = 0;
-    cell.textLabel.font = [UIFont systemFontOfSize:15]; cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
-    if (path.section == 0) {
-        cell.textLabel.text = self.scanStatus;
-        cell.detailTextLabel.text = [NSString stringWithFormat:@"河马剧场 · %@\n容器 ID：%@\n主目录：%@", HMTargetID, self.container[@"id"], self.container[@"root"]];
-    } else if (path.section == 4) {
-        cell.textLabel.text = @"未启用 · 不会清理钥匙串";
-        cell.detailTextLabel.text = @"日志里 FP_SEQ 的 service/account 可见，但实际访问组与容器映射尚未核实。其他项存在脱敏字段，不能据此制定删除规则。";
-    } else if (path.section == 5) {
-        NSDictionary *p = self.container[@"paths"][path.row];
-        NSArray *types = @[@"主应用", @"共享目录", @"扩展"];
-        NSInteger type = [p[@"type"] integerValue];
-        cell.textLabel.text = type >= 0 && type < 3 ? types[type] : @"其他";
-        cell.detailTextLabel.text = [NSString stringWithFormat:@"%@\n%@", p[@"id"], p[@"canonical"]];
+    [self appendOutput:output];
+    if (status == 0) {
+        BOOL cleaned = [mode isEqualToString:@"all"];
+        [self setBusy:NO label:cleaned ? @"清理完成" : @"检测完成"];
+        if (cleaned) HMShowMessage(self, @"清理完成", @"现在换 IP，把河马从后台划掉后重新打开，再进行注册。");
     } else {
-        HMScanItem *item = [self itemAt:path];
-        cell.textLabel.text = item.name; cell.detailTextLabel.text = item.summary;
-        cell.accessoryType = item.selected ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
-        cell.textLabel.textColor = item.readError ? UIColor.secondaryLabelColor : UIColor.labelColor;
-    }
-    return cell;
-}
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
-    [tableView deselectRowAtIndexPath:path animated:YES];
-    if (path.section >= 1 && path.section <= 3) {
-        HMScanItem *item = [self itemAt:path];
-        if (!item.readError) { item.selected = !item.selected; [tableView reloadRowsAtIndexPaths:@[path] withRowAnimation:UITableViewRowAnimationNone]; }
+        [self setBusy:NO label:[NSString stringWithFormat:@"执行失败（退出码 %d）", status]];
+        HMShowMessage(self, @"清理未完成", @"程序已按安全规则中止。请保留页面输出，不要连续重复点击。普通文件阶段已完成的删除不会自动回滚。");
     }
 }
-- (void)clean {
-    NSMutableArray *names = [NSMutableArray array];
-    for (HMScanItem *item in self.items) if (item.selected) [names addObject:item.name];
-    if (!names.count) { HMMessage(self, @"未勾选文件", @"请先勾选实际存在的文件。"); return; }
-    NSString *message = [NSString stringWithFormat:@"河马剧场 / %@\n容器 ID：%@\n\n%@\n\n先保存备份，再清理以上 %lu 项。请先划掉河马剧场，执行期间不要打开或切换容器。钥匙串不在本次范围。",
-                         self.container[@"name"], self.container[@"id"], [names componentsJoinedByString:@"\n"], (unsigned long)names.count];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"核对清理范围" message:message preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"备份并清理" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-        [self run:^id(NSError **error) { return [gEngine clean:self.container items:self.items error:error]; } finish:^(id result, NSError *error) {
-            // Invalidate old fingerprints even if only some files were changed.
-            self.items = nil; self.scanStatus = @"操作结束，请重新扫描"; [self.tableView reloadData];
-            if (result) { HMRecordController *record = [HMRecordController new]; record.record = result; [self.navigationController pushViewController:record animated:YES]; }
-            if (error) HMMessage(self, @"清理未完成", error.localizedDescription);
-        }];
-    }]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
-@end
 
-@interface HMHistoryController : HMBaseController
-@property(nonatomic, strong) NSArray<NSDictionary *> *records;
-@property(nonatomic, copy) NSString *status;
-@end
-@implementation HMHistoryController
-- (void)viewDidLoad {
-    [super viewDidLoad]; self.title = @"本机备份";
-    [self run:^id(NSError **error) { return [gEngine history:error]; } finish:^(id result, NSError *error) {
-        self.records = result; self.status = error ? [@"暂无可读取的备份：" stringByAppendingString:error.localizedDescription] : @"备份不会自动删除";
-        [self.tableView reloadData];
-    }];
-}
-- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self.navigationController setToolbarHidden:YES animated:animated]; }
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section { return self.status; }
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return self.records.count; }
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
-    NSDictionary *record = self.records[path.row];
-    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
-    cell.textLabel.text = record[@"container"][@"name"] ?: @"不完整记录";
-    cell.detailTextLabel.numberOfLines = 0;
-    cell.detailTextLabel.text = record[@"invalid"] ?: [NSString stringWithFormat:@"%@\n%lu 项 · %@", record[@"created"], (unsigned long)[record[@"entries"] count], record[@"prepared"]];
-    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator; return cell;
-}
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
-    [tableView deselectRowAtIndexPath:path animated:YES]; NSDictionary *record = self.records[path.row];
-    if (record[@"invalid"]) { HMMessage(self, @"记录不完整", record[@"invalid"]); return; }
-    HMRecordController *vc = [HMRecordController new]; vc.record = record; [self.navigationController pushViewController:vc animated:YES];
-}
-@end
-
-@interface HMHomeController : HMBaseController
-@property(nonatomic, strong) NSArray<NSDictionary *> *containers;
-@property(nonatomic, copy) NSString *status;
-@end
-@implementation HMHomeController
-- (void)viewDidLoad {
-    [super viewDidLoad]; self.title = @"河马清理 0.1.0";
-    self.navigationItem.rightBarButtonItems = @[[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh target:self action:@selector(refresh)],
-                                              [[UIBarButtonItem alloc] initWithTitle:@"备份" style:UIBarButtonItemStylePlain target:self action:@selector(history)]];
-    [self refresh];
-}
-- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self.navigationController setToolbarHidden:YES animated:animated]; }
-- (void)refresh {
-    [self run:^id(NSError **error) { return [gEngine.environment containers:error]; } finish:^(id result, NSError *error) {
-        self.containers = result;
-        self.status = error ? error.localizedDescription : @"选择要检查的容器。打开本 App 不会自动清理或写入目标容器。";
-        [self.tableView reloadData];
-    }];
-}
-- (void)history { [self.navigationController pushViewController:[HMHistoryController new] animated:YES]; }
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return section == 0 ? 1 : self.containers.count; }
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section { return section == 0 ? @"河马剧场 · com.cbn.hmjc" : @"Crane 容器"; }
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return section == 1 ? @"只处理日志列出的 5 个具体文件。共享目录、扩展目录只展示。钥匙串映射待核实，未启用清理。" : nil;
-}
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
-    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
-    cell.textLabel.numberOfLines = 0; cell.detailTextLabel.numberOfLines = 0;
-    if (!path.section) { cell.textLabel.text = self.status; cell.detailTextLabel.text = gEngine.environment.detail; }
-    else {
-        NSDictionary *row = self.containers[path.row];
-        cell.textLabel.text = row[@"name"];
-        cell.detailTextLabel.text = [row[@"problem"] length] ? row[@"problem"] : [NSString stringWithFormat:@"%@\n%@", row[@"id"], [row[@"active"] boolValue] ? @"Crane 最近启用的容器" : @"点按扫描预览"];
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    }
-    return cell;
-}
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
-    [tableView deselectRowAtIndexPath:path animated:YES]; if (!path.section) return;
-    NSDictionary *row = self.containers[path.row];
-    if ([row[@"problem"] length]) { HMMessage(self, @"容器无法确认", row[@"problem"]); return; }
-    HMScanController *vc = [HMScanController new]; vc.container = row;
-    [self.navigationController pushViewController:vc animated:YES];
-}
 @end
 
 @interface HMAppDelegate : UIResponder <UIApplicationDelegate>
 @property(nonatomic, strong) UIWindow *window;
 @end
+
 @implementation HMAppDelegate
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options {
-    gWorker = dispatch_queue_create("com.codex.hmcleaner.worker", DISPATCH_QUEUE_SERIAL);
-    gEngine = [[HMEngine alloc] initWithEnvironment:[HMEnvironment new] storePath:@"/private/var/mobile/Library/Application Support/HMCleaner/Backups"];
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    self.window.rootViewController = [[UINavigationController alloc] initWithRootViewController:[HMHomeController new]];
-    [self.window makeKeyAndVisible]; return YES;
+    HMHomeController *home = [HMHomeController new];
+    self.window.rootViewController = [[UINavigationController alloc] initWithRootViewController:home];
+    [self.window makeKeyAndVisible];
+    return YES;
 }
 @end
+
 int main(int argc, char **argv) {
-    @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(HMAppDelegate.class)); }
+    @autoreleasepool {
+        return UIApplicationMain(argc, argv, nil, NSStringFromClass(HMAppDelegate.class));
+    }
 }

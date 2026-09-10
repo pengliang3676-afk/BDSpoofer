@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
-<key>AllowedProcesses</key><array><string>com.codex.hmcleaner</string></array>
+<key>AllowedProcesses</key><array><string>com.peng.hmcleaner</string></array>
 <key>Extensions</key><dict>
 <key>com.apple.app-sandbox.mach</key><array><string>com.opa334.cranehelperd.xpc</string></array>
 <key>com.apple.security.exception.mach-lookup.global-name</key><array><string>com.opa334.cranehelperd.xpc</string></array>

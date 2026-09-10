@@ -15,6 +15,6 @@ jobs:
         run: bash HMCleaner/build.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: HMCleaner-0.1.0-RootHide
+          name: HMCleaner-1.2.0-RootHide
           path: dist-hmcleaner/
           if-no-files-found: error

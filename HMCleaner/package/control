@@ -1,8 +1,8 @@
 Package: com.peng.hmcleaner
-Name: HMCleaner (CLI)
-Version: 1.1.4
+Name: HMCleaner (legacy CLI)
+Version: 1.2.0
 Architecture: iphoneos-arm64e
-Description: External cleanup CLI for Hema (com.cbn.hmjc): stop app, wipe containers/Crane clones, clear keychain access group with backup. Run as root: hmcleaner all|ids|keychain|list.
+Description: Legacy command-line metadata retained for source compatibility. Use the 1.2.0 desktop App package.
 Maintainer: peng
 Author: peng
 Section: Utilities

@@ -1,9 +1,11 @@
-Package: com.codex.hmcleaner
+Package: com.peng.hmcleaner
 Name: 河马清理
-Version: 0.1.0
+Version: 1.2.0
 Architecture: iphoneos-arm64e
-Description: Preview, back up and clean selected local files in a verified Crane container.
-Maintainer: Codex
-Author: Codex
+Description: One-tap external cleanup app for Hema (com.cbn.hmjc), including Crane containers and the verified keychain access group.
+Maintainer: peng
+Author: peng
 Section: Utilities
 Depends: firmware (>= 15.0), rootless-compat (>= 0.9)
+Conflicts: com.codex.hmcleaner
+Replaces: com.codex.hmcleaner

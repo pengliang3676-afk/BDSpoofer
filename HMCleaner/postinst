@@ -1,6 +1,10 @@
 #!/bin/sh
 set -e
 # RootHide relocates the /Applications payload using rootless-compat.
+chown root:wheel /usr/local/bin/hmcleaner
+chmod 4755 /usr/local/bin/hmcleaner
+chown -R root:wheel /Applications/HMCleaner.app
+chmod 0755 /Applications/HMCleaner.app /Applications/HMCleaner.app/HMCleaner
 if command -v uicache >/dev/null 2>&1; then
     uicache -a >/dev/null 2>&1 || true
 fi
