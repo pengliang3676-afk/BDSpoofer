@@ -17,14 +17,14 @@ SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 for ARCH in arm64 arm64e; do
     xcrun --sdk iphoneos clang -arch "$ARCH" -isysroot "$SDK" -target "$ARCH-apple-ios15.0" \
         "${COMMON[@]}" -framework Foundation -framework UIKit \
-        HMCleaner/HMCleaner.m -o "$BUILD/HMCleaner-$ARCH"
+        HMCleaner/HMCleaner.m -o "$BUILD/gui-app-$ARCH"
     xcrun --sdk iphoneos clang -arch "$ARCH" -isysroot "$SDK" -target "$ARCH-apple-ios15.0" \
         "${COMMON[@]}" -framework Foundation -lsqlite3 \
-        HMCleaner/hmcleaner-standalone.m -o "$BUILD/hmcleaner-$ARCH"
+        HMCleaner/hmcleaner-standalone.m -o "$BUILD/root-helper-$ARCH"
 done
 
-xcrun lipo -create "$BUILD/HMCleaner-arm64" "$BUILD/HMCleaner-arm64e" -output "$APP/HMCleaner"
-xcrun lipo -create "$BUILD/hmcleaner-arm64" "$BUILD/hmcleaner-arm64e" -output "$HELPER"
+xcrun lipo -create "$BUILD/gui-app-arm64" "$BUILD/gui-app-arm64e" -output "$APP/HMCleaner"
+xcrun lipo -create "$BUILD/root-helper-arm64" "$BUILD/root-helper-arm64e" -output "$HELPER"
 cp HMCleaner/Info.plist "$APP/"
 swift HMCleaner/make_icon.swift "$APP"
 cp HMCleaner/control HMCleaner/postinst HMCleaner/prerm "$PKG/DEBIAN/"

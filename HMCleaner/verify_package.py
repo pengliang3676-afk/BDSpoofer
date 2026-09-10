@@ -81,12 +81,16 @@ with tarfile.open(fileobj=io.BytesIO(members["data.tar.gz"]), mode="r:gz") as ta
     assert info["CFBundleIdentifier"] == "com.peng.hmcleaner"
     assert info["CFBundleShortVersionString"] == "1.2.0"
     assert info["MinimumOSVersion"] == "15.0"
-    verify_fat_macho(tar.extractfile(app + "HMCleaner").read())
+    app_binary = tar.extractfile(app + "HMCleaner").read()
+    assert b"HMCLEANER_GUI_1_2_0" in app_binary
+    verify_fat_macho(app_binary)
 
     helper_name = "./usr/local/bin/hmcleaner"
     helper = entries[helper_name]
     assert stat.S_IMODE(helper.mode) == 0o4755, oct(stat.S_IMODE(helper.mode))
-    verify_fat_macho(tar.extractfile(helper_name).read())
+    helper_binary = tar.extractfile(helper_name).read()
+    assert b"HMCLEANER_GUI_1_2_0" not in helper_binary
+    verify_fat_macho(helper_binary)
 
 print("PASS: package metadata, desktop App, setuid helper, arm64 + arm64e and signatures")
 print("SHA-256:", digest)

@@ -8,6 +8,7 @@
 extern char **environ;
 
 static NSString *const HMHelperPath = @"/usr/local/bin/hmcleaner";
+static const char *const HMGUIBuildMarker __attribute__((used)) = "HMCLEANER_GUI_1_2_0";
 
 static void HMShowMessage(UIViewController *controller, NSString *title, NSString *message) {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
