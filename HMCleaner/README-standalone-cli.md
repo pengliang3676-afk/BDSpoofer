@@ -51,7 +51,8 @@ hmcleaner keychain   # 只清钥匙串访问组
 - **可恢复范围**：只有偏好 plist 和钥匙串在容器外有备份；all/ids 删除的普通文件与目录不逐个备份、不可恢复；
 - 整组删除会移除该访问组内全部条目（含登录凭据/证书），换号场景适用；需要保留登录态时不要用；
 - iCloud 钥匙串开启时 sync=1 条目理论上可能回补，工具会打印数量提示；
-- root shell CLI 不需要 GUI App 的 libSandy/平台 entitlement；
+- RootHide 上 root/SSH 进程仍可能继承沙盒；CLI 必须以 `platform-application`/`no-container`/`no-sandbox`/`AppDataContainers`
+  entitlement 签名才能读取应用容器，但不依赖 GUI 版的 libSandy Crane mach 扩展；
 - 只清本机，不影响云端历史画像；清理期间不要手动打开河马。
 
 ## 标准换号 SOP

@@ -6,6 +6,7 @@ on:
     paths:
       - "HMCleaner/hmcleaner-standalone.m"
       - "HMCleaner/README-standalone-cli.md"
+      - "HMCleaner/HMCleaner.entitlements"
       - "HMCleaner/package/control"
       - ".github/workflows/build-hmcleaner-cli.yml"
 
@@ -47,8 +48,11 @@ jobs:
       - name: Sign and package RootHide deb
         run: |
           set -euo pipefail
-          codesign --force --sign - --timestamp=none build-hmcleaner-cli/hmcleaner
+          codesign --force --sign - --timestamp=none \
+            --entitlements HMCleaner/HMCleaner.entitlements \
+            build-hmcleaner-cli/hmcleaner
           codesign --verify --strict build-hmcleaner-cli/hmcleaner
+          codesign -d --entitlements :- build-hmcleaner-cli/hmcleaner > entitlements.txt 2>&1
 
           PKG=pkgroot
           OUT=dist-hmcleaner-cli
@@ -61,7 +65,7 @@ jobs:
           COPYFILE_DISABLE=1 tar -C "$PKG/DEBIAN" -czf deb-parts/control.tar.gz .
           COPYFILE_DISABLE=1 tar -C "$PKG" --exclude='./DEBIAN' -czf deb-parts/data.tar.gz .
           (cd deb-parts && ar -rc "../$OUT/HMCleaner_1.1.4_iphoneos-arm64e.deb" debian-binary control.tar.gz data.tar.gz)
-          cp build-hmcleaner-cli/hmcleaner lipo-archs.txt HMCleaner/README-standalone-cli.md "$OUT/"
+          cp build-hmcleaner-cli/hmcleaner lipo-archs.txt entitlements.txt HMCleaner/README-standalone-cli.md "$OUT/"
 
       - name: Verify artifacts
         run: |
