@@ -23,6 +23,7 @@ jobs:
         run: |
           set -euo pipefail
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p build-hmcleaner-cli
           for ARCH in arm64 arm64e; do
             xcrun --sdk iphoneos clang \
               -arch "$ARCH" \
@@ -35,24 +36,24 @@ jobs:
               -framework Foundation \
               -lsqlite3 \
               HMCleaner/hmcleaner-standalone.m \
-              -o "hmcleaner.$ARCH"
+              -o "build-hmcleaner-cli/hmcleaner.$ARCH"
           done
-          xcrun lipo -create hmcleaner.arm64 hmcleaner.arm64e -output hmcleaner
-          xcrun lipo hmcleaner -verify_arch arm64 arm64e
-          xcrun lipo -archs hmcleaner | tee lipo-archs.txt
-          file hmcleaner
-          otool -L hmcleaner
+          xcrun lipo -create build-hmcleaner-cli/hmcleaner.arm64 build-hmcleaner-cli/hmcleaner.arm64e -output build-hmcleaner-cli/hmcleaner
+          xcrun lipo build-hmcleaner-cli/hmcleaner -verify_arch arm64 arm64e
+          xcrun lipo -archs build-hmcleaner-cli/hmcleaner | tee lipo-archs.txt
+          file build-hmcleaner-cli/hmcleaner
+          otool -L build-hmcleaner-cli/hmcleaner
 
       - name: Sign and package RootHide deb
         run: |
           set -euo pipefail
-          codesign --force --sign - --timestamp=none hmcleaner
-          codesign --verify --strict hmcleaner
+          codesign --force --sign - --timestamp=none build-hmcleaner-cli/hmcleaner
+          codesign --verify --strict build-hmcleaner-cli/hmcleaner
 
           PKG=pkgroot
           OUT=dist-hmcleaner-cli
           mkdir -p "$PKG/usr/local/bin" "$PKG/DEBIAN" "$OUT" deb-parts
-          cp hmcleaner "$PKG/usr/local/bin/hmcleaner"
+          cp build-hmcleaner-cli/hmcleaner "$PKG/usr/local/bin/hmcleaner"
           chmod 0755 "$PKG/usr/local/bin/hmcleaner"
           cp HMCleaner/package/control "$PKG/DEBIAN/control"
 
@@ -60,7 +61,7 @@ jobs:
           COPYFILE_DISABLE=1 tar -C "$PKG/DEBIAN" -czf deb-parts/control.tar.gz .
           COPYFILE_DISABLE=1 tar -C "$PKG" --exclude='./DEBIAN' -czf deb-parts/data.tar.gz .
           (cd deb-parts && ar -rc "../$OUT/HMCleaner_1.1.4_iphoneos-arm64e.deb" debian-binary control.tar.gz data.tar.gz)
-          cp hmcleaner lipo-archs.txt HMCleaner/README-standalone-cli.md "$OUT/"
+          cp build-hmcleaner-cli/hmcleaner lipo-archs.txt HMCleaner/README-standalone-cli.md "$OUT/"
 
       - name: Verify artifacts
         run: |
