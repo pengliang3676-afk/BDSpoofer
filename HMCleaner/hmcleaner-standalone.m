@@ -13,7 +13,6 @@
 #import <unistd.h>
 #import <signal.h>
 #import <sys/sysctl.h>
-#import <libproc.h>
 #import <sys/stat.h>
 #import <dlfcn.h>
 #import <errno.h>
@@ -110,9 +109,20 @@ static BOOL hm_realDir(NSString *p) {
 
 #pragma mark - 进程（失败即停）
 
+typedef int (*hm_proc_pidpath_fn)(int pid, void *buffer, uint32_t buffersize);
+
+static hm_proc_pidpath_fn hm_procPidPathFunction(void) {
+    static hm_proc_pidpath_fn fn;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ fn = (hm_proc_pidpath_fn)dlsym(RTLD_DEFAULT, "proc_pidpath"); });
+    return fn;
+}
+
 static NSDictionary<NSNumber *, NSString *> *hm_allProcessPaths(BOOL *ok) {
     *ok = YES;
     NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    hm_proc_pidpath_fn procPidPath = hm_procPidPathFunction();
+    if (!procPidPath) { *ok = NO; return out; }
     int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
     size_t need = 0;
     if (sysctl(mib, 4, NULL, &need, NULL, 0) < 0) { *ok = NO; return out; }
@@ -123,10 +133,10 @@ static NSDictionary<NSNumber *, NSString *> *hm_allProcessPaths(BOOL *ok) {
         int rc = sysctl(mib, 4, procs, &len, NULL, 0);
         if (rc == 0) {
             size_t cnt = len / sizeof(struct kinfo_proc);
-            char pb[PROC_PIDPATHINFO_MAXSIZE];
+            char pb[4096];
             for (size_t i = 0; i < cnt; i++) {
                 pid_t pid = procs[i].kp_proc.p_pid;
-                int n = proc_pidpath(pid, pb, sizeof(pb));
+                int n = procPidPath(pid, pb, sizeof(pb));
                 if (n > 0) out[@(pid)] = [NSString stringWithUTF8String:pb];
             }
             free(procs);
