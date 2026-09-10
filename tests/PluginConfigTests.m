@@ -24,7 +24,7 @@ int main(void) {
     @autoreleasepool {
         NSMutableDictionary *config=[BDSDefaultConfig() mutableCopy];
         BDSApplyInitialDefaults(config,nil);
-        assert(BDSRegularKeys().count==18 && BDSRiskKeys().count==8);
+        assert(BDSRegularKeys().count==21 && BDSRiskKeys().count==5);
         assert([config[@"configVersion"] integerValue]==188);
         assert(![config[@"blockStatCashTelemetry"] boolValue]);
         for(NSString *key in BDSRegularKeys()) assert([config[key] boolValue]);

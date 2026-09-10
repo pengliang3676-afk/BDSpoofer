@@ -11,13 +11,18 @@ config=plistlib.loads((root/'bdspoofer_config.plist').read_bytes())
 items=re.findall(r'@\{@"key":@"([^"]+)",@"name":@"[^"]+"(,@"off":@YES)?\}',policy)
 assert len(items)==26
 regular=[key for key,off in items if not off];risk=[key for key,off in items if off]
-assert len(regular)==18 and len(risk)==8
+assert len(regular)==21 and len(risk)==5
 assert all(config[k] is True for k in regular)
 assert all(config[k] is False for k in risk)
 advanced_keys=['spoofBaiduSDK','spoofSysctl','bypassJailbreakDetect','spoofKeychain','spoofAppGroup','spoofWebKitCookie','spoofUserAgent']
+advanced_on=advanced_keys[:3]
+advanced_off=advanced_keys[3:]
+assert all(key in regular and config[key] is True for key in advanced_on)
+assert all(key in risk and config[key] is False for key in advanced_off)
 targeted_keys=['spoofBaiduTargeted','spoofBaiduTargetedSystem','spoofBaiduTargetedModel','spoofBaiduTargetedScreen','spoofBaiduTargetedUA','spoofBaiduTargetedPush']
 default_block=plugin.split('static NSDictionary *BDSDefaultConfig(void)',1)[1].split('static void bds_update_c_cache(void)',1)[0]
-assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@NO',default_block) for key in advanced_keys)
+assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@YES',default_block) for key in advanced_on)
+assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@NO',default_block) for key in advanced_off)
 assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@NO',default_block) for key in targeted_keys)
 assert config['spoofScreen'] is False and config['configVersion']==188
 assert config['blockStatCashTelemetry'] is False
@@ -135,4 +140,4 @@ for name in names:assert function(plugin,name)==function(base,name),name
 for path in ['bdspoofer_config.plist','CraneManager/Info.plist','CraneManager/BDSCraneManager.entitlements','CraneManager/BDSCraneManager.libSandy.plist']:plistlib.loads((root/path).read_bytes())
 manager_info=plistlib.loads((root/'CraneManager/Info.plist').read_bytes())
 assert manager_info['CFBundleShortVersionString']=='1.0.3' and manager_info['CFBundleVersion']=='104' and 'UIApplicationExitsOnSuspend' not in manager_info
-print('PASS 1.8.2 UI1.2 / manager 1.0.3: v188, targeted defaults off and one-click enables all 5, all 7 advanced defaults off, 36 synchronized devices')
+print('PASS 1.8.2 UI1.2 / manager 1.0.3: v188, targeted defaults off and one-click enables all 5, advanced first 3 default on and last 4 default off, 36 synchronized devices')
