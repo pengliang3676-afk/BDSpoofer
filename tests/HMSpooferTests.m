@@ -191,6 +191,8 @@ static void testHooks(void) {
     CHECK(hm_install(HMTestChild.class, @selector(version), (IMP)versionHook, &originalVersion, @encode(NSOperatingSystemVersion)));
     CHECK([HMTestChild.new version].majorVersion == 11);
     CHECK([HMTestBase.new version].majorVersion == 1);
+    CHECK(hm_install(HMTestBase.class, @selector(version), (IMP)versionHook, &originalVersion, @encode(NSOperatingSystemVersion)));
+    CHECK([HMTestBase.new version].majorVersion == 11);
     puts("PASS Objective-C: complete return encoding, inherited method isolation, original IMP, struct return");
 }
 static void testProfiles(void) {

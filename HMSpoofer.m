@@ -306,7 +306,7 @@ static type hm_get_##slot(void) { \
     if (found) { \
         type empty = NULL; \
         atomic_compare_exchange_strong_explicit(&slot, &empty, found, \
-            memory_order_release, memory_order_acquire); \
+            memory_order_acq_rel, memory_order_acquire); \
     } \
     errno = saved; \
     return atomic_load_explicit(&slot, memory_order_acquire); \
@@ -731,8 +731,8 @@ static UIEdgeInsets hm_hook_windowSafe(id self, SEL cmd) {
 
 static BOOL hm_installObjCHooks(void) {
     BOOL ok = YES;
-#define HM_INSTALL(cls, selector, replacement, original, type) \
-    ok = hm_install(cls, @selector(selector), (IMP)replacement, &original, @encode(type)) && ok
+#define HM_INSTALL(cls, selName, replacement, original, type) \
+    ok = hm_install(cls, @selector(selName), (IMP)replacement, &original, @encode(type)) && ok
     Class dev = UIDevice.class, pi = NSProcessInfo.class, scr = UIScreen.class;
     HM_INSTALL(dev, systemVersion, hm_hook_systemVersion, orig_systemVersion, id);
     HM_INSTALL(dev, model, hm_hook_model, orig_model, id);
