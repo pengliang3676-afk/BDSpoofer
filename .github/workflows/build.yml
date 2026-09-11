@@ -57,7 +57,7 @@ jobs:
             otool -s __DATA __interpose "build/HMSpoofer.$ARCH" > "build/interpose.$ARCH.txt"
           done
           lipo -create build/HMSpoofer.arm64 build/HMSpoofer.arm64e -output build/HMSpoofer.dylib
-          lipo -verify_arch arm64 arm64e build/HMSpoofer.dylib
+          lipo build/HMSpoofer.dylib -verify_arch arm64 arm64e
           codesign --force --sign - --timestamp=none build/HMSpoofer.dylib
           codesign --verify --strict --verbose=2 build/HMSpoofer.dylib
           file build/HMSpoofer.dylib | tee build/architectures.txt
