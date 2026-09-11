@@ -1,0 +1,74 @@
+name: build-hmspoofer
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_15.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Locate source
+        run: |
+          set -euo pipefail
+          if [[ -f HMSpoofer.m ]]; then
+            echo 'SOURCE_DIR=.' >> "$GITHUB_ENV"
+          elif [[ -f HMSpoofer/HMSpoofer.m ]]; then
+            echo 'SOURCE_DIR=HMSpoofer' >> "$GITHUB_ENV"
+          else
+            echo 'HMSpoofer.m was not found' >&2
+            exit 1
+          fi
+          mkdir -p build
+          xcodebuild -version
+
+      - name: Run contract regression tests on macOS
+        run: |
+          set -euo pipefail
+          xcrun --sdk macosx clang -std=gnu11 -fobjc-arc -fblocks -O1 -g \
+            -Wall -Wextra -Wno-unused-function -Wno-unused-parameter \
+            -Werror=implicit-function-declaration -Werror=incompatible-pointer-types \
+            -framework Foundation -framework CoreGraphics \
+            "$SOURCE_DIR/tests/HMSpooferTests.m" -o build/HMSpooferTests
+          build/HMSpooferTests | tee build/tests.txt
+
+      - name: Build and validate arm64 + arm64e dylib
+        run: |
+          set -euo pipefail
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          for ARCH in arm64 arm64e; do
+            xcrun clang -target "$ARCH-apple-ios15.0" -isysroot "$SDK" \
+              -std=gnu11 -O2 -fno-inline -fobjc-arc -fblocks -dynamiclib \
+              -Wall -Wextra -Wno-unused-parameter -Wno-deprecated-declarations \
+              -Werror=implicit-function-declaration -Werror=incompatible-pointer-types \
+              -framework Foundation -framework UIKit -framework CoreGraphics \
+              -install_name @rpath/HMSpoofer.dylib \
+              "$SOURCE_DIR/HMSpoofer.m" -o "build/HMSpoofer.$ARCH"
+            otool -l "build/HMSpoofer.$ARCH" | tee "build/load-commands.$ARCH.txt"
+            grep -q 'sectname __interpose' "build/load-commands.$ARCH.txt"
+            otool -s __DATA __interpose "build/HMSpoofer.$ARCH" > "build/interpose.$ARCH.txt"
+          done
+          lipo -create build/HMSpoofer.arm64 build/HMSpoofer.arm64e -output build/HMSpoofer.dylib
+          lipo -verify_arch arm64 arm64e build/HMSpoofer.dylib
+          codesign --force --sign - --timestamp=none build/HMSpoofer.dylib
+          codesign --verify --strict --verbose=2 build/HMSpoofer.dylib
+          file build/HMSpoofer.dylib | tee build/architectures.txt
+          otool -L build/HMSpoofer.dylib > build/dependencies.txt
+          shasum -a 256 "$SOURCE_DIR/HMSpoofer.m" build/HMSpoofer.dylib | tee build/SHA256SUMS.txt
+          git rev-parse HEAD > build/commit.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HMSpoofer-1.1.1-dylib
+          path: |
+            build/HMSpoofer.dylib
+            build/*.txt
+          if-no-files-found: error
