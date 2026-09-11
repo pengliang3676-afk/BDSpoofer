@@ -33,12 +33,12 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 #import <os/lock.h>
 #import <objc/runtime.h>
 #import <mach/mach.h>
-#import <mach/mach_vm.h>
 #import <math.h>
 #import <string.h>
 
 static NSString *const HMVersion = @"1.1.1";
 static const NSInteger HMSchema = 2;
+_Static_assert(sizeof(vm_address_t) == sizeof(void *), "64-bit VM addresses are required");
 
 // ----------------------------- 门控 -----------------------------
 
@@ -327,15 +327,15 @@ static int hm_cReturn(int rv, int error) { --g_cDepth; errno = error; return rv;
 // 避免在 interposer 中直接解引用不可访问的用户指针，将访问错误交回调用方。
 static BOOL hm_readBytes(const void *source, void *destination, size_t size) {
     if (!size) return YES;
-    mach_vm_size_t copied = 0;
+    vm_size_t copied = 0;
     return source && destination &&
-        mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)(uintptr_t)source,
-            size, (mach_vm_address_t)(uintptr_t)destination, &copied) == KERN_SUCCESS && copied == size;
+        vm_read_overwrite(mach_task_self(), (vm_address_t)(uintptr_t)source,
+            size, (vm_address_t)(uintptr_t)destination, &copied) == KERN_SUCCESS && copied == size;
 }
 static BOOL hm_writeBytes(void *destination, const void *source, size_t size) {
     if (!size) return YES;
     return source && destination && size <= UINT32_MAX &&
-        mach_vm_write(mach_task_self(), (mach_vm_address_t)(uintptr_t)destination,
+        vm_write(mach_task_self(), (vm_address_t)(uintptr_t)destination,
             (vm_offset_t)(uintptr_t)source, (mach_msg_type_number_t)size) == KERN_SUCCESS;
 }
 
