@@ -17,14 +17,16 @@ int main(int argc,char **argv) {
         BDSSeedIdentityIfNeeded(config,YES);
         assert([config[@"configVersion"] integerValue]==188);
         assert(![config[@"blockStatCashTelemetry"] boolValue]);
-        for(NSString *key in BDSRegularKeys()) assert([config[key] boolValue]);
+        NSSet *basicSwitchSet=[NSSet setWithArray:BDSBasicKeys()];
+        for(NSString *key in BDSBasicKeys()) assert(![config[key] boolValue]);
+        for(NSString *key in BDSRegularKeys()) if(![basicSwitchSet containsObject:key]) assert([config[key] boolValue]);
         for(NSString *key in BDSRiskKeys()) assert(![config[key] boolValue]);
         assert(![config[@"spoofBaiduTargeted"] boolValue]);
         for(NSString *key in BDSSelectedTargetKeys()) assert(![config[key] boolValue]);
         NSString *retained=config[@"idfv"];config[@"idfa"]=@"";BDSSeedIdentityIfNeeded(config,NO);assert([retained isEqual:config[@"idfv"]]);assert([config[@"idfa"] length]>0);
         NSMutableSet *meta=[NSMutableSet setWithArray:@[@"managerGeneratedAt",@"managerProfileVersion",@"managerRandomMode",@"didRandomizeBasic",@"didRandomizeAdvanced",@"didRandomizeTargeted"]];
         NSMutableSet *advanced=[meta mutableCopy];[advanced addObjectsFromArray:@[@"idfa",@"idfv",@"deviceID",@"cuid",@"utdid"]];
-        NSMutableSet *basic=[meta mutableCopy];[basic addObjectsFromArray:@[@"deviceProfileName",@"deviceModel",@"marketingModel",@"systemVersion",@"systemBuild",@"kernOSVersion",@"hwMachine",@"hwModel",@"memorySize",@"diskSize",@"deviceName",@"kernHostname",@"screenWidth",@"screenHeight",@"screenScale",@"nativeScreenWidth",@"nativeScreenHeight",@"bootTimeOffsetSeconds",@"carrierName",@"mcc",@"mnc",@"isoCountryCode"]];
+        NSMutableSet *basic=[meta mutableCopy];[basic addObjectsFromArray:@[@"enabled",@"spoofAdvertisingIdentifiers",@"spoofProcessHardware",@"spoofLocale",@"spoofCarrier",@"spoofStorage",@"deviceProfileName",@"deviceModel",@"marketingModel",@"systemVersion",@"systemBuild",@"kernOSVersion",@"hwMachine",@"hwModel",@"memorySize",@"diskSize",@"deviceName",@"kernHostname",@"screenWidth",@"screenHeight",@"screenScale",@"nativeScreenWidth",@"nativeScreenHeight",@"bootTimeOffsetSeconds",@"carrierName",@"mcc",@"mnc",@"isoCountryCode"]];
         config[@"spoofBaiduTargeted"]=@YES;for(NSString *key in BDSTargetedKeys()) config[key]=@YES;
         config[@"spoofWiFi"]=@NO;config[@"spoofKeychain"]=@YES;
         for(int i=0;i<100;i++) {

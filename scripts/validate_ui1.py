@@ -12,7 +12,9 @@ items=re.findall(r'@\{@"key":@"([^"]+)",@"name":@"[^"]+"(,@"off":@YES)?\}',polic
 assert len(items)==26
 regular=[key for key,off in items if not off];risk=[key for key,off in items if off]
 assert len(regular)==21 and len(risk)==5
-assert all(config[k] is True for k in regular)
+basic_keys=['enabled','spoofAdvertisingIdentifiers','spoofProcessHardware','spoofLocale','spoofCarrier','spoofStorage']
+assert all(config[k] is False for k in basic_keys)
+assert all(config[k] is True for k in regular if k not in basic_keys)
 assert all(config[k] is False for k in risk)
 advanced_keys=['spoofBaiduSDK','spoofSysctl','bypassJailbreakDetect','spoofKeychain','spoofAppGroup','spoofWebKitCookie','spoofUserAgent']
 advanced_on=advanced_keys[:3]
@@ -24,6 +26,7 @@ default_block=plugin.split('static NSDictionary *BDSDefaultConfig(void)',1)[1].s
 assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@YES',default_block) for key in advanced_on)
 assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@NO',default_block) for key in advanced_off)
 assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@NO',default_block) for key in targeted_keys)
+assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@NO',default_block) for key in basic_keys)
 assert config['spoofScreen'] is False and config['configVersion']==188
 assert config['blockStatCashTelemetry'] is False
 assert 'blockStatCashTelemetry' in policy and 'blockStatCashTelemetry' in plugin

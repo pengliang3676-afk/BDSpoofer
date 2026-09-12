@@ -6,7 +6,7 @@
 //
 //  1.8.2 UI1.2：定向一键随机自动开启全部五项并生成整套定向参数。
 //  1.8.1 UI1：基于 1.8.1 合入独立定向指纹与统一设置界面。
-//    三组随机互不改写；基础、反关联常规及高级前 3 项首次初始化开启，高级后 4 项默认关闭。
+//    三组随机互不改写；基础功能 6 项首次初始化默认关闭（一键基础随机时开启），反关联常规及高级前 3 项首次初始化开启，高级后 4 项默认关闭。
 //    修复 UA 缓存短串、Push device_name 字段和独立屏幕元数据。
 //    反越狱检测的底层实现保持 1.8.1 原样，相关排查暂停。
 //  1.8.1：
@@ -175,13 +175,13 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"targetedPushHwMachine": @"iPhone14,6",
             @"targetedPushHwModel": @"D49AP",
             @"targetedGeneratedAt": @0,
-            @"enabled": @YES,
-            @"spoofAdvertisingIdentifiers": @YES,
-            @"spoofProcessHardware": @YES,
-            @"spoofLocale": @YES,
-            @"spoofCarrier": @YES,
+            @"enabled": @NO,
+            @"spoofAdvertisingIdentifiers": @NO,
+            @"spoofProcessHardware": @NO,
+            @"spoofLocale": @NO,
+            @"spoofCarrier": @NO,
             @"spoofScreen": @NO,
-            @"spoofStorage": @YES,
+            @"spoofStorage": @NO,
             @"spoofBaiduSDK": @YES,
             @"spoofSysctl": @YES,
             @"spoofKeychain": @NO,
@@ -3122,6 +3122,13 @@ static NSMutableDictionary *BDSRandomBaseValuesForPair(NSDictionary *device,
     NSNumber *disk = disks[arc4random_uniform((uint32_t)disks.count)];
 
     NSMutableDictionary *values = [NSMutableDictionary dictionary];
+    // 一键基础随机是显式动作：基础功能 6 项默认关闭，此时统一开启。
+    values[@"enabled"] = @YES;
+    values[@"spoofAdvertisingIdentifiers"] = @YES;
+    values[@"spoofProcessHardware"] = @YES;
+    values[@"spoofLocale"] = @YES;
+    values[@"spoofCarrier"] = @YES;
+    values[@"spoofStorage"] = @YES;
     NSString *deviceSuffix = [BDSRandomHex32(YES) substringToIndex:6];
     NSString *deviceName = [@"iPhone-" stringByAppendingString:deviceSuffix];
     // 保持本机真实屏幕，避免随机到大屏机型后界面被放大或缩小。

@@ -266,6 +266,13 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
         NSNumber *disk = disks[arc4random_uniform((uint32_t)disks.count)];
         NSString *deviceName = [NSString stringWithFormat:@"iPhone-%@", [BDSRandomHex(6, YES) uppercaseString]];
         [config addEntriesFromDictionary:@{
+            // 一键基础随机是显式动作：基础功能 6 项默认关闭，此时统一开启。
+            @"enabled": @YES,
+            @"spoofAdvertisingIdentifiers": @YES,
+            @"spoofProcessHardware": @YES,
+            @"spoofLocale": @YES,
+            @"spoofCarrier": @YES,
+            @"spoofStorage": @YES,
             @"deviceProfileName": device[@"name"],
             @"deviceModel": @"iPhone",
             @"marketingModel": @"iPhone",
@@ -925,7 +932,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     if (failures.count) [detail appendFormat:@"%@失败：\n%@", detail.length ? @"\n\n" : @"", [failures componentsJoinedByString:@"\n"]];
     if (successes.count) {
         if (mode == BDSRandomModeBasic) {
-            [detail appendString:@"\n\n仅基础参数已更换；高级身份、定向参数与所有开关保持不变。"];
+            [detail appendString:@"\n\n基础参数已更换，并开启基础功能 6 项；高级身份、定向参数与其他开关保持不变。"];
         } else if (mode == BDSRandomModeAdvanced) {
             [detail appendString:@"\n\n只更换 IDFA、IDFV、DeviceID、CUID、UTDID；其他参数和开关均未改变。"];
         } else {

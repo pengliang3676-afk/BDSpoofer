@@ -30,6 +30,11 @@ static NSArray<NSArray<NSDictionary *> *> *BDSSettingGroups(void) {
           @{@"key":@"blockStatCashTelemetry",@"name":@"阻止金额统计上报",@"off":@YES}]
     ];
 }
+static NSArray<NSString *> *BDSBasicKeys(void) {
+    NSMutableArray *keys=[NSMutableArray array];
+    for(NSDictionary *item in BDSSettingGroups()[0]) [keys addObject:item[@"key"]];
+    return keys;
+}
 static NSArray<NSString *> *BDSRegularKeys(void) {
     NSMutableArray *keys=[NSMutableArray array];
     for (NSArray *group in BDSSettingGroups()) for(NSDictionary *item in group)
@@ -103,6 +108,8 @@ static void BDSSeedInitialIdentities(NSMutableDictionary *config, NSDictionary *
 // Initialization is separate from randomization. Explicit saved choices survive.
 static void BDSApplyInitialDefaults(NSMutableDictionary *config, NSDictionary *saved) {
     for(NSString *key in BDSRegularKeys()) config[key]=saved[key] ?: @YES;
+    // 基础功能 6 项首次创建配置时默认关闭；已保存选择仍保留，一键基础随机时再显式开启。
+    for(NSString *key in BDSBasicKeys()) config[key]=saved[key] ?: @NO;
     for(NSString *key in BDSRiskKeys()) config[key]=saved[key] ?: @NO;
     for(NSString *key in BDSSelectedTargetKeys()) config[key]=saved[key] ?: @NO;
     config[@"spoofBaiduTargeted"]=saved[@"spoofBaiduTargeted"] ?: @NO;

@@ -27,7 +27,9 @@ int main(void) {
         assert(BDSRegularKeys().count==21 && BDSRiskKeys().count==5);
         assert([config[@"configVersion"] integerValue]==188);
         assert(![config[@"blockStatCashTelemetry"] boolValue]);
-        for(NSString *key in BDSRegularKeys()) assert([config[key] boolValue]);
+        NSSet *basicSwitchSet=[NSSet setWithArray:BDSBasicKeys()];
+        for(NSString *key in BDSBasicKeys()) assert(![config[key] boolValue]);
+        for(NSString *key in BDSRegularKeys()) if(![basicSwitchSet containsObject:key]) assert([config[key] boolValue]);
         for(NSString *key in BDSRiskKeys()) assert(![config[key] boolValue]);
         assert(![config[@"spoofBaiduTargeted"] boolValue]);
         for(NSString *key in BDSSelectedTargetKeys()) assert(![config[key] boolValue]);
@@ -36,7 +38,7 @@ int main(void) {
         config[@"spoofBaiduTargeted"]=@YES;
         g_config=[config copy];
         NSSet *identity=[NSSet setWithArray:@[@"idfa",@"idfv",@"deviceID",@"cuid",@"utdid",@"didRandomizeAdvanced"]];
-        NSSet *basic=[NSSet setWithArray:@[@"deviceProfileName",@"deviceModel",@"marketingModel",@"systemVersion",@"systemBuild",@"kernOSVersion",@"hwMachine",@"hwModel",@"memorySize",@"diskSize",@"deviceName",@"kernHostname",@"screenWidth",@"screenHeight",@"screenScale",@"nativeScreenWidth",@"nativeScreenHeight",@"bootTimeOffsetSeconds",@"carrierName",@"mcc",@"mnc",@"isoCountryCode",@"localeIdentifier",@"didRandomizeBasic"]];
+        NSSet *basic=[NSSet setWithArray:@[@"enabled",@"spoofAdvertisingIdentifiers",@"spoofProcessHardware",@"spoofLocale",@"spoofCarrier",@"spoofStorage",@"deviceProfileName",@"deviceModel",@"marketingModel",@"systemVersion",@"systemBuild",@"kernOSVersion",@"hwMachine",@"hwModel",@"memorySize",@"diskSize",@"deviceName",@"kernHostname",@"screenWidth",@"screenHeight",@"screenScale",@"nativeScreenWidth",@"nativeScreenHeight",@"bootTimeOffsetSeconds",@"carrierName",@"mcc",@"mnc",@"isoCountryCode",@"localeIdentifier",@"didRandomizeBasic"]];
         for(int i=0;i<100;i++) {
             NSDictionary *before=g_config;
             NSMutableDictionary *after=[before mutableCopy]; [after addEntriesFromDictionary:BDSRandomBasicProfileValues()];
