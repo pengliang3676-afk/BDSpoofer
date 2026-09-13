@@ -5,19 +5,19 @@
 	<key>configVersion</key>
 	<integer>188</integer>
 	<key>enabled</key>
-	<false/>
+	<true/>
 	<key>spoofScreen</key>
 	<false/>
 	<key>spoofAdvertisingIdentifiers</key>
-	<false/>
+	<true/>
 	<key>spoofProcessHardware</key>
-	<false/>
+	<true/>
 	<key>spoofLocale</key>
-	<false/>
+	<true/>
 	<key>spoofCarrier</key>
-	<false/>
+	<true/>
 	<key>spoofStorage</key>
-	<false/>
+	<true/>
 	<key>spoofBaiduSDK</key>
 	<true/>
 	<key>spoofSysctl</key>
@@ -71,35 +71,35 @@
 	<key>spoofBaiduTargetedPush</key>
 	<false/>
 	<key>targetedDeviceProfileName</key>
-	<string>iPhone SE (3rd generation)</string>
+	<string>iPhone 17 Pro Max</string>
 	<key>targetedSystemVersion</key>
-	<string>15.4.1</string>
+	<string>26.6</string>
 	<key>targetedSystemBuild</key>
-	<string>19E258</string>
+	<string>23G71</string>
 	<key>targetedHwMachine</key>
-	<string>iPhone14,6</string>
+	<string>iPhone18,2</string>
 	<key>targetedHwModel</key>
-	<string>D49AP</string>
+	<string>V54AP</string>
 	<key>targetedScreenWidth</key>
-	<integer>375</integer>
+	<integer>440</integer>
 	<key>targetedScreenHeight</key>
-	<integer>667</integer>
+	<integer>956</integer>
 	<key>targetedScreenScale</key>
-	<integer>2</integer>
+	<integer>3</integer>
 	<key>targetedNativeScreenWidth</key>
-	<integer>750</integer>
+	<integer>1320</integer>
 	<key>targetedNativeScreenHeight</key>
-	<integer>1334</integer>
+	<integer>2868</integer>
 	<key>targetedUASystemVersion</key>
-	<string>15.4.1</string>
+	<string>26.6</string>
 	<key>targetedUASystemBuild</key>
-	<string>19E258</string>
+	<string>23G71</string>
 	<key>targetedPushDeviceProfileName</key>
-	<string>iPhone SE (3rd generation)</string>
+	<string>iPhone 17 Pro Max</string>
 	<key>targetedPushHwMachine</key>
-	<string>iPhone14,6</string>
+	<string>iPhone18,2</string>
 	<key>targetedPushHwModel</key>
-	<string>D49AP</string>
+	<string>V54AP</string>
 	<key>targetedGeneratedAt</key>
 	<integer>0</integer>
 	<key>wifiSSID</key>
@@ -113,9 +113,9 @@
 	<key>marketingModel</key>
 	<string>iPhone</string>
 	<key>systemVersion</key>
-	<string>15.4.1</string>
+	<string>26.6</string>
 	<key>systemBuild</key>
-	<string>19E258</string>
+	<string>23G71</string>
 	<key>idfa</key>
 	<string></string>
 	<key>idfv</key>
@@ -137,29 +137,29 @@
 	<key>isoCountryCode</key>
 	<string>cn</string>
 	<key>diskSize</key>
-	<integer>64</integer>
+	<integer>256</integer>
 	<key>memorySize</key>
-	<integer>4096</integer>
+	<integer>12288</integer>
 	<key>kernHostname</key>
 	<string>iPhone</string>
 	<key>hwMachine</key>
-	<string>iPhone14,6</string>
+	<string>iPhone18,2</string>
 	<key>hwModel</key>
-	<string>D49AP</string>
+	<string>V54AP</string>
 	<key>kernOSVersion</key>
-	<string>19E258</string>
+	<string>23G71</string>
 	<key>deviceProfileName</key>
-	<string>iPhone SE (3rd generation)</string>
+	<string>iPhone 17 Pro Max</string>
 	<key>screenWidth</key>
-	<integer>375</integer>
+	<integer>440</integer>
 	<key>screenHeight</key>
-	<integer>667</integer>
+	<integer>956</integer>
 	<key>screenScale</key>
-	<integer>2</integer>
+	<integer>3</integer>
 	<key>nativeScreenWidth</key>
-	<integer>750</integer>
+	<integer>1320</integer>
 	<key>nativeScreenHeight</key>
-	<integer>1334</integer>
+	<integer>2868</integer>
 	<key>localeIdentifier</key>
 	<string>zh_CN</string>
 	<key>floatingButtonSide</key>
@@ -167,6 +167,6 @@
 	<key>floatingButtonYPermille</key>
 	<integer>520</integer>
 	<key>targetedScreenHwMachine</key>
-	<string>iPhone14,6</string>
+	<string>iPhone18,2</string>
 </dict>
 </plist>

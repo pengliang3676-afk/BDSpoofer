@@ -6,7 +6,7 @@
 //
 //  1.8.2 UI1.2：定向一键随机自动开启全部五项并生成整套定向参数。
 //  1.8.1 UI1：基于 1.8.1 合入独立定向指纹与统一设置界面。
-//    三组随机互不改写；基础功能 6 项首次初始化默认关闭（一键基础随机时开启），反关联常规及高级前 3 项首次初始化开启，高级后 4 项默认关闭。
+//    三组随机互不改写；基础功能 7 项（含系统硬件参数）首次初始化默认开启，高级前 2 项首次初始化开启，高级后 4 项默认关闭。
 //    修复 UA 缓存短串、Push device_name 字段和独立屏幕元数据。
 //    反越狱检测的底层实现保持 1.8.1 原样，相关排查暂停。
 //  1.8.1：
@@ -122,9 +122,9 @@ static int g_spoofStatfsC = 0;
 static int g_spoofDlopenC = 0;
 
 // C hook 使用的缓存伪造值（constructor 和 saveConfigValues 中更新）
-static char g_hwMachine[32] = "iPhone14,6";
-static char g_hwModel[32] = "D49AP";
-static char g_kernOSVersion[16] = "19E258";
+static char g_hwMachine[32] = "iPhone18,2";
+static char g_hwModel[32] = "V54AP";
+static char g_kernOSVersion[16] = "23G71";
 static char g_kernHostname[65] = "iPhone";
 static char g_wifiSSID[64] = "";
 
@@ -137,7 +137,7 @@ static int g_fakePhysicalCPU = 6;
 static int g_fakeActiveCPU = 6;
 
 // 磁盘大小（字节），C hook 使用，constructor 和 saveConfigValues 中更新
-static long long g_fakeDiskSizeBytes = 64LL * 1024 * 1024 * 1024;
+static long long g_fakeDiskSizeBytes = 256LL * 1024 * 1024 * 1024;
 
 static inline long long bds_disk_size_get(void) {
     return __atomic_load_n(&g_fakeDiskSizeBytes, __ATOMIC_RELAXED);
@@ -158,30 +158,31 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"spoofBaiduTargetedScreen": @NO,
             @"spoofBaiduTargetedUA": @NO,
             @"spoofBaiduTargetedPush": @NO,
-            @"targetedDeviceProfileName": @"iPhone SE (3rd generation)",
-            @"targetedSystemVersion": @"15.4.1",
-            @"targetedSystemBuild": @"19E258",
-            @"targetedHwMachine": @"iPhone14,6",
-            @"targetedHwModel": @"D49AP",
-            @"targetedScreenHwMachine": @"iPhone14,6",
-            @"targetedScreenWidth": @375,
-            @"targetedScreenHeight": @667,
-            @"targetedScreenScale": @2,
-            @"targetedNativeScreenWidth": @750,
-            @"targetedNativeScreenHeight": @1334,
-            @"targetedUASystemVersion": @"15.4.1",
-            @"targetedUASystemBuild": @"19E258",
-            @"targetedPushDeviceProfileName": @"iPhone SE (3rd generation)",
-            @"targetedPushHwMachine": @"iPhone14,6",
-            @"targetedPushHwModel": @"D49AP",
+            @"targetedDeviceProfileName": @"iPhone 17 Pro Max",
+            @"targetedSystemVersion": @"26.6",
+            @"targetedSystemBuild": @"23G71",
+            @"targetedHwMachine": @"iPhone18,2",
+            @"targetedHwModel": @"V54AP",
+            @"targetedScreenHwMachine": @"iPhone18,2",
+            @"targetedScreenWidth": @440,
+            @"targetedScreenHeight": @956,
+            @"targetedScreenScale": @3,
+            @"targetedNativeScreenWidth": @1320,
+            @"targetedNativeScreenHeight": @2868,
+            @"targetedUASystemVersion": @"26.6",
+            @"targetedUASystemBuild": @"23G71",
+            @"targetedPushDeviceProfileName": @"iPhone 17 Pro Max",
+            @"targetedPushHwMachine": @"iPhone18,2",
+            @"targetedPushHwModel": @"V54AP",
             @"targetedGeneratedAt": @0,
-            @"enabled": @NO,
-            @"spoofAdvertisingIdentifiers": @NO,
-            @"spoofProcessHardware": @NO,
-            @"spoofLocale": @NO,
-            @"spoofCarrier": @NO,
+            @"enabled": @YES,
+            @"spoofAdvertisingIdentifiers": @YES,
+            @"spoofProcessHardware": @YES,
+            @"spoofSysctl": @YES,
+            @"spoofLocale": @YES,
+            @"spoofCarrier": @YES,
             @"spoofScreen": @NO,
-            @"spoofStorage": @NO,
+            @"spoofStorage": @YES,
             @"spoofBaiduSDK": @YES,
             @"spoofSysctl": @YES,
             @"spoofKeychain": @NO,
@@ -204,14 +205,19 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"blockStatCashTelemetry": @NO,
             @"wifiSSID": @"",
             @"bootTimeOffsetSeconds": @0,
-            @"deviceProfileName": @"iPhone SE (3rd generation)",
-            @"systemVersion": @"15.4.1",
-            @"systemBuild": @"19E258",
-            @"kernOSVersion": @"19E258",
-            @"hwMachine": @"iPhone14,6",
-            @"hwModel": @"D49AP",
-            @"memorySize": @4096,
-            @"diskSize": @64,
+            @"deviceProfileName": @"iPhone 17 Pro Max",
+            @"systemVersion": @"26.6",
+            @"systemBuild": @"23G71",
+            @"kernOSVersion": @"23G71",
+            @"hwMachine": @"iPhone18,2",
+            @"hwModel": @"V54AP",
+            @"memorySize": @12288,
+            @"diskSize": @256,
+            @"screenWidth": @440,
+            @"screenHeight": @956,
+            @"screenScale": @3,
+            @"nativeScreenWidth": @1320,
+            @"nativeScreenHeight": @2868,
             @"floatingButtonSide": @"right",
             @"floatingButtonYPermille": @520
         };
@@ -252,11 +258,11 @@ static BOOL BDSHasEnabledCHookFeature(void) {
 
 static void bds_update_c_cache(void) {
     NSString *v;
-    v = cfgStr(@"hwMachine", @"iPhone14,6");
+    v = cfgStr(@"hwMachine", @"iPhone18,2");
     snprintf(g_hwMachine, sizeof(g_hwMachine), "%s", v.UTF8String);
-    v = cfgStr(@"hwModel", @"D49AP");
+    v = cfgStr(@"hwModel", @"V54AP");
     snprintf(g_hwModel, sizeof(g_hwModel), "%s", v.UTF8String);
-    v = cfgStr(@"kernOSVersion", @"19E258");
+    v = cfgStr(@"kernOSVersion", @"23G71");
     snprintf(g_kernOSVersion, sizeof(g_kernOSVersion), "%s", v.UTF8String);
     v = cfgStr(@"kernHostname", @"iPhone");
     snprintf(g_kernHostname, sizeof(g_kernHostname), "%s", v.UTF8String);
@@ -268,7 +274,7 @@ static void bds_update_c_cache(void) {
     } else {
         memcpy(g_wifiSSID, wifiUTF8, wifiLength + 1);
     }
-    bds_disk_size_set((long long)cfgInt(@"diskSize", 64) * 1024LL * 1024LL * 1024LL);
+    bds_disk_size_set((long long)cfgInt(@"diskSize", 256) * 1024LL * 1024LL * 1024LL);
 }
 
 static void loadConfig() {
@@ -483,11 +489,11 @@ static void loadConfig() {
         merged[@"spoofBaiduTargetedScreen"] = @NO;
         merged[@"spoofBaiduTargetedUA"] = @NO;
         merged[@"spoofBaiduTargetedPush"] = @NO;
-        if (!loaded[@"targetedUASystemVersion"]) merged[@"targetedUASystemVersion"] = merged[@"targetedSystemVersion"] ?: @"15.4.1";
-        if (!loaded[@"targetedUASystemBuild"]) merged[@"targetedUASystemBuild"] = merged[@"targetedSystemBuild"] ?: @"19E258";
-        if (!loaded[@"targetedPushDeviceProfileName"]) merged[@"targetedPushDeviceProfileName"] = merged[@"targetedDeviceProfileName"] ?: @"iPhone SE (3rd generation)";
-        if (!loaded[@"targetedPushHwMachine"]) merged[@"targetedPushHwMachine"] = merged[@"targetedHwMachine"] ?: @"iPhone14,6";
-        if (!loaded[@"targetedPushHwModel"]) merged[@"targetedPushHwModel"] = merged[@"targetedHwModel"] ?: @"D49AP";
+        if (!loaded[@"targetedUASystemVersion"]) merged[@"targetedUASystemVersion"] = merged[@"targetedSystemVersion"] ?: @"26.6";
+        if (!loaded[@"targetedUASystemBuild"]) merged[@"targetedUASystemBuild"] = merged[@"targetedSystemBuild"] ?: @"23G71";
+        if (!loaded[@"targetedPushDeviceProfileName"]) merged[@"targetedPushDeviceProfileName"] = merged[@"targetedDeviceProfileName"] ?: @"iPhone 17 Pro Max";
+        if (!loaded[@"targetedPushHwMachine"]) merged[@"targetedPushHwMachine"] = merged[@"targetedHwMachine"] ?: @"iPhone18,2";
+        if (!loaded[@"targetedPushHwModel"]) merged[@"targetedPushHwModel"] = merged[@"targetedHwModel"] ?: @"V54AP";
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 187 || !loaded[@"blockStatCashTelemetry"] || loaded[@"spoofStatCash"]) {
@@ -894,7 +900,7 @@ static int bds_c_is_jailbreak_path(const char *path) {
 static IMP orig_systemVersion = NULL;
 static NSString *new_systemVersion(id self, SEL _cmd) {
     BDS_DIAG_RECORD(g_diagUIDevice, BDSDiagStateChanged);
-    return cfgStr(@"systemVersion", @"15.4.1");
+    return cfgStr(@"systemVersion", @"26.6");
 }
 
 static IMP orig_model = NULL;
@@ -1009,8 +1015,8 @@ static NSUUID *new_advertisingIdentifier(id self, SEL _cmd) {
 static IMP orig_operatingSystemVersionString = NULL;
 static NSString *new_operatingSystemVersionString(id self, SEL _cmd) {
     BDS_DIAG_RECORD(g_diagProcess, BDSDiagStateChanged);
-    NSString *v = cfgStr(@"systemVersion", @"15.4.1");
-    NSString *b = cfgStr(@"systemBuild", @"19E258");
+    NSString *v = cfgStr(@"systemVersion", @"26.6");
+    NSString *b = cfgStr(@"systemBuild", @"23G71");
     return [NSString stringWithFormat:@"Version %@ (Build %@)", v, b];
 }
 
@@ -1018,7 +1024,7 @@ static IMP orig_operatingSystemVersion = NULL;
 static NSOperatingSystemVersion new_operatingSystemVersion(id self, SEL _cmd) {
     BDS_DIAG_RECORD(g_diagProcess, BDSDiagStateChanged);
     NSOperatingSystemVersion v = {15, 7, 1};
-    NSString *s = cfgStr(@"systemVersion", @"15.4.1");
+    NSString *s = cfgStr(@"systemVersion", @"26.6");
     NSArray *p = [s componentsSeparatedByString:@"."];
     if (p.count >= 1) v.majorVersion = [p[0] integerValue];
     if (p.count >= 2) v.minorVersion = [p[1] integerValue];
@@ -1035,7 +1041,7 @@ static NSString *new_hostName(id self, SEL _cmd) {
 static IMP orig_physicalMemory = NULL;
 static unsigned long long new_physicalMemory(id self, SEL _cmd) {
     BDS_DIAG_RECORD(g_diagProcess, BDSDiagStateChanged);
-    return (unsigned long long)cfgInt(@"memorySize", 4096) * 1024 * 1024;
+    return (unsigned long long)cfgInt(@"memorySize", 12288) * 1024 * 1024;
 }
 
 #pragma mark - NSLocale Hook
@@ -1097,26 +1103,26 @@ static BOOL new_allowsVOIP(id self, SEL _cmd) {
 static IMP orig_bounds = NULL;
 static CGRect new_bounds(id self, SEL _cmd) {
     BDS_DIAG_RECORD(g_diagScreenStorage, BDSDiagStateChanged);
-    CGFloat w = cfgInt(@"screenWidth", 375);
-    CGFloat h = cfgInt(@"screenHeight", 667);
+    CGFloat w = cfgInt(@"screenWidth", 440);
+    CGFloat h = cfgInt(@"screenHeight", 956);
     return CGRectMake(0, 0, w, h);
 }
 
 static IMP orig_nativeBounds = NULL;
 static CGRect new_nativeBounds(id self, SEL _cmd) {
     BDS_DIAG_RECORD(g_diagScreenStorage, BDSDiagStateChanged);
-    CGFloat scale = (CGFloat)cfgInt(@"screenScale", 2);
+    CGFloat scale = (CGFloat)cfgInt(@"screenScale", 3);
     CGFloat w = (CGFloat)cfgInt(@"nativeScreenWidth",
-                                cfgInt(@"screenWidth", 375) * scale);
+                                cfgInt(@"screenWidth", 440) * scale);
     CGFloat h = (CGFloat)cfgInt(@"nativeScreenHeight",
-                                cfgInt(@"screenHeight", 667) * scale);
+                                cfgInt(@"screenHeight", 956) * scale);
     return CGRectMake(0, 0, w, h);
 }
 
 static IMP orig_scale = NULL;
 static CGFloat new_scale(id self, SEL _cmd) {
     BDS_DIAG_RECORD(g_diagScreenStorage, BDSDiagStateChanged);
-    return (CGFloat)cfgInt(@"screenScale", 2);
+    return (CGFloat)cfgInt(@"screenScale", 3);
 }
 
 #pragma mark - NSFileManager Hook（磁盘大小）
@@ -1133,7 +1139,7 @@ static NSDictionary *new_attributesOfFileSystemForPath(id self, SEL _cmd, id pat
     }
     BDS_DIAG_RECORD(g_diagScreenStorage, BDSDiagStateChanged);
     NSMutableDictionary *m = [orig mutableCopy];
-    long long diskSize = cfgInt(@"diskSize", 64) * 1024LL * 1024LL * 1024LL;
+    long long diskSize = cfgInt(@"diskSize", 256) * 1024LL * 1024LL * 1024LL;
     m[NSFileSystemSize] = @(diskSize);
     m[NSFileSystemFreeSize] = @(diskSize / 2);
     return m;
@@ -1295,10 +1301,10 @@ static void installBaiduSDKHooks(void) {
 // 定向专用 profile 驱动；与基础随机参数分库存储、互不覆盖。
 
 // ---- 定向 profile 取值（缺省给 SE3 安全兜底）----
-static NSString *tg_ios_version(void) { return cfgStr(@"targetedSystemVersion", @"15.4.1"); }
+static NSString *tg_ios_version(void) { return cfgStr(@"targetedSystemVersion", @"26.6"); }
 static NSString *tg_ua_ios_version(void) { return cfgStr(@"targetedUASystemVersion", tg_ios_version()); }
 static NSString *tg_ua_ios_under(void)   { return [tg_ua_ios_version() stringByReplacingOccurrencesOfString:@"." withString:@"_"]; }
-static NSString *tg_machine(void)     { return cfgStr(@"targetedHwMachine", @"iPhone14,6"); }
+static NSString *tg_machine(void)     { return cfgStr(@"targetedHwMachine", @"iPhone18,2"); }
 static NSString *tg_marketing(void) {
     NSString *n = cfgStr(@"targetedDeviceProfileName", @"");
     if (n.length) return n;
@@ -3122,10 +3128,11 @@ static NSMutableDictionary *BDSRandomBaseValuesForPair(NSDictionary *device,
     NSNumber *disk = disks[arc4random_uniform((uint32_t)disks.count)];
 
     NSMutableDictionary *values = [NSMutableDictionary dictionary];
-    // 一键基础随机是显式动作：基础功能 6 项默认关闭，此时统一开启。
+    // 一键基础随机是显式动作：基础功能 7 项统一开启。
     values[@"enabled"] = @YES;
     values[@"spoofAdvertisingIdentifiers"] = @YES;
     values[@"spoofProcessHardware"] = @YES;
+    values[@"spoofSysctl"] = @YES;
     values[@"spoofLocale"] = @YES;
     values[@"spoofCarrier"] = @YES;
     values[@"spoofStorage"] = @YES;
@@ -3199,22 +3206,22 @@ static NSDictionary *BDSRandomTargetedProfileValues(void) {
         @"spoofBaiduTargetedPush": @YES,
         @"targetedGeneratedAt": @((long long)NSDate.date.timeIntervalSince1970),
         @"didRandomizeTargeted": @YES,
-        @"targetedSystemVersion": system[@"version"] ?: @"15.4.1",
-        @"targetedSystemBuild": system[@"build"] ?: @"19E258",
-        @"targetedDeviceProfileName": device[@"name"] ?: @"iPhone",
-        @"targetedHwMachine": device[@"machine"] ?: @"iPhone14,6",
-        @"targetedHwModel": device[@"model"] ?: @"D49AP",
-        @"targetedScreenHwMachine": device[@"machine"] ?: @"iPhone14,6",
-        @"targetedScreenWidth": device[@"width"] ?: @375,
-        @"targetedScreenHeight": device[@"height"] ?: @667,
-        @"targetedScreenScale": device[@"scale"] ?: @2,
-        @"targetedNativeScreenWidth": device[@"nativeWidth"] ?: @750,
-        @"targetedNativeScreenHeight": device[@"nativeHeight"] ?: @1334,
-        @"targetedUASystemVersion": system[@"version"] ?: @"15.4.1",
-        @"targetedUASystemBuild": system[@"build"] ?: @"19E258",
-        @"targetedPushDeviceProfileName": device[@"name"] ?: @"iPhone",
-        @"targetedPushHwMachine": device[@"machine"] ?: @"iPhone14,6",
-        @"targetedPushHwModel": device[@"model"] ?: @"D49AP"
+        @"targetedSystemVersion": system[@"version"] ?: @"26.6",
+        @"targetedSystemBuild": system[@"build"] ?: @"23G71",
+        @"targetedDeviceProfileName": device[@"name"] ?: @"iPhone 17 Pro Max",
+        @"targetedHwMachine": device[@"machine"] ?: @"iPhone18,2",
+        @"targetedHwModel": device[@"model"] ?: @"V54AP",
+        @"targetedScreenHwMachine": device[@"machine"] ?: @"iPhone18,2",
+        @"targetedScreenWidth": device[@"width"] ?: @440,
+        @"targetedScreenHeight": device[@"height"] ?: @956,
+        @"targetedScreenScale": device[@"scale"] ?: @3,
+        @"targetedNativeScreenWidth": device[@"nativeWidth"] ?: @1320,
+        @"targetedNativeScreenHeight": device[@"nativeHeight"] ?: @2868,
+        @"targetedUASystemVersion": system[@"version"] ?: @"26.6",
+        @"targetedUASystemBuild": system[@"build"] ?: @"23G71",
+        @"targetedPushDeviceProfileName": device[@"name"] ?: @"iPhone 17 Pro Max",
+        @"targetedPushHwMachine": device[@"machine"] ?: @"iPhone18,2",
+        @"targetedPushHwModel": device[@"model"] ?: @"V54AP"
     } mutableCopy];
     return values;
 }
@@ -3230,7 +3237,7 @@ static NSString *BDSConfigSummary(void) {
         cfgStr(@"deviceProfileName", cfgStr(@"hwMachine", @"未设置")), cfgStr(@"systemVersion", @"未设置"),
         BDSRandomRunText(@"basic")];
 
-    NSArray<NSString *> *advancedKeys = @[@"spoofBaiduSDK", @"spoofSysctl", @"bypassJailbreakDetect"];
+    NSArray<NSString *> *advancedKeys = @[@"spoofBaiduSDK", @"bypassJailbreakDetect"];
     BOOL advancedEnabled = NO;
     for (NSString *key in advancedKeys) if (cfgBool(key, NO)) { advancedEnabled = YES; break; }
     [summary appendFormat:@"\n\n高级功能：%@",
@@ -3476,12 +3483,12 @@ static NSString *BDSConfigSummary(void) {
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
         field.placeholder = @"例如 15.7.1";
-        field.text = cfgStr(@"systemVersion", @"15.4.1");
+        field.text = cfgStr(@"systemVersion", @"26.6");
         field.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
     }];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
         field.placeholder = @"例如 19H117";
-        field.text = cfgStr(@"systemBuild", @"19E258");
+        field.text = cfgStr(@"systemBuild", @"23G71");
         field.autocapitalizationType = UITextAutocapitalizationTypeAllCharacters;
     }];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
@@ -3887,9 +3894,9 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
                                                                    message:@"这些值必须与设备型号匹配，否则容易被识别。"
                                                             preferredStyle:UIAlertControllerStyleAlert];
     NSArray<NSDictionary *> *fields = @[
-        @{@"key": @"hwMachine", @"default": @"iPhone14,6", @"placeholder": @"hw.machine，例如 iPhone14,6"},
-        @{@"key": @"hwModel", @"default": @"D49AP", @"placeholder": @"hw.model，例如 D49AP"},
-        @{@"key": @"kernOSVersion", @"default": @"19E258", @"placeholder": @"kern.osversion，例如 19E258"}
+        @{@"key": @"hwMachine", @"default": @"iPhone18,2", @"placeholder": @"hw.machine，例如 iPhone18,2"},
+        @{@"key": @"hwModel", @"default": @"V54AP", @"placeholder": @"hw.model，例如 V54AP"},
+        @{@"key": @"kernOSVersion", @"default": @"23G71", @"placeholder": @"kern.osversion，例如 23G71"}
     ];
     for (NSDictionary *info in fields) {
         [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
@@ -3973,7 +3980,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
         field.autocapitalizationType = UITextAutocapitalizationTypeNone;
     }];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.text = [NSString stringWithFormat:@"%ld", (long)cfgInt(@"memorySize", 4096)];
+        field.text = [NSString stringWithFormat:@"%ld", (long)cfgInt(@"memorySize", 12288)];
         field.placeholder = @"内存 MB（512 到 16384）";
         field.keyboardType = UIKeyboardTypeNumberPad;
     }];
@@ -4266,14 +4273,14 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
          @"内存(MB)\n原始 %llu\n配置 %ld\n当前 %llu\n\n"
          @"屏幕(points / scale)\n原始 %.0fx%.0f / %.2f\n配置 %ldx%ld / %ld\n当前 %.0fx%.0f / %.2f",
         cfgBool(@"enabled", NO) ? @"基础功能已开启" : @"基础功能已关闭",
-        realVersion, cfgStr(@"systemVersion", @"15.4.1"), cfgStr(@"systemBuild", @"19E258"), currentVersion,
+        realVersion, cfgStr(@"systemVersion", @"26.6"), cfgStr(@"systemBuild", @"23G71"), currentVersion,
         realName, cfgStr(@"deviceName", @"iPhone"), currentName,
         realIDFV, cfgStr(@"idfv", @"A1B2C3D4-E5F6-7890-ABCD-EF1234567890"), currentIDFV,
         realIDFA, cfgStr(@"idfa", @"FEDCBA98-7654-3210-FEDC-BA9876543210"), currentIDFA, attText,
         realProcess, currentProcess,
-        realMemory, (long)cfgInt(@"memorySize", 4096), currentMemory,
+        realMemory, (long)cfgInt(@"memorySize", 12288), currentMemory,
         CGRectGetWidth(realBounds), CGRectGetHeight(realBounds), realScale,
-        (long)cfgInt(@"screenWidth", 375), (long)cfgInt(@"screenHeight", 667), (long)cfgInt(@"screenScale", 2),
+        (long)cfgInt(@"screenWidth", 440), (long)cfgInt(@"screenHeight", 956), (long)cfgInt(@"screenScale", 3),
         CGRectGetWidth(currentBounds), CGRectGetHeight(currentBounds), currentScale];
 
     NSMutableString *advanced = [NSMutableString stringWithString:@"\n\n--- 高级功能 ---"];

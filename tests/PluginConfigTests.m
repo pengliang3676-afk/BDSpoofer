@@ -28,9 +28,13 @@ int main(void) {
         assert([config[@"configVersion"] integerValue]==188);
         assert(![config[@"blockStatCashTelemetry"] boolValue]);
         NSSet *basicSwitchSet=[NSSet setWithArray:BDSBasicKeys()];
-        for(NSString *key in BDSBasicKeys()) assert(![config[key] boolValue]);
+        for(NSString *key in BDSBasicKeys()) assert([config[key] boolValue]);
         for(NSString *key in BDSRegularKeys()) if(![basicSwitchSet containsObject:key]) assert([config[key] boolValue]);
         for(NSString *key in BDSRiskKeys()) assert(![config[key] boolValue]);
+        assert([config[@"hwMachine"] isEqual:@"iPhone18,2"] && [config[@"hwModel"] isEqual:@"V54AP"]);
+        assert([config[@"systemVersion"] isEqual:@"26.6"] && [config[@"systemBuild"] isEqual:@"23G71"]);
+        assert([config[@"memorySize"] integerValue]==12288 && [config[@"diskSize"] integerValue]==256);
+        assert([config[@"targetedHwMachine"] isEqual:@"iPhone18,2"] && [config[@"targetedScreenScale"] integerValue]==3);
         assert(![config[@"spoofBaiduTargeted"] boolValue]);
         for(NSString *key in BDSSelectedTargetKeys()) assert(![config[key] boolValue]);
         [config addEntriesFromDictionary:BDSRandomIdentityValues()];
@@ -38,7 +42,7 @@ int main(void) {
         config[@"spoofBaiduTargeted"]=@YES;
         g_config=[config copy];
         NSSet *identity=[NSSet setWithArray:@[@"idfa",@"idfv",@"deviceID",@"cuid",@"utdid",@"didRandomizeAdvanced"]];
-        NSSet *basic=[NSSet setWithArray:@[@"enabled",@"spoofAdvertisingIdentifiers",@"spoofProcessHardware",@"spoofLocale",@"spoofCarrier",@"spoofStorage",@"deviceProfileName",@"deviceModel",@"marketingModel",@"systemVersion",@"systemBuild",@"kernOSVersion",@"hwMachine",@"hwModel",@"memorySize",@"diskSize",@"deviceName",@"kernHostname",@"screenWidth",@"screenHeight",@"screenScale",@"nativeScreenWidth",@"nativeScreenHeight",@"bootTimeOffsetSeconds",@"carrierName",@"mcc",@"mnc",@"isoCountryCode",@"localeIdentifier",@"didRandomizeBasic"]];
+        NSSet *basic=[NSSet setWithArray:@[@"enabled",@"spoofAdvertisingIdentifiers",@"spoofProcessHardware",@"spoofSysctl",@"spoofLocale",@"spoofCarrier",@"spoofStorage",@"deviceProfileName",@"deviceModel",@"marketingModel",@"systemVersion",@"systemBuild",@"kernOSVersion",@"hwMachine",@"hwModel",@"memorySize",@"diskSize",@"deviceName",@"kernHostname",@"screenWidth",@"screenHeight",@"screenScale",@"nativeScreenWidth",@"nativeScreenHeight",@"bootTimeOffsetSeconds",@"carrierName",@"mcc",@"mnc",@"isoCountryCode",@"localeIdentifier",@"didRandomizeBasic"]];
         for(int i=0;i<100;i++) {
             NSDictionary *before=g_config;
             NSMutableDictionary *after=[before mutableCopy]; [after addEntriesFromDictionary:BDSRandomBasicProfileValues()];

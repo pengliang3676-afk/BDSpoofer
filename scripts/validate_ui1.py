@@ -12,13 +12,13 @@ items=re.findall(r'@\{@"key":@"([^"]+)",@"name":@"[^"]+"(,@"off":@YES)?\}',polic
 assert len(items)==26
 regular=[key for key,off in items if not off];risk=[key for key,off in items if off]
 assert len(regular)==21 and len(risk)==5
-basic_keys=['enabled','spoofAdvertisingIdentifiers','spoofProcessHardware','spoofLocale','spoofCarrier','spoofStorage']
-assert all(config[k] is False for k in basic_keys)
+basic_keys=['enabled','spoofAdvertisingIdentifiers','spoofProcessHardware','spoofSysctl','spoofLocale','spoofCarrier','spoofStorage']
+assert all(config[k] is True for k in basic_keys)
 assert all(config[k] is True for k in regular if k not in basic_keys)
 assert all(config[k] is False for k in risk)
-advanced_keys=['spoofBaiduSDK','spoofSysctl','bypassJailbreakDetect','spoofKeychain','spoofAppGroup','spoofWebKitCookie','spoofUserAgent']
-advanced_on=advanced_keys[:3]
-advanced_off=advanced_keys[3:]
+advanced_keys=['spoofBaiduSDK','bypassJailbreakDetect','spoofKeychain','spoofAppGroup','spoofWebKitCookie','spoofUserAgent']
+advanced_on=advanced_keys[:2]
+advanced_off=advanced_keys[2:]
 assert all(key in regular and config[key] is True for key in advanced_on)
 assert all(key in risk and config[key] is False for key in advanced_off)
 targeted_keys=['spoofBaiduTargeted','spoofBaiduTargetedSystem','spoofBaiduTargetedModel','spoofBaiduTargetedScreen','spoofBaiduTargetedUA','spoofBaiduTargetedPush']
@@ -26,7 +26,7 @@ default_block=plugin.split('static NSDictionary *BDSDefaultConfig(void)',1)[1].s
 assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@YES',default_block) for key in advanced_on)
 assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@NO',default_block) for key in advanced_off)
 assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@NO',default_block) for key in targeted_keys)
-assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@NO',default_block) for key in basic_keys)
+assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@YES',default_block) for key in basic_keys)
 assert config['spoofScreen'] is False and config['configVersion']==188
 assert config['blockStatCashTelemetry'] is False
 assert 'blockStatCashTelemetry' in policy and 'blockStatCashTelemetry' in plugin
@@ -134,6 +134,27 @@ def manager_devices(text):
     return records
 plugin_pool=plugin_devices(plugin);manager_pool=manager_devices(manager)
 assert len(plugin_pool)==36 and plugin_pool==manager_pool
+# 默认模板必须是机型池内真实存在的一套自洽组合（iPhone 17 Pro Max），基础段与定向段一致
+default_machine='iPhone18,2'
+assert default_machine in plugin_pool
+_name,_model,w,h,nw,nh,scale,memory,disks=plugin_pool[default_machine]
+assert (_name,_model,w,h,nw,nh,scale,memory)==('iPhone 17 Pro Max','V54AP',440,956,1320,2868,3,12288)
+assert 256 in disks
+basic_expect={'deviceProfileName':'iPhone 17 Pro Max','systemVersion':'26.6','systemBuild':'23G71',
+    'kernOSVersion':'23G71','hwMachine':'iPhone18,2','hwModel':'V54AP'}
+for k,v in basic_expect.items():
+    assert config[k]==v,(k,config[k])
+assert (config['memorySize'],config['diskSize'],config['screenWidth'],config['screenHeight'],
+        config['screenScale'],config['nativeScreenWidth'],config['nativeScreenHeight'])==(12288,256,440,956,3,1320,2868)
+for suffix,val in [('DeviceProfileName','iPhone 17 Pro Max'),('SystemVersion','26.6'),('SystemBuild','23G71'),
+                   ('HwMachine','iPhone18,2'),('HwModel','V54AP'),('UASystemVersion','26.6'),
+                   ('UASystemBuild','23G71'),('PushDeviceProfileName','iPhone 17 Pro Max'),
+                   ('PushHwMachine','iPhone18,2'),('PushHwModel','V54AP'),('ScreenHwMachine','iPhone18,2')]:
+    assert config['targeted'+suffix]==val,suffix
+assert (config['targetedScreenWidth'],config['targetedScreenHeight'],config['targetedScreenScale'],
+        config['targetedNativeScreenWidth'],config['targetedNativeScreenHeight'])==(440,956,3,1320,2868)
+for lit in ['@"iPhone18,2"','@"V54AP"','@"26.6"','@"23G71"','@440','@956','@3','@1320','@2868','@12288','@256']:
+    assert lit in default_block,lit
 plugin_systems=re.findall(r'BDSSystem\(@"([^"]+)",\s*@"([^"]+)"\)',function(plugin,'BDSSystemProfiles'))
 manager_systems=re.findall(r'BDSSystem\(@"([^"]+)",\s*@"([^"]+)"\)',function(manager,'BDSSystemProfiles'))
 assert plugin_systems==manager_systems and len(plugin_systems)>50
@@ -143,4 +164,4 @@ for name in names:assert function(plugin,name)==function(base,name),name
 for path in ['bdspoofer_config.plist','CraneManager/Info.plist','CraneManager/BDSCraneManager.entitlements','CraneManager/BDSCraneManager.libSandy.plist']:plistlib.loads((root/path).read_bytes())
 manager_info=plistlib.loads((root/'CraneManager/Info.plist').read_bytes())
 assert manager_info['CFBundleShortVersionString']=='1.0.3' and manager_info['CFBundleVersion']=='104' and 'UIApplicationExitsOnSuspend' not in manager_info
-print('PASS 1.8.2 UI1.2 / manager 1.0.3: v188, targeted defaults off and one-click enables all 5, advanced first 3 default on and last 4 default off, 36 synchronized devices')
+print('PASS 1.8.2 UI1.2 / manager 1.0.3: v188, basic 7 switches (incl. spoofSysctl) default on, advanced first 2 default on and last 4 default off, default preset iPhone 17 Pro Max, 36 synchronized devices')

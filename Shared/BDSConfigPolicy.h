@@ -5,11 +5,11 @@ static NSArray<NSArray<NSDictionary *> *> *BDSSettingGroups(void) {
         @[@{@"key":@"enabled",@"name":@"基础功能"},
           @{@"key":@"spoofAdvertisingIdentifiers",@"name":@"广告标识参数"},
           @{@"key":@"spoofProcessHardware",@"name":@"主机名与内存参数"},
+          @{@"key":@"spoofSysctl",@"name":@"系统硬件参数"},
           @{@"key":@"spoofLocale",@"name":@"语言与地区参数"},
           @{@"key":@"spoofCarrier",@"name":@"运营商参数"},
           @{@"key":@"spoofStorage",@"name":@"存储参数"}],
         @[@{@"key":@"spoofBaiduSDK",@"name":@"百度身份参数"},
-          @{@"key":@"spoofSysctl",@"name":@"系统硬件参数"},
           @{@"key":@"bypassJailbreakDetect",@"name":@"防越狱检测"},
           @{@"key":@"spoofKeychain",@"name":@"Keychain 拦截",@"off":@YES},
           @{@"key":@"spoofAppGroup",@"name":@"App Group 隔离",@"off":@YES},
@@ -108,12 +108,10 @@ static void BDSSeedInitialIdentities(NSMutableDictionary *config, NSDictionary *
 // Initialization is separate from randomization. Explicit saved choices survive.
 static void BDSApplyInitialDefaults(NSMutableDictionary *config, NSDictionary *saved) {
     for(NSString *key in BDSRegularKeys()) config[key]=saved[key] ?: @YES;
-    // 基础功能 6 项首次创建配置时默认关闭；已保存选择仍保留，一键基础随机时再显式开启。
-    for(NSString *key in BDSBasicKeys()) config[key]=saved[key] ?: @NO;
     for(NSString *key in BDSRiskKeys()) config[key]=saved[key] ?: @NO;
     for(NSString *key in BDSSelectedTargetKeys()) config[key]=saved[key] ?: @NO;
     config[@"spoofBaiduTargeted"]=saved[@"spoofBaiduTargeted"] ?: @NO;
     config[@"spoofScreen"]=@NO;
-    config[@"targetedScreenHwMachine"]=saved[@"targetedScreenHwMachine"] ?: config[@"targetedHwMachine"] ?: @"iPhone14,6";
+    config[@"targetedScreenHwMachine"]=saved[@"targetedScreenHwMachine"] ?: config[@"targetedHwMachine"] ?: @"iPhone18,2";
     config[@"configVersion"]=@188;
 }

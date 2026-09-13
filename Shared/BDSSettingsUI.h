@@ -161,7 +161,7 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if(section==0) return @"常规开关在首次初始化时开启，后续保留手动选择。";
-    if(section==1 && [self.expanded containsIndex:1]) return @"高级前 3 项默认开启，后 4 项默认关闭；已保存的选择保持不变。";
+    if(section==1 && [self.expanded containsIndex:1]) return @"高级前 2 项默认开启，后 4 项默认关闭；已保存的选择保持不变。";
     if(section==2) return @"修改后彻底关闭百度再打开。";
     return nil;
 }

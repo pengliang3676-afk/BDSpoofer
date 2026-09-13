@@ -10,8 +10,9 @@
 
 ## 当前版本：1.8.2 UI1.2
 
-> 基础功能和反关联常规开关默认开启。
-> 高级参数前 3 项（百度身份参数、系统硬件参数、防越狱检测）默认开启，后 4 项默认关闭；已有配置的开关选择保留。
+> 基础功能 7 项（含系统硬件参数）和反关联常规开关默认开启。
+> 高级参数前 2 项（百度身份参数、防越狱检测）默认开启，后 4 项默认关闭；已有配置的开关选择保留。
+> 出厂模板为 iPhone 17 Pro Max（iPhone18,2 / iOS 26.6 / 256GB），一键基础随机后按机型池重新抽取。
 > 金额上报阻止功能默认关闭。
 > 随机参数只在用户手动点击时生成并持久保存，不会在启动时自动变化。
 
@@ -22,14 +23,14 @@
 - NSProcessInfo：operatingSystemVersion、operatingSystemVersionString、hostName、physicalMemory
 - NSLocale：localeIdentifier
 - CTTelephonyNetworkInfo / CTCarrier：运营商名称、MCC、MNC、国家码
+- **sysctlbyname**（spoofSysctl，默认开启）：返回配置的 hw.machine、hw.model、kern.osversion、kern.hostname
 - UIScreen：bounds、nativeBounds、scale（支持但默认关闭）
 - NSFileManager：磁盘大小
 
-### 高级功能（前 3 项默认开启，后 4 项默认关闭）
+### 高级功能（前 2 项默认开启，后 4 项默认关闭）
 
 - **高级身份**：identifierForVendor 使用已保存的 IDFV；高级随机仍由用户单独触发
 - **百度 SDK 标识**（spoofBaiduSDK）：hook CuidSDK、UTDIDModule、MobStat、DeviceIdentifierFetcher，返回伪造的 CUID/UTDID/DeviceID
-- **sysctlbyname**（spoofSysctl）：返回配置的 hw.machine、hw.model、kern.osversion、kern.hostname
 - **Keychain 拦截**（spoofKeychain，默认关闭）：查询的 access group、service、account、description、label 或 agrp 包含 baidu 时返回未找到
 - **User-Agent**（spoofUserAgent，默认关闭）：只在用户明确填写自定义值时替换 WKWebView 和显式设置的请求头
 - **越狱检测绕过**（bypassJailbreakDetect）：hook fileExistsAtPath/canOpenURL，对越狱路径和 URL scheme 返回否定结果
@@ -40,7 +41,7 @@
 
 “一键随机整套基础参数”会生成匹配的 iOS/Build、硬件型号、内存、磁盘、设备名称和主机名。屏幕继续使用真机尺寸；高级身份参数及高级开关不变。
 
-基础随机不会改变高级参数组 7 项的开关状态；新配置中前 3 项默认开启，后 4 项默认关闭，需要时单独调整。
+基础随机会显式开启基础功能 7 项（含系统硬件参数），不改变高级参数组 6 项的开关状态；新配置中高级前 2 项默认开启，后 4 项默认关闭，需要时单独调整。
 
 “一键随机整套高级参数”单独生成并持久保存 IDFA、IDFV、DeviceID、CUID 和 UTDID，不修改基础参数。
 
