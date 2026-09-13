@@ -430,6 +430,8 @@ static void *BDSLoadCraneLibrary(void) {
 - (void)restoreSafeSettings;
 - (BOOL)saveSwitchChanges:(NSDictionary *)changes;
 - (NSDictionary *)selectedSwitchConfiguration;
+- (NSDictionary *)associationSwitchDraft;
+- (NSMutableDictionary *)switchBaseForMissingConfig;
 - (void)randomizeAdvancedForSelectedContainers;
 - (void)randomizeTargetedForSelectedContainers;
 - (void)applySelectedContainersWithMode:(BDSRandomMode)mode;
@@ -795,14 +797,29 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     [self.navigationController pushViewController:page animated:YES];
 }
 
+- (NSDictionary *)associationSwitchDraft {
+    NSDictionary *draft=[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"BDSAssociationSwitchDraft"];
+    return [draft isKindOfClass:NSDictionary.class] ? draft : @{};
+}
+
+// 容器还没有配置文件时，反关联页用随包完整模板打底，再叠加本机记住的默认开关偏好；
+// 只给开关会缺 configVersion，导致插件走历史迁移把机型打回旧默认。
+- (NSMutableDictionary *)switchBaseForMissingConfig {
+    NSMutableDictionary *base=[BDSDefaultConfig() mutableCopy];
+    [base addEntriesFromDictionary:[self associationSwitchDraft]];
+    return base;
+}
+
 - (NSDictionary *)selectedSwitchConfiguration {
     NSMutableDictionary *combined=nil;
     for(NSDictionary *row in self.containers) {
         if(![self.selectedContainerIDs containsObject:row[@"id"]]) continue;
         NSDictionary *config=[NSDictionary dictionaryWithContentsOfFile:row[@"path"]];
+        if(!config) config=[self switchBaseForMissingConfig];
         if(!combined) combined=[config mutableCopy];
         else for(NSString *key in BDSSafeSwitchValues()) combined[key]=@([combined[key] boolValue] && [config[key] boolValue]);
     }
+    if(!combined) combined=[self switchBaseForMissingConfig];
     return combined ?: @{};
 }
 
@@ -815,26 +832,37 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 }
 
 - (BOOL)saveSwitchChanges:(NSDictionary *)changes {
-    if(!self.selectedContainerIDs.count) return NO;
+    if(!changes.count) return NO;
+    // 没选容器：改动记为本机默认开关偏好，供无选中浏览和给未配置容器打底使用。
+    if(!self.selectedContainerIDs.count) {
+        NSMutableDictionary *draft=[[self associationSwitchDraft] mutableCopy];
+        [draft addEntriesFromDictionary:changes];
+        [[NSUserDefaults standardUserDefaults] setObject:draft forKey:@"BDSAssociationSwitchDraft"];
+        return [[NSUserDefaults standardUserDefaults] synchronize];
+    }
     BOOL saved=YES;
     for(NSDictionary *row in self.containers) {
         if(![self.selectedContainerIDs containsObject:row[@"id"]]) continue;
         NSString *path=row[@"path"];
+        if(!path.length) path=[self configPathForContainerID:row[@"id"]];
+        if(!path.length) { saved=NO; continue; }
         NSDictionary *existing=[NSDictionary dictionaryWithContentsOfFile:path];
-        if(!existing) { saved=NO; continue; }
-        NSMutableDictionary *config=[existing mutableCopy];
+        // 未随机过的容器：完整出厂模板打底，只覆盖本次开关，避免写出残缺配置。
+        NSMutableDictionary *config=existing ? [existing mutableCopy] : [self switchBaseForMissingConfig];
         [config addEntriesFromDictionary:changes];
-        if(!BDSWriteContainerConfig(path,config)) saved=NO;
+        config[@"managerContainerIdentifier"]=row[@"id"];
+        NSDictionary *persistent=BDSConfigForPersistentStorage(config);
+        if(!BDSWriteContainerConfig(path,persistent)) saved=NO;
     }
     [self reloadContainers];
     return saved;
 }
 
 - (void)showAssociationSettings {
-    if(!self.selectedContainerIDs.count) { [self showMessage:@"尚未选择容器" detail:@"请先选择需要配置的容器。"]; return; }
-    if(![self selectedContainersHaveConfig]) { [self showMessage:@"尚未生成配置" detail:@"请先对选中容器执行一次一键随机。"]; return; }
+    // 不要求先选容器或先随机：无选中时浏览/修改本机默认开关偏好，选中后直接写容器。
     BDSAssociationPage *page=[[BDSAssociationPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
     page.configuration=[self selectedSwitchConfiguration];
+    page.contextFooter=self.selectedContainerIDs.count ? nil : @"未选择容器：这里调整的是本机默认开关偏好并自动记住；选中容器后修改会直接写入选中容器。";
     __weak BDSManagerViewController *weakSelf=self;
     page.saveChanges=^BOOL(NSDictionary *changes) { return [weakSelf saveSwitchChanges:changes]; };
     [self.navigationController pushViewController:page animated:YES];

@@ -126,6 +126,7 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
 @property(nonatomic,copy) NSDictionary *configuration;
 @property(nonatomic,copy) BOOL (^saveChanges)(NSDictionary *);
 @property(nonatomic,copy) void (^editParameters)(NSUInteger);
+@property(nonatomic,copy) NSString *contextFooter;
 @property(nonatomic,strong) NSMutableIndexSet *expanded;
 @end
 @implementation BDSAssociationPage
@@ -160,7 +161,7 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
     [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:sender.tag] withRowAnimation:UITableViewRowAnimationAutomatic];
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if(section==0) return @"常规开关在首次初始化时开启，后续保留手动选择。";
+    if(section==0) return self.contextFooter ?: @"常规开关在首次初始化时开启，后续保留手动选择。";
     if(section==1 && [self.expanded containsIndex:1]) return @"高级前 2 项默认开启，后 4 项默认关闭；已保存的选择保持不变。";
     if(section==2) return @"修改后彻底关闭百度再打开。";
     return nil;

@@ -60,6 +60,13 @@ reload_body=manager[reload_start:reload_end]
 assert 'BDSWriteContainerConfig' not in reload_body and 'BDSMergedConfig' not in reload_body
 assert 'NSString *summary = BDSContainerSummary(config);' in reload_body
 assert 'selectedContainersHaveConfig' in manager and '请先对选中容器执行一次一键随机' in manager
+# 反关联页不再要求先选容器/先随机：showAssociationSettings 内不得有拦截，缺配置走完整模板打底
+assoc_start=manager.index('- (void)showAssociationSettings')
+assoc_end=manager.index('- (void)restoreSafeSettings',assoc_start)
+assoc_body=manager[assoc_start:assoc_end]
+assert 'selectedContainersHaveConfig' not in assoc_body and 'showMessage' not in assoc_body
+assert 'switchBaseForMissingConfig' in manager and 'BDSAssociationSwitchDraft' in manager
+assert 'contextFooter' in (root/'Shared/BDSSettingsUI.h').read_text(encoding='utf-8')
 load_start=plugin.index('static void loadConfig()')
 load_end=plugin.index('static BOOL saveConfigValues',load_start)
 load_body=plugin[load_start:load_end]
