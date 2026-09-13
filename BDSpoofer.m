@@ -184,7 +184,6 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"spoofScreen": @NO,
             @"spoofStorage": @YES,
             @"spoofBaiduSDK": @YES,
-            @"spoofSysctl": @YES,
             @"spoofKeychain": @NO,
             @"spoofUserAgent": @NO,
             @"bypassJailbreakDetect": @YES,
