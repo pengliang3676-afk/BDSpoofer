@@ -1112,18 +1112,22 @@ static const char *BDD_H5_JS =
 "function want(u){if(!u)return false;u=(''+u).toLowerCase();"
 "if(u.indexOf('activity.baidu.com')>=0||u.indexOf('mbd.baidu.com')>=0)return true;"
 "return /reward|redpack|incentive|signin|sign|cash|money|coin|gold|task|mission|wealth|cornucopia|popup|income|wallet|withdraw|prize|lottery|bonus|yuan/.test(u);}"
-"function snip(t){try{t=''+t;return t.length>8000?t.slice(0,8000):t;}catch(e){return '';}}"
+"function core(u){u=(''+u).toLowerCase();return u.indexOf('activity.baidu.com/incentive/')>=0;}"
+"function snip(t,n){try{t=''+t;return t.length>n?t.slice(0,n):t;}catch(e){return '';}}"
+"function qsnip(b){try{if(b==null)return '';if(typeof b!=='string'){try{b=JSON.stringify(b);}catch(e){b=''+b;}}return b.length>2000?b.slice(0,2000):b;}catch(e){return '';}}"
 "function post(o){try{webkit.messageHandlers.bddcoh_net.postMessage(JSON.stringify(o));}catch(e){}}"
 "var O=XMLHttpRequest.prototype.open,S=XMLHttpRequest.prototype.send;"
 "XMLHttpRequest.prototype.open=function(m,u){this.__bu=u;this.__bm=m;return O.apply(this,arguments);};"
 "XMLHttpRequest.prototype.send=function(){"
-"var x=this;x.addEventListener('loadend',function(){try{if(want(x.__bu))post({t:'xhr',m:x.__bm||'?',u:''+x.__bu,s:x.status,b:snip(x.responseText)});}catch(e){}});"
+"var x=this;try{x.__bq=qsnip(arguments[0]);}catch(e){}"
+"x.addEventListener('loadend',function(){try{if(want(x.__bu))post({t:'xhr',m:x.__bm||'?',u:''+x.__bu,s:x.status,q:x.__bq||'',b:snip(x.responseText,core(x.__bu)?20000:8000)});}catch(e){}});"
 "return S.apply(this,arguments);};"
 "if(window.fetch){var F=window.fetch;"
 "window.fetch=function(input,init){"
 "var u=(typeof input==='string')?input:((input&&input.url)||'');"
+"var qb=(init&&init.body)?qsnip(init.body):'';"
 "var p=F.apply(this,arguments);"
-"if(want(u)){p.then(function(r){try{r.clone().text().then(function(tx){post({t:'fetch',m:(init&&init.method)||'GET',u:u,s:r.status,b:snip(tx)});});}catch(e){}});}"
+"if(want(u)){p.then(function(r){try{r.clone().text().then(function(tx){post({t:'fetch',m:(init&&init.method)||'GET',u:u,s:r.status,q:qb,b:snip(tx,core(u)?20000:8000)});});}catch(e){}});}"
 "return p;};}"
 "})();";
 
@@ -1142,14 +1146,17 @@ static const char *BDD_H5_JS =
         NSString *type=[d[@"t"] isKindOfClass:NSString.class]?d[@"t"]:@"?";
         NSInteger s=[d[@"s"] respondsToSelector:@selector(integerValue)]?[d[@"s"] integerValue]:0;
         NSString *body=[d[@"b"] isKindOfClass:NSString.class]?d[@"b"]:@"";
+        NSString *reqBody=[d[@"q"] isKindOfClass:NSString.class]?d[@"q"]:@"";
         NSString *money=bdd_extractMoney([body dataUsingEncoding:NSUTF8StringEncoding]);
-        body=bdd_cap(bdd_maskString(body),3000);
+        BOOL coreI=[u.lowercaseString containsString:@"activity.baidu.com/incentive/"];
+        body=bdd_cap(bdd_maskString(body),coreI?15000:3000);
         NSMutableString *line=[NSMutableString stringWithFormat:@"[H5 %@ HTTP %ld] %@ %@",
                                type,(long)s,m,bdd_cap(bdd_maskString(u),1600)];
+        if(reqBody.length) [line appendFormat:@"\n    请求体: %@",bdd_cap(bdd_maskString(reqBody),2000)];
         if(money.length) [line appendFormat:@"\n    关键字段:\n    %@",money];
         if(body.length) [line appendFormat:@"\n    响应: %@",body];
         os_unfair_lock_lock(&g_lock);
-        if(g_h5.count<80 && ![g_h5 containsObject:line]) [g_h5 addObject:[line copy]];
+        if(g_h5.count<120 && ![g_h5 containsObject:line]) [g_h5 addObject:[line copy]];
         os_unfair_lock_unlock(&g_lock);
     } @catch (__unused NSException *e) {}
 }
