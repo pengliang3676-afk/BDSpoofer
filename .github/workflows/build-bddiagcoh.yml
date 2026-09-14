@@ -23,7 +23,7 @@ jobs:
           for ARCH in arm64 arm64e; do
             xcrun clang -arch "$ARCH" -isysroot "$SDK" -target "$ARCH-apple-ios15.0" \
               -fobjc-arc -fno-inline -dynamiclib \
-              -framework Foundation -framework UIKit -framework CoreGraphics \
+              -framework Foundation -framework UIKit -framework CoreGraphics -framework WebKit \
               -O2 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
               -install_name @rpath/BDDiagCoh.dylib \
               -o "BDDiagCoh-$ARCH.dylib" "$SRC"
