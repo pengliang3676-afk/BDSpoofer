@@ -776,7 +776,8 @@ static BOOL bdd_wantDetail(NSURL *u, NSString *urlStr) {
         return NO;
     }
     if ([path containsString:@"growth"] || [path containsString:@"wealth"] ||
-        [path containsString:@"cornucopia"] || [path containsString:@"rights"]) return YES;
+        [path containsString:@"cornucopia"] || [path containsString:@"rights"] ||
+        [path containsString:@"personal"]) return YES;
     if ([query containsString:@"action=task"] || [query containsString:@"action=mission"] ||
         [query containsString:@"isactivewealth"] || [query containsString:@"cornucopia"]) return YES;
     return NO;
@@ -845,24 +846,73 @@ static NSString *bdd_recordRequest(NSURLRequest *req, NSData *uploadBody, NSStri
     @finally { t_suppress--; }
     return key;
 }
+// 从 JSON 响应中抽取金额/奖励相关叶子字段，避免大 JSON 被整体截断而漏掉关键值
+static BOOL bdd_moneyKey(NSString *k){
+    static NSArray *kw; static dispatch_once_t once;
+    dispatch_once(&once,^{ kw=@[@"amount",@"money",@"cash",@"price",@"yuan",@"cent",@"redpack",
+        @"bonus",@"reward",@"withdraw",@"balance",@"coin",@"gold",@"profit",@"income",@"wallet",
+        @"sign",@"series",@"7day",@"total",@"count",@"score",@"level",@"exp",@"strategy",@"bucket",
+        @"元",@"金额",@"红包",@"奖励",@"提现",@"金币",@"现金",@"签到",@"收益",@"余额",@"分"]; });
+    NSString *lk=k.lowercaseString;
+    for (NSString *w in kw) if([lk containsString:w]) return YES;
+    return NO;
+}
+static void bdd_walkMoney(id node,NSString *path,NSMutableArray *out){
+    if(out.count>=120) return;
+    if([node isKindOfClass:NSDictionary.class]){
+        [(NSDictionary*)node enumerateKeysAndObjectsUsingBlock:^(id k,id v,BOOL*stop){
+            if(out.count>=120){*stop=YES;return;}
+            NSString *kp=[NSString stringWithFormat:@"%@.%@",path.length?path:@"$",k];
+            bdd_walkMoney(v,kp,out);
+        }];
+    } else if([node isKindOfClass:NSArray.class]){
+        NSArray *a=node; NSUInteger lim=MIN(a.count,(NSUInteger)20);
+        for(NSUInteger i=0;i<lim;i++) bdd_walkMoney(a[i],[NSString stringWithFormat:@"%@[%lu]",path,(unsigned long)i],out);
+    } else {
+        NSString *last=[path componentsSeparatedByString:@"."].lastObject;
+        NSRange br=[last rangeOfString:@"["]; if(br.location!=NSNotFound) last=[last substringToIndex:br.location];
+        if(bdd_moneyKey(last)){
+            NSString *sv=[node isKindOfClass:NSString.class]?bdd_maskString((NSString*)node):[node description];
+            sv=bdd_cap(sv,120);
+            [out addObject:[NSString stringWithFormat:@"%@=%@",path,sv]];
+        }
+    }
+}
+static NSString *bdd_extractMoney(NSData *data){
+    if(![data isKindOfClass:NSData.class] || !data.length) return nil;
+    @try {
+        id json=[NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        if(!json) return nil;
+        NSMutableArray *out=[NSMutableArray array];
+        bdd_walkMoney(json,@"$",out);
+        return out.count?[out componentsJoinedByString:@"\n    "]:nil;
+    } @catch (__unused NSException *e) { return nil; }
+}
 static void bdd_recordResponse(NSString *key, NSData *data, NSURLResponse *resp, NSError *err) {
     if (t_suppress || !key.length) return;
     t_suppress++;
     @try {
         NSInteger code=[resp isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse*)resp).statusCode : 0;
-        NSString *body=nil;
+        NSString *raw=nil;
         if ([data isKindOfClass:NSData.class] && data.length) {
-            body=[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-            if (!body) body=[[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
-            body=bdd_cap(bdd_maskString(body),20000);
+            raw=[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+            if (!raw) raw=[[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
         }
-        if (err) body=[(body?:@"") stringByAppendingFormat:@"\n[error %ld %@]",(long)err.code,
-                        bdd_maskString(err.localizedDescription?:@"")];
+        NSString *money=bdd_extractMoney(data);
+        NSString *lk=key.lowercaseString;
+        BOOL core=([lk containsString:@"3011"]||[lk containsString:@"mission"]||[lk containsString:@"growth"]||
+                   [lk containsString:@"personal"]||[lk containsString:@"wealth"]||[lk containsString:@"cornucopia"]||
+                   [lk containsString:@"rights"]);
+        raw=bdd_cap(bdd_maskString(raw),core?20000:3000);
+        NSMutableString *line=[NSMutableString stringWithFormat:@"[HTTP %ld]",(long)code];
+        if(money.length) [line appendFormat:@"\n  关键字段:\n    %@",money];
+        if(raw.length) [line appendFormat:@"\n  原文: %@",raw];
+        else if(!money.length) [line appendString:@" (空响应体)"];
+        if (err) [line appendFormat:@"\n[error %ld %@]",(long)err.code,bdd_maskString(err.localizedDescription?:@"")];
         os_unfair_lock_lock(&g_lock);
         NSMutableDictionary *h=g_netHit[key];
-        if (h && (body.length||code)) {
+        if (h && line.length) {
             NSMutableArray *resps=h[@"resps"];
-            NSString *line=[NSString stringWithFormat:@"[HTTP %ld] %@",(long)code,body?:@"(空响应体)"];
             if (![resps containsObject:line] && resps.count<6) [resps addObject:line];
         }
         os_unfair_lock_unlock(&g_lock);
