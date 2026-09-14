@@ -72,6 +72,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <sys/sysctl.h>
+#import <sys/utsname.h>
 #import <sys/stat.h>
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
@@ -127,6 +128,8 @@ static char g_hwModel[32] = "V54AP";
 static char g_kernOSVersion[16] = "23G71";
 static char g_kernHostname[65] = "iPhone";
 static char g_wifiSSID[64] = "";
+// hw.memsize 伪装值（字节），与 NSProcessInfo.physicalMemory / memorySize(MB) 配置保持一致
+static volatile unsigned long long g_hwMemsizeBytes = 12288ULL * 1024ULL * 1024ULL;
 
 // 伪造的启动时间（constructor 中初始化为当前时间减去随机 1-7 天）
 static struct timeval g_fakeBootTime = {0, 0};
@@ -274,6 +277,7 @@ static void bds_update_c_cache(void) {
         memcpy(g_wifiSSID, wifiUTF8, wifiLength + 1);
     }
     bds_disk_size_set((long long)cfgInt(@"diskSize", 256) * 1024LL * 1024LL * 1024LL);
+    BDS_ATOMIC_SET(g_hwMemsizeBytes, (unsigned long long)cfgInt(@"memorySize", 12288) * 1024ULL * 1024ULL);
 }
 
 static void loadConfig() {
@@ -1395,6 +1399,43 @@ static NSString *tg_rewrite_ua(NSString *ua) {
     return out;
 }
 
+// ---- UA 内嵌硬件机型号归一：iPhone12,8 与 URL 编码形态 iPhone12%2C8 都替换为伪装机型号 ----
+// 探针实测：Sapi UA 会内嵌真机机型号（逗号被百分号编码），不处理就会和假系统版本同串矛盾。
+static NSString *tg_rewrite_ua_machine(NSString *ua) {
+    if (![ua isKindOfClass:NSString.class] || !ua.length) return ua;
+    static NSRegularExpression *rxPlain, *rxEnc;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        rxPlain = [NSRegularExpression regularExpressionWithPattern:@"iPhone\\d+,\\d+"
+                                                            options:NSCaseInsensitiveSearch error:nil];
+        rxEnc   = [NSRegularExpression regularExpressionWithPattern:@"iPhone\\d+%2[Cc]\\d+"
+                                                            options:NSCaseInsensitiveSearch error:nil];
+    });
+    NSString *fakePlain = tg_machine();
+    NSString *fakeEnc = [fakePlain stringByReplacingOccurrencesOfString:@"," withString:@"%2C"];
+    NSString *out = [rxPlain stringByReplacingMatchesInString:ua options:0
+                                                        range:NSMakeRange(0, ua.length)
+                                                 withTemplate:tg_tpl_escape(fakePlain)];
+    out = [rxEnc stringByReplacingMatchesInString:out options:0
+                                            range:NSMakeRange(0, out.length)
+                                     withTemplate:tg_tpl_escape(fakeEnc)];
+    return out;
+}
+
+// 出站 UA 统一归一入口：按定向子开关决定是否改系统版本/机型号，其余字节保持不动
+static NSString *tg_normalize_outgoing_ua(NSString *ua) {
+    if (![ua isKindOfClass:NSString.class] || !ua.length) return ua;
+    NSString *out = ua;
+    if (tg_feature_enabled(@"spoofBaiduTargetedUA")) {
+        out = tg_rewrite_ua(out);
+    }
+    if (tg_feature_enabled(@"spoofBaiduTargetedUA") ||
+        tg_feature_enabled(@"spoofBaiduTargetedModel")) {
+        out = tg_rewrite_ua_machine(out);
+    }
+    return out;
+}
+
 static NSString *tg_rewrite_ua_device_info(NSString *value) {
     if (![value isKindOfClass:NSString.class]) return value;
     NSRange delimiter=[value rangeOfString:@"_" options:NSBackwardsSearch];
@@ -1860,6 +1901,24 @@ static int bds_my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
         return 0;
     }
 
+    // hw.memsize（uint64_t，字节）：与 NSProcessInfo.physicalMemory 伪装值一致，避免 C 层读到真机内存
+    if (BDS_ATOMIC_GET(g_spoofSysctlC) && strcmp(name, "hw.memsize") == 0) {
+        unsigned long long fakeBytes = BDS_ATOMIC_GET(g_hwMemsizeBytes);
+        size_t fakeLen = sizeof(unsigned long long);
+        if (oldp == NULL) {
+            if (oldlenp) *oldlenp = fakeLen;
+            return 0;
+        }
+        if (*oldlenp < fakeLen) {
+            *oldlenp = fakeLen;
+            errno = ENOMEM;
+            return -1;
+        }
+        *(unsigned long long *)oldp = fakeBytes;
+        *oldlenp = fakeLen;
+        return 0;
+    }
+
     // kern.boottime（struct timeval，16 字节）
     if (BDS_ATOMIC_GET(g_spoofBootTimeC) && strcmp(name, "kern.boottime") == 0) {
         BDS_DIAG_RECORD(g_diagBootTime, BDSDiagStateChanged);
@@ -1909,6 +1968,23 @@ static int bds_my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
 
     BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStatePassed);
     return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
+}
+
+#pragma mark - uname Hook（fishhook，纯 C）
+// uname() 与 sysctlbyname("hw.machine") 是两条独立的机型读取路径，必须一起伪装，
+// 否则 C 层调用方（含部分 SDK 拼 UA）仍会拿到真机机型号。
+
+static int (*orig_uname)(struct utsname *);
+
+static int bds_my_uname(struct utsname *name) {
+    int rc = orig_uname ? orig_uname(name) : -1;
+    if (rc == 0 && name &&
+        BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_spoofSysctlC) &&
+        g_hwMachine[0] != '\0') {
+        // struct utsname 的每个字段固定 256 字节，g_hwMachine 最长 32，strlcpy 安全截断
+        strlcpy(name->machine, g_hwMachine, sizeof(name->machine));
+    }
+    return rc;
 }
 
 #pragma mark - Keychain Hook（fishhook）
@@ -1967,6 +2043,20 @@ static NSString *new_wk_customUserAgent(id self, SEL _cmd) {
     return original;
 }
 
+// WKWebView setCustomUserAgent: 百度小程序/Sapi WebView 会先拿系统原生 UA 打底再拼自身字段，
+// 原生基线里的真机 iOS 版本/机型号绕开了 getter hook，必须在“设置”入口归一。
+static IMP orig_wk_setCustomUserAgent = NULL;
+static void new_wk_setCustomUserAgent(id self, SEL _cmd, NSString *ua) {
+    if ([ua isKindOfClass:NSString.class] && ua.length) {
+        NSString *normalized = tg_normalize_outgoing_ua(ua);
+        BOOL changed = (normalized != ua) && ![normalized isEqualToString:ua];
+        BDS_DIAG_RECORD(g_diagUserAgent, changed ? BDSDiagStateChanged : BDSDiagStatePassed);
+        ua = normalized;
+    }
+    typedef void (*SetCustomUAIMP)(id, SEL, NSString *);
+    if (orig_wk_setCustomUserAgent) ((SetCustomUAIMP)orig_wk_setCustomUserAgent)(self, _cmd, ua);
+}
+
 static IMP orig_nsmurl_setValue = NULL;
 static void new_nsmurl_setValue(id self, SEL _cmd, NSString *value, NSString *field) {
     BOOL changed = NO;
@@ -1976,6 +2066,16 @@ static void new_nsmurl_setValue(id self, SEL _cmd, NSString *value, NSString *fi
         NSString *custom = cfgStr(@"userAgent", @"");
         if (custom.length > 0) {
             value = custom;
+            changed = YES;
+        }
+    }
+    // 没有整串自定义 UA 时，走定向归一（系统版本/机型号），堵住 header 路径残留
+    if (!changed && field && value &&
+        [field caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame &&
+        cfgBool(@"spoofBaiduTargeted", NO)) {
+        NSString *normalized = tg_normalize_outgoing_ua(value);
+        if (normalized && ![normalized isEqualToString:value]) {
+            value = normalized;
             changed = YES;
         }
     }
@@ -1993,6 +2093,15 @@ static void new_nsmurl_addValue(id self, SEL _cmd, NSString *value, NSString *fi
         NSString *custom = cfgStr(@"userAgent", @"");
         if (custom.length > 0) {
             value = custom;
+            changed = YES;
+        }
+    }
+    if (!changed && field && value &&
+        [field caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame &&
+        cfgBool(@"spoofBaiduTargeted", NO)) {
+        NSString *normalized = tg_normalize_outgoing_ua(value);
+        if (normalized && ![normalized isEqualToString:value]) {
+            value = normalized;
             changed = YES;
         }
     }
@@ -2758,6 +2867,7 @@ static int bds_my_dlopen_preflight(const char *path) {
 static void installCHooks(void) {
     struct bds_rebinding rebindings[] = {
         {"sysctlbyname", (void *)bds_my_sysctlbyname, (void **)&orig_sysctlbyname},
+        {"uname", (void *)bds_my_uname, (void **)&orig_uname},
         {"SecItemCopyMatching", (void *)bds_my_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching},
         {"_dyld_get_image_name", (void *)bds_my_dyld_get_image_name, (void **)&orig_dyld_get_image_name},
         {"stat", (void *)bds_my_stat, (void **)&orig_stat},
@@ -4616,11 +4726,12 @@ static void bds_initialize() {
             installBaiduTargetedHooks();
         }
 
-        // User-Agent hook
-        if (cfgBool(@"spoofUserAgent", NO)) {
+        // User-Agent hook（高级 UA 开关或百度定向任一开启即安装；具体是否改写由各函数内子开关决定）
+        if (cfgBool(@"spoofUserAgent", NO) || cfgBool(@"spoofBaiduTargeted", NO)) {
             cls = objc_getClass("WKWebView");
             if (cls) {
                 hookInst(cls, @selector(customUserAgent), (IMP)new_wk_customUserAgent, &orig_wk_customUserAgent);
+                hookInst(cls, @selector(setCustomUserAgent:), (IMP)new_wk_setCustomUserAgent, &orig_wk_setCustomUserAgent);
             }
             cls = objc_getClass("NSMutableURLRequest");
             if (cls) {
