@@ -953,7 +953,7 @@ static void bdd_swizzleDelegate(id delegate){
     if(done) return;
     NSString *r1=bdd_swizzleDelegateCallback(c,@selector(URLSession:dataTask:didReceiveData:),(IMP)bdd_delDidReceiveData,"data");
     NSString *r2=bdd_swizzleDelegateCallback(c,@selector(URLSession:task:didCompleteWithError:),(IMP)bdd_delDidComplete,"complete");
-    NSString *superName=c.superclass?NSStringFromClass(c.superclass):@"-";
+    NSString *superName=class_getSuperclass(c)?NSStringFromClass(class_getSuperclass(c)):@"-";
     os_unfair_lock_lock(&g_lock);
     [g_sessDiag addObject:[NSMutableDictionary dictionaryWithDictionary:
         @{@"delegateClass":cn,@"superclass":superName,@"didReceiveData":r1,@"didComplete":r2}]];
