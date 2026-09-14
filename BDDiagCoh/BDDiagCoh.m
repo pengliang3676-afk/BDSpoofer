@@ -5,6 +5,9 @@
 //    A. 公共层：UIDevice / NSProcessInfo / sysctl(hw.machine,hw.memsize) / UIScreen / IDFV
 //    B. 百度内部层：13+ 个内部接口（Hook 记录 + 报告时主动直采一次，拿到强类型值）
 //    C. UA/网络层：NSMutableURLRequest 与 WKWebView 实际携带的 User-Agent
+//    D. 红包/任务接口回读：Hook NSURLSession 任务创建+完成回调，记录疑似红包/签到/任务
+//       接口的请求 URL/请求体/响应体（只读、脱敏），并列出全部原生接口去重清单用于人工定位。
+//       注意：纯 H5（WKWebView 网络进程）与 Cronet/自研网络栈不走 NSURLSession，覆盖不到。
 //  报告开头给出【对质表】，每个维度自动判 MATCH / MISMATCH / 数据不足。
 //
 //  安全原则（沿用 BDDiag2 v4 已复审框架）：
@@ -722,6 +725,161 @@ static NSString *bdd_buildContradiction(NSDictionary *pub) {
     return s;
 }
 
+// ============================== 红包/任务接口回读（NSURLSession，只读，不改任何请求/响应） ==============================
+static NSMutableArray<NSMutableDictionary *> *g_netAll = nil;          // 全部原生网络接口去重清单
+static NSMutableDictionary<NSString *,NSMutableDictionary *> *g_netAllIdx = nil;
+static NSMutableDictionary<NSString *,NSMutableDictionary *> *g_netHit = nil; // 疑似红包/签到/任务接口详情
+static IMP o_dtReqBlk_NS=NULL, o_dtReqBlk_CF=NULL;   // dataTaskWithRequest:completionHandler:
+static IMP o_dtReq_NS=NULL,    o_dtReq_CF=NULL;      // dataTaskWithRequest:（代理型，仅记请求）
+static IMP o_upReqBlk_NS=NULL, o_upReqBlk_CF=NULL;   // uploadTaskWithRequest:fromData:completionHandler:
+
+static BOOL bdd_classOwnsMethod(Class cls, SEL sel) {
+    if (!cls) return NO;
+    unsigned n=0; Method *list=class_copyMethodList(cls,&n); BOOL owns=NO;
+    for (unsigned i=0;i<n;i++) if (sel_isEqual(method_getName(list[i]),sel)) { owns=YES; break; }
+    free(list); return owns;
+}
+static BOOL bdd_rewardHit(NSString *s) {
+    if (!s.length) return NO;
+    static NSArray<NSString *> *kw; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        kw = @[@"redpack",@"redpacket",@"reward",@"signin",@"sign_in",@"checkin",@"check_in",
+               @"mission",@"cash",@"gold",@"coin",@"lucky",@"bonus",@"withdraw",@"hb/",
+               @"quest",@"welfare",@"incentive",@"lottery",@"drawprize",@"prize",
+               @"taskcenter",@"task_center",@"moneytree",@"egg",@"/sign",@"task"];
+    });
+    NSString *u=s.lowercaseString;
+    for (NSString *k in kw) if ([u containsString:k]) return YES;
+    return NO;
+}
+static NSString *bdd_cap(NSString *s, NSUInteger n) {
+    if (!s) return nil;
+    return s.length>n ? [[s substringToIndex:n] stringByAppendingString:@"…(截断)"] : s;
+}
+// 记录请求；返回归一化 key（METHOD scheme://host/path），供响应回读配对
+static NSString *bdd_recordRequest(NSURLRequest *req, NSData *uploadBody) {
+    if (t_suppress || ![req isKindOfClass:NSURLRequest.class]) return nil;
+    NSURL *u=req.URL;
+    NSString *urlStr=u.absoluteString ?: @"";
+    NSString *method=req.HTTPMethod ?: @"GET";
+    NSString *key=[NSString stringWithFormat:@"%@ %@://%@%@",method,u.scheme?:@"",u.host?:@"",u.path?:@""];
+    t_suppress++;
+    @try {
+        os_unfair_lock_lock(&g_lock);
+        NSMutableDictionary *a=g_netAllIdx[key];
+        if (!a && g_netAll.count<150) {
+            a=[NSMutableDictionary dictionaryWithDictionary:@{@"key":key,@"count":@0}];
+            g_netAllIdx[key]=a; [g_netAll addObject:a];
+        }
+        a[@"count"]=@([a[@"count"] unsignedLongValue]+1);
+        if (bdd_rewardHit(urlStr) || bdd_rewardHit(u.path?:@"")) {
+            NSMutableDictionary *h=g_netHit[key];
+            if (!h) {
+                h=[NSMutableDictionary dictionaryWithDictionary:@{@"key":key,@"count":@0,
+                    @"urls":[NSMutableArray array],@"reqs":[NSMutableArray array],@"resps":[NSMutableArray array]}];
+                g_netHit[key]=h;
+            }
+            h[@"count"]=@([h[@"count"] unsignedLongValue]+1);
+            NSMutableArray *urls=h[@"urls"];
+            NSString *maskedURL=bdd_cap(bdd_maskString(urlStr),800);
+            if (maskedURL.length && ![urls containsObject:maskedURL] && urls.count<3) [urls addObject:maskedURL];
+            NSData *body=uploadBody ?: req.HTTPBody;
+            if (body.length) {
+                NSString *bs=[[NSString alloc] initWithData:body encoding:NSUTF8StringEncoding];
+                if (!bs) bs=[[NSString alloc] initWithData:body encoding:NSISOLatin1StringEncoding];
+                bs=bdd_cap(bdd_maskString(bs),2000);
+                NSMutableArray *reqs=h[@"reqs"];
+                if (bs.length && ![reqs containsObject:bs] && reqs.count<2) [reqs addObject:bs];
+            }
+        }
+        os_unfair_lock_unlock(&g_lock);
+    } @catch (__unused NSException *e) { os_unfair_lock_unlock(&g_lock); }
+    @finally { t_suppress--; }
+    return key;
+}
+static void bdd_recordResponse(NSString *key, NSData *data, NSURLResponse *resp, NSError *err) {
+    if (t_suppress || !key.length) return;
+    t_suppress++;
+    @try {
+        NSInteger code=[resp isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse*)resp).statusCode : 0;
+        NSString *body=nil;
+        if ([data isKindOfClass:NSData.class] && data.length) {
+            body=[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+            if (!body) body=[[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
+            body=bdd_cap(bdd_maskString(body),6000);
+        }
+        if (err) body=[(body?:@"") stringByAppendingFormat:@"\n[error %ld %@]",(long)err.code,
+                        bdd_maskString(err.localizedDescription?:@"")];
+        os_unfair_lock_lock(&g_lock);
+        NSMutableDictionary *h=g_netHit[key];
+        if (h && (body.length||code)) {
+            NSMutableArray *resps=h[@"resps"];
+            NSString *line=[NSString stringWithFormat:@"[HTTP %ld] %@",(long)code,body?:@"(空响应体)"];
+            if (![resps containsObject:line] && resps.count<3) [resps addObject:line];
+        }
+        os_unfair_lock_unlock(&g_lock);
+    } @catch (__unused NSException *e) { os_unfair_lock_unlock(&g_lock); }
+    @finally { t_suppress--; }
+}
+typedef void(^BDDNetCompletion)(NSData *, NSURLResponse *, NSError *);
+static BDDNetCompletion bdd_wrapCompletion(BDDNetCompletion handler, NSString *key) {
+    if (!handler) return handler;
+    BDDNetCompletion w=^(NSData *data, NSURLResponse *resp, NSError *err) {
+        @try { bdd_recordResponse(key,data,resp,err); } @catch (__unused NSException *e) {}
+        handler(data,resp,err);
+    };
+    return [w copy];
+}
+// dataTaskWithRequest:completionHandler:
+static NSURLSessionDataTask *bdd_dtReqBlk_NS(id self,SEL _cmd,NSURLRequest *req,BDDNetCompletion h){
+    NSString *key=bdd_recordRequest(req,nil);
+    return ((id(*)(id,SEL,id,id))o_dtReqBlk_NS)(self,_cmd,req,bdd_wrapCompletion(h,key));
+}
+static NSURLSessionDataTask *bdd_dtReqBlk_CF(id self,SEL _cmd,NSURLRequest *req,BDDNetCompletion h){
+    NSString *key=bdd_recordRequest(req,nil);
+    return ((id(*)(id,SEL,id,id))o_dtReqBlk_CF)(self,_cmd,req,bdd_wrapCompletion(h,key));
+}
+// dataTaskWithRequest:（无完成回调，代理型，只记请求）
+static NSURLSessionDataTask *bdd_dtReq_NS(id self,SEL _cmd,NSURLRequest *req){
+    bdd_recordRequest(req,nil);
+    return ((id(*)(id,SEL,id))o_dtReq_NS)(self,_cmd,req);
+}
+static NSURLSessionDataTask *bdd_dtReq_CF(id self,SEL _cmd,NSURLRequest *req){
+    bdd_recordRequest(req,nil);
+    return ((id(*)(id,SEL,id))o_dtReq_CF)(self,_cmd,req);
+}
+// uploadTaskWithRequest:fromData:completionHandler:
+static NSURLSessionUploadTask *bdd_upReqBlk_NS(id self,SEL _cmd,NSURLRequest *req,NSData *body,BDDNetCompletion h){
+    NSString *key=bdd_recordRequest(req,body);
+    return ((id(*)(id,SEL,id,id,id))o_upReqBlk_NS)(self,_cmd,req,body,bdd_wrapCompletion(h,key));
+}
+static NSURLSessionUploadTask *bdd_upReqBlk_CF(id self,SEL _cmd,NSURLRequest *req,NSData *body,BDDNetCompletion h){
+    NSString *key=bdd_recordRequest(req,body);
+    return ((id(*)(id,SEL,id,id,id))o_upReqBlk_CF)(self,_cmd,req,body,bdd_wrapCompletion(h,key));
+}
+static void bdd_installOneNet(Class cls,SEL sel,IMP newImp,IMP *out){
+    if(!cls||!out||*out||!bdd_classOwnsMethod(cls,sel)) return;
+    Method m=class_getInstanceMethod(cls,sel); if(!m) return;
+    char rb[8]; method_getReturnType(m,rb,sizeof(rb));
+    if(bdd_typeKind(rb)!='@') return;
+    unsigned n=method_getNumberOfArguments(m);
+    for(unsigned i=2;i<n;i++){
+        char ab[16]; method_getArgumentType(m,i,ab,sizeof(ab));
+        char k=bdd_typeKind(ab); if(k!='@'&&k!='#') return;
+    }
+    *out=method_getImplementation(m);
+    method_setImplementation(m,newImp);
+}
+static void bdd_installNet(void) {
+    Class ns=NSURLSession.class, cf=NSClassFromString(@"__NSCFURLSession");
+    bdd_installOneNet(ns,@selector(dataTaskWithRequest:completionHandler:),(IMP)bdd_dtReqBlk_NS,&o_dtReqBlk_NS);
+    bdd_installOneNet(cf,@selector(dataTaskWithRequest:completionHandler:),(IMP)bdd_dtReqBlk_CF,&o_dtReqBlk_CF);
+    bdd_installOneNet(ns,@selector(dataTaskWithRequest:),(IMP)bdd_dtReq_NS,&o_dtReq_NS);
+    bdd_installOneNet(cf,@selector(dataTaskWithRequest:),(IMP)bdd_dtReq_CF,&o_dtReq_CF);
+    bdd_installOneNet(ns,@selector(uploadTaskWithRequest:fromData:completionHandler:),(IMP)bdd_upReqBlk_NS,&o_upReqBlk_NS);
+    bdd_installOneNet(cf,@selector(uploadTaskWithRequest:fromData:completionHandler:),(IMP)bdd_upReqBlk_CF,&o_upReqBlk_CF);
+}
+
 // ============================== 报告 / 浮窗 / 分享 ==============================
 @interface BDDiagCohStore : NSObject
 + (NSString *)buildReport;
@@ -773,6 +931,38 @@ static NSString *bdd_buildContradiction(NSDictionary *pub) {
         }
     }
     if (!anyUA) [s appendString:@"本次未抓到任何 User-Agent 设置（请走到加载内容/发起网络请求的页面后再导出）\n"];
+    [s appendString:@"\n"];
+
+    // 红包/任务接口回读
+    NSArray *netAllSnap=nil; NSArray *netHitSnap=nil;
+    t_suppress++;
+    @try {
+        os_unfair_lock_lock(&g_lock);
+        NSMutableArray *aAll=[NSMutableArray arrayWithCapacity:g_netAll.count];
+        for (NSDictionary *x in g_netAll) [aAll addObject:[x copy]];
+        netAllSnap=aAll;
+        NSMutableArray *aHit=[NSMutableArray arrayWithCapacity:g_netHit.count];
+        for (NSDictionary *x in g_netHit.allValues) [aHit addObject:[[NSDictionary alloc] initWithDictionary:x copyItems:YES]];
+        netHitSnap=aHit;
+        os_unfair_lock_unlock(&g_lock);
+    } @finally { t_suppress--; }
+    netHitSnap=[netHitSnap sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a,NSDictionary *b){
+        return [b[@"count"] compare:a[@"count"]];
+    }];
+    [s appendString:@"================ 红包/任务接口回读（只读）================\n"];
+    if (!netHitSnap.count) {
+        [s appendString:@"本次未命中红包/签到/任务类关键词接口。\n"];
+        [s appendString:@"注意：纯 H5 页面或 Cronet/自研网络栈的请求不走 NSURLSession，这里抓不到；可在下方全部接口清单里人工找奖励接口名。\n"];
+    } else {
+        for (NSDictionary *h in netHitSnap) {
+            [s appendFormat:@"[疑似奖励接口] %@（命中%@次）\n",h[@"key"],h[@"count"]];
+            for (NSString *u in h[@"urls"]) [s appendFormat:@"  请求URL: %@\n",u];
+            for (NSString *q in h[@"reqs"]) [s appendFormat:@"  请求体: %@\n",q];
+            for (NSString *r in h[@"resps"]) [s appendFormat:@"  响应: %@\n",r];
+        }
+    }
+    [s appendString:@"---- 本次全部原生网络接口（去重清单，用于人工定位红包接口）----\n"];
+    for (NSDictionary *a in netAllSnap) [s appendFormat:@"  %@ ×%@\n",a[@"key"],a[@"count"]];
     [s appendString:@"\n"];
 
     [s appendString:@"================ 内部层 Hook 明细 ================\n"];
@@ -902,6 +1092,10 @@ __attribute__((constructor)) static void bddcoh_entry(void) {
             if(!g_bySel[sn]) g_bySel[sn]=[NSMutableArray array];
             [g_bySel[sn] addObject:r];
         }
+        g_netAll=[NSMutableArray array];
+        g_netAllIdx=[NSMutableDictionary dictionary];
+        g_netHit=[NSMutableDictionary dictionary];
+        bdd_installNet();
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.1*NSEC_PER_SEC)),dispatch_get_main_queue(),^{bdd_pass();});
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{bdd_float();});
     }
