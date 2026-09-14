@@ -108,6 +108,8 @@ static void BDSSeedInitialIdentities(NSMutableDictionary *config, NSDictionary *
 // Initialization is separate from randomization. Explicit saved choices survive.
 static void BDSApplyInitialDefaults(NSMutableDictionary *config, NSDictionary *saved) {
     for(NSString *key in BDSRegularKeys()) config[key]=saved[key] ?: @YES;
+    // 总开关默认关闭：新装/新容器默认真机参数，需手动开启或点一键随机才伪装
+    config[@"enabled"]=saved[@"enabled"] ?: @NO;
     for(NSString *key in BDSRiskKeys()) config[key]=saved[key] ?: @NO;
     for(NSString *key in BDSSelectedTargetKeys()) config[key]=saved[key] ?: @NO;
     config[@"spoofBaiduTargeted"]=saved[@"spoofBaiduTargeted"] ?: @NO;

@@ -5,7 +5,7 @@
 	<key>configVersion</key>
 	<integer>188</integer>
 	<key>enabled</key>
-	<true/>
+	<false/>
 	<key>spoofScreen</key>
 	<false/>
 	<key>spoofAdvertisingIdentifiers</key>

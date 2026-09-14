@@ -178,7 +178,7 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"targetedPushHwMachine": @"iPhone18,2",
             @"targetedPushHwModel": @"V54AP",
             @"targetedGeneratedAt": @0,
-            @"enabled": @YES,
+            @"enabled": @NO,
             @"spoofAdvertisingIdentifiers": @YES,
             @"spoofProcessHardware": @YES,
             @"spoofSysctl": @YES,
