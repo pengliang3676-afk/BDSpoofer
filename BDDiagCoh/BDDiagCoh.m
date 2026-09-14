@@ -305,7 +305,7 @@ static void bdd_observeVoid(NSMutableDictionary *rec, NSArray *args, id reqSelf)
             if (args.count < 2) return;
             id nameObj = args[1];
             if (![nameObj isKindOfClass:NSString.class]) return;
-            if (![(NSString *)nameObj.lowercaseString isEqualToString:@"user-agent"]) return; // 只看 UA 头
+            if (![[(NSString *)nameObj lowercaseString] isEqualToString:@"user-agent"]) return; // 只看 UA 头
             id v = args[0];
             if ([v isKindOfClass:NSString.class]) ua = (NSString *)v;
             if ([reqSelf respondsToSelector:@selector(URL)]) {
@@ -645,7 +645,7 @@ static NSString *bdd_buildContradiction(NSDictionary *pub) {
         if (t.count==2) res[@"内部-bp_resolution"]=[NSString stringWithFormat:@"%@x%@",t[1],t[0]];
     }
     if (scr) {
-        double w=[scr[@"width"] doubleValue], h=[scr[@"height"] doubleValue], sc=[scr[@"scale"] doubleValue];
+        double w=[scr[@"width"] doubleValue] ?: 0, h=[scr[@"height"] doubleValue] ?: 0, sc=[scr[@"scale"] doubleValue] ?: 0;
         if (w>0&&h>0&&sc>0) res[@"内部-Talos.screenInfo"]=[NSString stringWithFormat:@"%.0fx%.0f",w*sc,h*sc];
     }
     NSMutableArray *resPairs=[NSMutableArray array];
