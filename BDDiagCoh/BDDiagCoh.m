@@ -320,17 +320,41 @@ static void bdd_observeVoid(NSMutableDictionary *rec, NSArray *args, id reqSelf)
     @finally { t_suppress--; }
     if (!ua.length) return;
 
-    NSString *line = [NSString stringWithFormat:@"%@ | %@", host ?: @"(WKWebView)", bdd_maskString(ua)];
+    // 出站回读：此时下游链（含 BDSpoofer）已执行完，读回最终真正生效的值，区分“入站原值”和“出站最终值”
+    NSString *postUA = nil;
+    t_suppress++;
+    @try {
+        if ([selName isEqualToString:@"setCustomUserAgent:"]) {
+            if ([reqSelf respondsToSelector:@selector(customUserAgent)]) {
+                id v = ((id (*)(id, SEL))objc_msgSend)(reqSelf, @selector(customUserAgent));
+                if ([v isKindOfClass:NSString.class]) postUA = (NSString *)v;
+            }
+        } else { // setValue:forHTTPHeaderField:
+            SEL gsel = NSSelectorFromString(@"valueForHTTPHeaderField:");
+            id fieldName = args.count >= 2 ? args[1] : nil;
+            if (fieldName && [reqSelf respondsToSelector:gsel]) {
+                id v = ((id (*)(id, SEL, id))objc_msgSend)(reqSelf, gsel, fieldName);
+                if ([v isKindOfClass:NSString.class]) postUA = (NSString *)v;
+            }
+        }
+    } @catch (__unused NSException *e) { postUA = nil; }
+    @finally { t_suppress--; }
+
+    NSMutableArray *newLines = [NSMutableArray array];
+    [newLines addObject:[NSString stringWithFormat:@"入站 %@ | %@", host ?: @"(WKWebView)", bdd_maskString(ua)]];
+    if ([postUA isKindOfClass:NSString.class] && postUA.length && ![postUA isEqualToString:ua]) {
+        [newLines addObject:[NSString stringWithFormat:@"出站最终 %@ | %@", host ?: @"(WKWebView)", bdd_maskString(postUA)]];
+    }
     os_unfair_lock_lock(&g_lock);
     rec[@"hits"] = @([rec[@"hits"] unsignedLongValue] + 1);
     NSMutableArray *samples = rec[@"uaSamples"];
     if (!samples) { samples = [NSMutableArray array]; rec[@"uaSamples"] = samples; }
-    if (![samples containsObject:line] && samples.count < 8) {
-        [samples addObject:line];
-        if (![rec[@"sampled"] boolValue]) {
-            rec[@"sampled"] = @YES;
-            rec[@"sampleStack"] = bdd_shortStack() ?: @"";
-        }
+    for (NSString *line in newLines) {
+        if (![samples containsObject:line] && samples.count < 12) [samples addObject:line];
+    }
+    if (newLines.count && ![rec[@"sampled"] boolValue]) {
+        rec[@"sampled"] = @YES;
+        rec[@"sampleStack"] = bdd_shortStack() ?: @"";
     }
     os_unfair_lock_unlock(&g_lock);
 }
@@ -664,17 +688,25 @@ static NSString *bdd_buildContradiction(NSDictionary *pub) {
     if (bdpIdfv) [idPairs addObject:@[@"内部-BDPDeviceUtility.getIDFV", bdd_idPrefix(bdpIdfv)]];
     [s appendFormat:@"【IDFV(脱敏前8位)】%@\n", bdd_verdict(idPairs, nil)];
 
-    // 5) UA 里的 iOS 版本（来自实际网络请求）
+    // 5) UA 里的 iOS 版本（来自实际网络请求）。优先用“出站最终”值（下游伪装链执行后的真实出站值）；
+    //    只有当本次完全没有回读到出站值时，才退回入站原值。
     NSMutableArray *uaPairs=[NSMutableArray array];
     [uaPairs addObject:@[@"伪装目标系统版本", pub[@"UIDevice.systemVersion"]]];
+    NSMutableArray *allUALines=[NSMutableArray array];
+    NSMutableArray *outUALines=[NSMutableArray array];
     for (NSMutableDictionary *r in g_records) {
-        NSArray *samples=r[@"uaSamples"];
-        for (NSString *line in samples) {
-            NSString *uaiOS=bdd_firstMatch(line, @"iPhone OS (\\d+[_\\.]\\d+(?:[_\\.]\\d+)?)");
-            if (uaiOS) [uaPairs addObject:@[@"实际请求UA", [uaiOS stringByReplacingOccurrencesOfString:@"_" withString:@"."]]];
+        for (NSString *line in (r[@"uaSamples"] ?: @[])) {
+            [allUALines addObject:line];
+            if ([line hasPrefix:@"出站最终"]) [outUALines addObject:line];
         }
     }
-    [s appendFormat:@"【UA中的iOS版本】%@\n", bdd_verdict(uaPairs, ^NSString *(id v){ return bdd_normiOS(v); })];
+    NSArray *judgeLines = outUALines.count ? outUALines : allUALines;
+    for (NSString *line in judgeLines) {
+        NSString *uaiOS=bdd_firstMatch(line, @"iPhone OS (\\d+[_\\.]\\d+(?:[_\\.]\\d+)?)");
+        if (uaiOS) [uaPairs addObject:@[@"实际请求UA", [uaiOS stringByReplacingOccurrencesOfString:@"_" withString:@"."]]];
+    }
+    [s appendFormat:@"【UA中的iOS版本】%@%@\n", bdd_verdict(uaPairs, ^NSString *(id v){ return bdd_normiOS(v); }),
+        outUALines.count?@"（按出站最终值判定）":@"（无出站回读，按入站值判定）"];
 
     [s appendString:@"（MATCH=所有出口读数一致；MISMATCH=括号内列出每个值来自哪些出口；数据不足=对应出口本次没被调用，请多操作目标页面后再导出）\n\n"];
 
