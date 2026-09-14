@@ -26,6 +26,7 @@
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <WebKit/WebKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dlfcn.h>
@@ -741,6 +742,9 @@ static NSMutableDictionary<NSString *,NSValue *> *g_delOrig=nil; // delegate 类
 static NSMutableArray<NSMutableDictionary *> *g_sessDiag=nil;     // 每个 delegate 类的 swizzle 结果
 static long long g_sessWithDeleg=0, g_sessNoDeleg=0;              // 带/不带 delegate 的会话数
 static long long g_didDataCalls=0, g_didDataMatched=0;            // didReceiveData 总回调/命中白名单
+// v8 H5(WKWebView) 嗅探
+static NSMutableArray<NSString *> *g_h5=nil;       // H5 XHR/fetch 回读行
+static NSMutableArray<NSString *> *g_h5Nav=nil;    // WebView 加载的页面地址
 
 static BOOL bdd_classOwnsMethod(Class cls, SEL sel) {
     if (!cls) return NO;
@@ -1100,6 +1104,109 @@ static void bdd_installNet(void) {
     }
 }
 
+// ================== v8: WKWebView H5 接口嗅探（XHR/fetch 注入回读） ==================
+static NSString *const BDD_H5_MSG=@"bddcoh_net";
+static const char *BDD_H5_JS =
+"(function(){"
+"if(window.__bddcohMark)return;window.__bddcohMark=1;"
+"function want(u){if(!u)return false;u=(''+u).toLowerCase();"
+"if(u.indexOf('activity.baidu.com')>=0||u.indexOf('mbd.baidu.com')>=0)return true;"
+"return /reward|redpack|incentive|signin|sign|cash|money|coin|gold|task|mission|wealth|cornucopia|popup|income|wallet|withdraw|prize|lottery|bonus|yuan/.test(u);}"
+"function snip(t){try{t=''+t;return t.length>8000?t.slice(0,8000):t;}catch(e){return '';}}"
+"function post(o){try{webkit.messageHandlers.bddcoh_net.postMessage(JSON.stringify(o));}catch(e){}}"
+"var O=XMLHttpRequest.prototype.open,S=XMLHttpRequest.prototype.send;"
+"XMLHttpRequest.prototype.open=function(m,u){this.__bu=u;this.__bm=m;return O.apply(this,arguments);};"
+"XMLHttpRequest.prototype.send=function(){"
+"var x=this;x.addEventListener('loadend',function(){try{if(want(x.__bu))post({t:'xhr',m:x.__bm||'?',u:''+x.__bu,s:x.status,b:snip(x.responseText)});}catch(e){}});"
+"return S.apply(this,arguments);};"
+"if(window.fetch){var F=window.fetch;"
+"window.fetch=function(input,init){"
+"var u=(typeof input==='string')?input:((input&&input.url)||'');"
+"var p=F.apply(this,arguments);"
+"if(want(u)){p.then(function(r){try{r.clone().text().then(function(tx){post({t:'fetch',m:(init&&init.method)||'GET',u:u,s:r.status,b:snip(tx)});});}catch(e){}});}"
+"return p;};}"
+"})();";
+
+@interface BDDiagCohJSHandler : NSObject <WKScriptMessageHandler> @end
+@implementation BDDiagCohJSHandler
+- (void)userContentController:(WKUserContentController*)ucc didReceiveScriptMessage:(WKScriptMessage*)message {
+    if(![message.name isEqualToString:BDD_H5_MSG]) return;
+    @try {
+        NSString *raw=[message.body isKindOfClass:NSString.class]?message.body:nil;
+        if(!raw.length) return;
+        NSDictionary *d=[NSJSONSerialization JSONObjectWithData:[raw dataUsingEncoding:NSUTF8StringEncoding]
+                                                        options:0 error:nil];
+        if(![d isKindOfClass:NSDictionary.class]) return;
+        NSString *u=[d[@"u"] isKindOfClass:NSString.class]?d[@"u"]:@"";
+        NSString *m=[d[@"m"] isKindOfClass:NSString.class]?d[@"m"]:@"?";
+        NSString *type=[d[@"t"] isKindOfClass:NSString.class]?d[@"t"]:@"?";
+        NSInteger s=[d[@"s"] respondsToSelector:@selector(integerValue)]?[d[@"s"] integerValue]:0;
+        NSString *body=[d[@"b"] isKindOfClass:NSString.class]?d[@"b"]:@"";
+        NSString *money=bdd_extractMoney([body dataUsingEncoding:NSUTF8StringEncoding]);
+        body=bdd_cap(bdd_maskString(body),3000);
+        NSMutableString *line=[NSMutableString stringWithFormat:@"[H5 %@ HTTP %ld] %@ %@",
+                               type,(long)s,m,bdd_cap(bdd_maskString(u),1600)];
+        if(money.length) [line appendFormat:@"\n    关键字段:\n    %@",money];
+        if(body.length) [line appendFormat:@"\n    响应: %@",body];
+        os_unfair_lock_lock(&g_lock);
+        if(g_h5.count<80 && ![g_h5 containsObject:line]) [g_h5 addObject:[line copy]];
+        os_unfair_lock_unlock(&g_lock);
+    } @catch (__unused NSException *e) {}
+}
+@end
+
+static BDDiagCohJSHandler *g_jsHandler=nil;
+static NSMutableSet *g_armedCfgs=nil;
+static void bdd_armConfig(WKWebViewConfiguration *cfg){
+    if(!cfg) return;
+    @try {
+        NSValue *key=[NSValue valueWithNonretainedObject:cfg];
+        os_unfair_lock_lock(&g_lock);
+        BOOL done=[g_armedCfgs containsObject:key];
+        if(!done) [g_armedCfgs addObject:key];
+        os_unfair_lock_unlock(&g_lock);
+        if(done) return;
+        if(!g_jsHandler) g_jsHandler=[BDDiagCohJSHandler new];
+        WKUserContentController *ucc=cfg.userContentController;
+        [ucc addScriptMessageHandler:g_jsHandler name:BDD_H5_MSG];
+        WKUserScript *us=[[WKUserScript alloc] initWithSource:@(BDD_H5_JS)
+                                                injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                             forMainFrameOnly:NO];
+        [ucc addUserScript:us];
+    } @catch (__unused NSException *e) {}
+}
+static IMP o_wkInitFrame=NULL, o_wkLoadReq=NULL, o_wkLoadHTML=NULL;
+static id bdd_wkInitFrame(id self,SEL _cmd,CGRect frame,WKWebViewConfiguration *cfg){
+    bdd_armConfig(cfg);
+    return ((id(*)(id,SEL,CGRect,id))o_wkInitFrame)(self,_cmd,frame,cfg);
+}
+static id bdd_wkLoadReq(id self,SEL _cmd,NSURLRequest *req){
+    @try {
+        NSString *u=bdd_cap(bdd_maskString(req.URL.absoluteString),500);
+        os_unfair_lock_lock(&g_lock);
+        if(u.length && g_h5Nav.count<60){
+            NSString *l=[NSString stringWithFormat:@"导航: %@",u];
+            if(![g_h5Nav containsObject:l]) [g_h5Nav addObject:l];
+        }
+        os_unfair_lock_unlock(&g_lock);
+        bdd_armConfig([(WKWebView*)self configuration]);
+    } @catch (__unused NSException *e) { os_unfair_lock_unlock(&g_lock); }
+    return ((id(*)(id,SEL,id))o_wkLoadReq)(self,_cmd,req);
+}
+static id bdd_wkLoadHTML(id self,SEL _cmd,NSString *html,NSURL *base){
+    @try { bdd_armConfig([(WKWebView*)self configuration]); } @catch (__unused NSException *e) {}
+    return ((id(*)(id,SEL,id,id))o_wkLoadHTML)(self,_cmd,html,base);
+}
+static void bdd_installWebSniff(void){
+    Class wk=NSClassFromString(@"WKWebView"); if(!wk) return;
+    Method m1=class_getInstanceMethod(wk,@selector(initWithFrame:configuration:));
+    if(m1&&!o_wkInitFrame){o_wkInitFrame=method_getImplementation(m1);method_setImplementation(m1,(IMP)bdd_wkInitFrame);}
+    Method m2=class_getInstanceMethod(wk,@selector(loadRequest:));
+    if(m2&&!o_wkLoadReq){o_wkLoadReq=method_getImplementation(m2);method_setImplementation(m2,(IMP)bdd_wkLoadReq);}
+    Method m3=class_getInstanceMethod(wk,@selector(loadHTMLString:baseURL:));
+    if(m3&&!o_wkLoadHTML){o_wkLoadHTML=method_getImplementation(m3);method_setImplementation(m3,(IMP)bdd_wkLoadHTML);}
+}
+
 // ============================== 报告 / 浮窗 / 分享 ==============================
 @interface BDDiagCohStore : NSObject
 + (NSString *)buildReport;
@@ -1202,6 +1309,24 @@ static void bdd_installNet(void) {
             [s appendFormat:@"  delegate类:%@ (父类:%@) didReceiveData:%@ didComplete:%@\n",
              d[@"delegateClass"],d[@"superclass"],d[@"didReceiveData"],d[@"didComplete"]];
     } else [s appendString:@"  未观察到任何带 delegate 的 NSURLSession 创建\n"];
+    [s appendString:@"\n"];
+
+    NSArray *h5Snap=nil,*h5NavSnap=nil;
+    t_suppress++;
+    @try {
+        os_unfair_lock_lock(&g_lock);
+        h5Snap=[NSArray arrayWithArray:g_h5];
+        h5NavSnap=[NSArray arrayWithArray:g_h5Nav];
+        os_unfair_lock_unlock(&g_lock);
+    } @finally { t_suppress--; }
+    [s appendString:@"================ H5(WKWebView)接口回读（XHR/fetch 注入）================\n"];
+    if(h5NavSnap.count){
+        [s appendString:@"---- WebView 页面导航 ----\n"];
+        for(NSString *n in h5NavSnap) [s appendFormat:@"  %@\n",n];
+    }
+    if(h5Snap.count){
+        for(NSString *l in h5Snap) [s appendFormat:@"%@\n",l];
+    } else [s appendString:@"未捕获到 H5 内 XHR/fetch（若红包页确实打开过仍为空，说明该页面不走标准 XHR/fetch 或注入时机晚于页面脚本）\n"];
     [s appendString:@"\n"];
 
     [s appendString:@"================ 内部层 Hook 明细 ================\n"];
@@ -1338,7 +1463,11 @@ __attribute__((constructor)) static void bddcoh_entry(void) {
         g_delegDone=[NSMutableSet set];
         g_delOrig=[NSMutableDictionary dictionary];
         g_sessDiag=[NSMutableArray array];
+        g_h5=[NSMutableArray array];
+        g_h5Nav=[NSMutableArray array];
+        g_armedCfgs=[NSMutableSet set];
         bdd_installNet();
+        bdd_installWebSniff();
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.1*NSEC_PER_SEC)),dispatch_get_main_queue(),^{bdd_pass();});
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{bdd_float();});
     }
