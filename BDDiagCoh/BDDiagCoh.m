@@ -5,8 +5,9 @@
 //    A. 公共层：UIDevice / NSProcessInfo / sysctl(hw.machine,hw.memsize) / UIScreen / IDFV
 //    B. 百度内部层：13+ 个内部接口（Hook 记录 + 报告时主动直采一次，拿到强类型值）
 //    C. UA/网络层：NSMutableURLRequest 与 WKWebView 实际携带的 User-Agent
-//    D. 红包/任务接口回读：Hook NSURLSession 任务创建+完成回调，记录疑似红包/签到/任务
-//       接口的请求 URL/请求体/响应体（只读、脱敏），并列出全部原生接口去重清单用于人工定位。
+//    D. 红包/任务接口回读：Hook NSURLSession 任务创建+完成回调（含代理型 delegate 会话的
+//       didReceiveData/didComplete），记录疑似红包/签到/任务接口的请求 URL/请求体/响应体
+//       （只读、脱敏），并列出全部原生接口去重清单用于人工定位。
 //       注意：纯 H5（WKWebView 网络进程）与 Cronet/自研网络栈不走 NSURLSession，覆盖不到。
 //  报告开头给出【对质表】，每个维度自动判 MATCH / MISMATCH / 数据不足。
 //
@@ -732,6 +733,10 @@ static NSMutableDictionary<NSString *,NSMutableDictionary *> *g_netHit = nil; //
 static IMP o_dtReqBlk_NS=NULL, o_dtReqBlk_CF=NULL;   // dataTaskWithRequest:completionHandler:
 static IMP o_dtReq_NS=NULL,    o_dtReq_CF=NULL;      // dataTaskWithRequest:（代理型，仅记请求）
 static IMP o_upReqBlk_NS=NULL, o_upReqBlk_CF=NULL;   // uploadTaskWithRequest:fromData:completionHandler:
+static IMP o_sessionWith=NULL;                        // +sessionWithConfiguration:delegate:delegateQueue:
+static NSMutableDictionary<NSNumber *,id> *g_taskData=nil;  // 代理型任务累积响应体（NSMutableData 或 NSNull 忽略标记）
+static NSMutableSet<NSString *> *g_delegDone=nil;           // 已 swizzle 的 delegate 类名
+static NSMutableDictionary<NSString *,NSValue *> *g_delOrig=nil; // delegate 类名 -> 原 IMP
 
 static BOOL bdd_classOwnsMethod(Class cls, SEL sel) {
     if (!cls) return NO;
@@ -750,6 +755,20 @@ static BOOL bdd_rewardHit(NSString *s) {
     });
     NSString *u=s.lowercaseString;
     for (NSString *k in kw) if ([u containsString:k]) return YES;
+    return NO;
+}
+// 详抓白名单：关键词 + 任务中心/成长体系固定接口（金额、任务状态都从这些响应里出）
+static BOOL bdd_wantDetail(NSURL *u, NSString *urlStr) {
+    if (!u) return bdd_rewardHit(urlStr);
+    if (bdd_rewardHit(urlStr) || bdd_rewardHit(u.path ?: @"")) return YES;
+    NSString *host=(u.host ?: @"").lowercaseString;
+    NSString *path=(u.path ?: @"").lowercaseString;
+    NSString *query=(u.query ?: @"").lowercaseString;
+    if ([host isEqualToString:@"mbd.baidu.com"] && [path containsString:@"searchbox"]) return YES;
+    if ([path containsString:@"growth"] || [path containsString:@"wealth"] ||
+        [path containsString:@"cornucopia"] || [path containsString:@"rights"]) return YES;
+    if ([query containsString:@"action=task"] || [query containsString:@"action=mission"] ||
+        [query containsString:@"isactivewealth"] || [query containsString:@"cornucopia"]) return YES;
     return NO;
 }
 static NSString *bdd_cap(NSString *s, NSUInteger n) {
@@ -772,7 +791,7 @@ static NSString *bdd_recordRequest(NSURLRequest *req, NSData *uploadBody) {
             g_netAllIdx[key]=a; [g_netAll addObject:a];
         }
         a[@"count"]=@([a[@"count"] unsignedLongValue]+1);
-        if (bdd_rewardHit(urlStr) || bdd_rewardHit(u.path?:@"")) {
+        if (bdd_wantDetail(u,urlStr)) {
             NSMutableDictionary *h=g_netHit[key];
             if (!h) {
                 h=[NSMutableDictionary dictionaryWithDictionary:@{@"key":key,@"count":@0,
@@ -781,15 +800,15 @@ static NSString *bdd_recordRequest(NSURLRequest *req, NSData *uploadBody) {
             }
             h[@"count"]=@([h[@"count"] unsignedLongValue]+1);
             NSMutableArray *urls=h[@"urls"];
-            NSString *maskedURL=bdd_cap(bdd_maskString(urlStr),800);
-            if (maskedURL.length && ![urls containsObject:maskedURL] && urls.count<3) [urls addObject:maskedURL];
+            NSString *maskedURL=bdd_cap(bdd_maskString(urlStr),1600);
+            if (maskedURL.length && ![urls containsObject:maskedURL] && urls.count<5) [urls addObject:maskedURL];
             NSData *body=uploadBody ?: req.HTTPBody;
             if (body.length) {
                 NSString *bs=[[NSString alloc] initWithData:body encoding:NSUTF8StringEncoding];
                 if (!bs) bs=[[NSString alloc] initWithData:body encoding:NSISOLatin1StringEncoding];
-                bs=bdd_cap(bdd_maskString(bs),2000);
+                bs=bdd_cap(bdd_maskString(bs),3000);
                 NSMutableArray *reqs=h[@"reqs"];
-                if (bs.length && ![reqs containsObject:bs] && reqs.count<2) [reqs addObject:bs];
+                if (bs.length && ![reqs containsObject:bs] && reqs.count<4) [reqs addObject:bs];
             }
         }
         os_unfair_lock_unlock(&g_lock);
@@ -806,7 +825,7 @@ static void bdd_recordResponse(NSString *key, NSData *data, NSURLResponse *resp,
         if ([data isKindOfClass:NSData.class] && data.length) {
             body=[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
             if (!body) body=[[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
-            body=bdd_cap(bdd_maskString(body),6000);
+            body=bdd_cap(bdd_maskString(body),8000);
         }
         if (err) body=[(body?:@"") stringByAppendingFormat:@"\n[error %ld %@]",(long)err.code,
                         bdd_maskString(err.localizedDescription?:@"")];
@@ -815,7 +834,7 @@ static void bdd_recordResponse(NSString *key, NSData *data, NSURLResponse *resp,
         if (h && (body.length||code)) {
             NSMutableArray *resps=h[@"resps"];
             NSString *line=[NSString stringWithFormat:@"[HTTP %ld] %@",(long)code,body?:@"(空响应体)"];
-            if (![resps containsObject:line] && resps.count<3) [resps addObject:line];
+            if (![resps containsObject:line] && resps.count<6) [resps addObject:line];
         }
         os_unfair_lock_unlock(&g_lock);
     } @catch (__unused NSException *e) { os_unfair_lock_unlock(&g_lock); }
@@ -857,6 +876,84 @@ static NSURLSessionUploadTask *bdd_upReqBlk_CF(id self,SEL _cmd,NSURLRequest *re
     NSString *key=bdd_recordRequest(req,body);
     return ((id(*)(id,SEL,id,id,id))o_upReqBlk_CF)(self,_cmd,req,body,bdd_wrapCompletion(h,key));
 }
+// ---- 代理型会话：swizzle delegate 的数据接收/完成回调，补抓响应体 ----
+static void bdd_delDidReceiveData(id self,SEL _cmd,NSURLSession *session,NSURLSessionDataTask *task,NSData *chunk){
+    @try {
+        NSNumber *k=@((uintptr_t)task);
+        os_unfair_lock_lock(&g_lock);
+        id buf=g_taskData[k];
+        if(!buf && g_taskData.count<500){
+            NSURLRequest *r=task.originalRequest;
+            if(r && bdd_wantDetail(r.URL,r.URL.absoluteString)){buf=[NSMutableData data];g_taskData[k]=buf;}
+            else {g_taskData[k]=[NSNull null];buf=g_taskData[k];}
+        }
+        if([buf isKindOfClass:NSMutableData.class] && ((NSMutableData*)buf).length<512*1024)
+            [(NSMutableData*)buf appendData:chunk];
+        os_unfair_lock_unlock(&g_lock);
+    } @catch (__unused NSException *e) { os_unfair_lock_unlock(&g_lock); }
+    Class c=object_getClass(self);
+    NSString *cn=[NSStringFromClass(c) stringByAppendingFormat:@"|%@",NSStringFromSelector(_cmd)];
+    os_unfair_lock_lock(&g_lock); IMP orig=[g_delOrig[cn] pointerValue]; os_unfair_lock_unlock(&g_lock);
+    if(orig) ((void(*)(id,SEL,id,id,id))orig)(self,_cmd,session,task,chunk);
+}
+static void bdd_delDidComplete(id self,SEL _cmd,NSURLSession *session,NSURLSessionTask *task,NSError *error){
+    @try {
+        NSNumber *k=@((uintptr_t)task);
+        os_unfair_lock_lock(&g_lock);
+        id buf=g_taskData[k]; [g_taskData removeObjectForKey:k];
+        os_unfair_lock_unlock(&g_lock);
+        if([buf isKindOfClass:NSMutableData.class] && ((NSData*)buf).length){
+            NSURLRequest *r=task.originalRequest;
+            if(r){
+                NSString *key=[NSString stringWithFormat:@"%@ %@://%@%@",r.HTTPMethod?:@"GET",
+                               r.URL.scheme?:@"",r.URL.host?:@"",r.URL.path?:@""];
+                bdd_recordResponse(key,(NSData*)buf,task.response,error);
+            }
+        }
+    } @catch (__unused NSException *e) {}
+    Class c=object_getClass(self);
+    NSString *cn=[NSStringFromClass(c) stringByAppendingFormat:@"|%@",NSStringFromSelector(_cmd)];
+    os_unfair_lock_lock(&g_lock); IMP orig=[g_delOrig[cn] pointerValue]; os_unfair_lock_unlock(&g_lock);
+    if(orig) ((void(*)(id,SEL,id,id,id))orig)(self,_cmd,session,task,error);
+}
+static void bdd_swizzleDelegateCallback(Class c,SEL sel,IMP newImp,const char *tag){
+    Method m=class_getInstanceMethod(c,sel);
+    if(!m) return;
+    char rb[8]; method_getReturnType(m,rb,sizeof(rb)); if(bdd_typeKind(rb)!='v') return;
+    unsigned n=method_getNumberOfArguments(m);
+    if(n!=5) return; // self,_cmd,session,task,data/error
+    for(unsigned i=2;i<n;i++){char ab[16];method_getArgumentType(m,i,ab,sizeof(ab));
+        char k=bdd_typeKind(ab);if(k!='@'&&k!='#')return;}
+    const char *types=method_getTypeEncoding(m) ?: "v@:@@@";
+    SEL aliasSel=sel_registerName([[NSString stringWithFormat:@"bddcoh_deleg_%s_%p",tag,c] UTF8String]);
+    IMP orig=method_getImplementation(m);
+    BOOL addAlias=class_addMethod(c,aliasSel,newImp,types);
+    class_addMethod(c,sel,orig,types);
+    Method tm=class_getInstanceMethod(c,sel), am=class_getInstanceMethod(c,aliasSel);
+    if(!addAlias||!tm||!am) return;
+    NSString *cn=[NSStringFromClass(c) stringByAppendingFormat:@"|%@",NSStringFromSelector(sel)];
+    os_unfair_lock_lock(&g_lock); g_delOrig[cn]=[NSValue valueWithPointer:orig]; os_unfair_lock_unlock(&g_lock);
+    method_exchangeImplementations(tm,am);
+}
+static void bdd_swizzleDelegate(id delegate){
+    if(!delegate) return;
+    Class c=object_getClass(delegate); if(!c) return;
+    NSString *cn=NSStringFromClass(c);
+    os_unfair_lock_lock(&g_lock);
+    BOOL done=[g_delegDone containsObject:cn];
+    if(!done) [g_delegDone addObject:cn];
+    os_unfair_lock_unlock(&g_lock);
+    if(done) return;
+    bdd_swizzleDelegateCallback(c,@selector(URLSession:dataTask:didReceiveData:),(IMP)bdd_delDidReceiveData,"data");
+    bdd_swizzleDelegateCallback(c,@selector(URLSession:task:didCompleteWithError:),(IMP)bdd_delDidComplete,"complete");
+}
+// +sessionWithConfiguration:delegate:delegateQueue:
+static NSURLSession *bdd_sessionWith(id self,SEL _cmd,NSURLSessionConfiguration *cfg,id delegate,NSOperationQueue *q){
+    NSURLSession *s=((id(*)(id,SEL,id,id,id))o_sessionWith)(self,_cmd,cfg,delegate,q);
+    bdd_swizzleDelegate(delegate);
+    return s;
+}
+
 static void bdd_installOneNet(Class cls,SEL sel,IMP newImp,IMP *out){
     if(!cls||!out||*out||!bdd_classOwnsMethod(cls,sel)) return;
     Method m=class_getInstanceMethod(cls,sel); if(!m) return;
@@ -878,6 +975,21 @@ static void bdd_installNet(void) {
     bdd_installOneNet(cf,@selector(dataTaskWithRequest:),(IMP)bdd_dtReq_CF,&o_dtReq_CF);
     bdd_installOneNet(ns,@selector(uploadTaskWithRequest:fromData:completionHandler:),(IMP)bdd_upReqBlk_NS,&o_upReqBlk_NS);
     bdd_installOneNet(cf,@selector(uploadTaskWithRequest:fromData:completionHandler:),(IMP)bdd_upReqBlk_CF,&o_upReqBlk_CF);
+    // 类方法工厂：拿到 delegate 后给其类补装数据接收/完成回调 swizzle
+    if(!o_sessionWith){
+        Class meta=object_getClass(NSURLSession.class);
+        SEL fsel=@selector(sessionWithConfiguration:delegate:delegateQueue:);
+        if(bdd_classOwnsMethod(meta,fsel)){
+            Method fm=class_getClassMethod(NSURLSession.class,fsel);
+            if(fm){
+                char rb[8]; method_getReturnType(fm,rb,sizeof(rb));
+                unsigned fn=method_getNumberOfArguments(fm); BOOL ok=(bdd_typeKind(rb)=='@'&&fn==5);
+                for(unsigned i=2;i<fn&&ok;i++){char ab[16];method_getArgumentType(fm,i,ab,sizeof(ab));
+                    char k=bdd_typeKind(ab);if(k!='@'&&k!='#')ok=NO;}
+                if(ok){o_sessionWith=method_getImplementation(fm);method_setImplementation(fm,(IMP)bdd_sessionWith);}
+            }
+        }
+    }
 }
 
 // ============================== 报告 / 浮窗 / 分享 ==============================
@@ -1095,6 +1207,9 @@ __attribute__((constructor)) static void bddcoh_entry(void) {
         g_netAll=[NSMutableArray array];
         g_netAllIdx=[NSMutableDictionary dictionary];
         g_netHit=[NSMutableDictionary dictionary];
+        g_taskData=[NSMutableDictionary dictionary];
+        g_delegDone=[NSMutableSet set];
+        g_delOrig=[NSMutableDictionary dictionary];
         bdd_installNet();
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.1*NSEC_PER_SEC)),dispatch_get_main_queue(),^{bdd_pass();});
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{bdd_float();});
