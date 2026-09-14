@@ -1,0 +1,48 @@
+name: Build BDDiagCoh
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "BDDiagCoh/**"
+      - ".github/workflows/build-bddiagcoh.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build universal iOS dylib (arm64 + arm64e)
+        run: |
+          set -euo pipefail
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          SRC=BDDiagCoh/BDDiagCoh.m
+          test -f "$SRC"
+          for ARCH in arm64 arm64e; do
+            xcrun clang -arch "$ARCH" -isysroot "$SDK" -target "$ARCH-apple-ios15.0" \
+              -fobjc-arc -fno-inline -dynamiclib \
+              -framework Foundation -framework UIKit -framework CoreGraphics \
+              -O2 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
+              -install_name @rpath/BDDiagCoh.dylib \
+              -o "BDDiagCoh-$ARCH.dylib" "$SRC"
+          done
+          xcrun lipo -create BDDiagCoh-arm64.dylib BDDiagCoh-arm64e.dylib -output BDDiagCoh.dylib
+          codesign --force --sign - --timestamp=none BDDiagCoh.dylib
+
+      - name: Verify artifact
+        run: |
+          set -euo pipefail
+          xcrun lipo BDDiagCoh.dylib -verify_arch arm64 arm64e
+          codesign --verify --strict BDDiagCoh.dylib
+          xcrun lipo -info BDDiagCoh.dylib
+          file BDDiagCoh.dylib
+          otool -L BDDiagCoh.dylib
+          shasum -a 256 BDDiagCoh.dylib
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BDDiagCoh-dylib
+          path: BDDiagCoh.dylib
+          if-no-files-found: error
