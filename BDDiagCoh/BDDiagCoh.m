@@ -768,7 +768,13 @@ static BOOL bdd_wantDetail(NSURL *u, NSString *urlStr) {
     NSString *host=(u.host ?: @"").lowercaseString;
     NSString *path=(u.path ?: @"").lowercaseString;
     NSString *query=(u.query ?: @"").lowercaseString;
-    if ([host isEqualToString:@"mbd.baidu.com"] && [path containsString:@"searchbox"]) return YES;
+    if ([host isEqualToString:@"mbd.baidu.com"] && [path containsString:@"searchbox"]) {
+        // searchbox 业务很杂，只详抓任务/奖励相关 action，避免 feed/天气/定位等噪声挤掉关键响应
+        if ([query containsString:@"action=task"] || [query containsString:@"action=mission"] ||
+            [query containsString:@"action=version"] || [query containsString:@"wealth"] ||
+            [query containsString:@"cornucopia"] || [query containsString:@"redpack"]) return YES;
+        return NO;
+    }
     if ([path containsString:@"growth"] || [path containsString:@"wealth"] ||
         [path containsString:@"cornucopia"] || [path containsString:@"rights"]) return YES;
     if ([query containsString:@"action=task"] || [query containsString:@"action=mission"] ||
@@ -779,13 +785,31 @@ static NSString *bdd_cap(NSString *s, NSUInteger n) {
     if (!s) return nil;
     return s.length>n ? [[s substringToIndex:n] stringByAppendingString:@"…(截断)"] : s;
 }
-// 记录请求；返回归一化 key（METHOD scheme://host/path），供响应回读配对
+// 归一化 key；searchbox 按 action/cmd 细分，避免不同业务的响应互相挤掉
+static NSString *bdd_netKey(NSURLRequest *req) {
+    NSURL *u=req.URL;
+    NSString *method=req.HTTPMethod ?: @"GET";
+    NSString *key=[NSString stringWithFormat:@"%@ %@://%@%@",method,u.scheme?:@"",u.host?:@"",u.path?:@""];
+    @try {
+        if([u.host isEqualToString:@"mbd.baidu.com"] && [u.path hasSuffix:@"/searchbox"]){
+            NSURLComponents *c=[NSURLComponents componentsWithURL:u resolvingAgainstBaseURL:NO];
+            NSString *action=nil,*cmd=nil;
+            for (NSURLQueryItem *qi in c.queryItems) {
+                if([qi.name isEqualToString:@"action"]) action=qi.value;
+                else if([qi.name isEqualToString:@"cmd"]) cmd=qi.value;
+            }
+            if(action.length) key=[key stringByAppendingFormat:@"#%@%@",action,
+                                   cmd.length?[NSString stringWithFormat:@"/%@",cmd]:@""];
+        }
+    } @catch (__unused NSException *e) {}
+    return key;
+}
+// 记录请求；返回归一化 key（METHOD scheme://host/path[#action/cmd]），供响应回读配对
 static NSString *bdd_recordRequest(NSURLRequest *req, NSData *uploadBody, NSString *via) {
     if (t_suppress || ![req isKindOfClass:NSURLRequest.class]) return nil;
     NSURL *u=req.URL;
     NSString *urlStr=u.absoluteString ?: @"";
-    NSString *method=req.HTTPMethod ?: @"GET";
-    NSString *key=[NSString stringWithFormat:@"%@ %@://%@%@",method,u.scheme?:@"",u.host?:@"",u.path?:@""];
+    NSString *key=bdd_netKey(req);
     t_suppress++;
     @try {
         os_unfair_lock_lock(&g_lock);
@@ -830,7 +854,7 @@ static void bdd_recordResponse(NSString *key, NSData *data, NSURLResponse *resp,
         if ([data isKindOfClass:NSData.class] && data.length) {
             body=[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
             if (!body) body=[[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
-            body=bdd_cap(bdd_maskString(body),8000);
+            body=bdd_cap(bdd_maskString(body),20000);
         }
         if (err) body=[(body?:@"") stringByAppendingFormat:@"\n[error %ld %@]",(long)err.code,
                         bdd_maskString(err.localizedDescription?:@"")];
@@ -911,8 +935,7 @@ static void bdd_delDidComplete(id self,SEL _cmd,NSURLSession *session,NSURLSessi
         if([buf isKindOfClass:NSMutableData.class] && ((NSData*)buf).length){
             NSURLRequest *r=task.originalRequest;
             if(r){
-                NSString *key=[NSString stringWithFormat:@"%@ %@://%@%@",r.HTTPMethod?:@"GET",
-                               r.URL.scheme?:@"",r.URL.host?:@"",r.URL.path?:@""];
+                NSString *key=bdd_netKey(r);
                 bdd_recordResponse(key,(NSData*)buf,task.response,error);
             }
         }
