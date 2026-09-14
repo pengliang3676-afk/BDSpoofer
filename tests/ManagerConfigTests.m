@@ -30,11 +30,30 @@ int main(int argc,char **argv) {
         NSMutableSet *meta=[NSMutableSet setWithArray:@[@"managerGeneratedAt",@"managerProfileVersion",@"managerRandomMode",@"didRandomizeBasic",@"didRandomizeAdvanced",@"didRandomizeTargeted"]];
         NSMutableSet *advanced=[meta mutableCopy];[advanced addObjectsFromArray:@[@"idfa",@"idfv",@"deviceID",@"cuid",@"utdid"]];
         NSMutableSet *basic=[meta mutableCopy];[basic addObjectsFromArray:@[@"enabled",@"spoofAdvertisingIdentifiers",@"spoofProcessHardware",@"spoofSysctl",@"spoofLocale",@"spoofCarrier",@"spoofStorage",@"deviceProfileName",@"deviceModel",@"marketingModel",@"systemVersion",@"systemBuild",@"kernOSVersion",@"hwMachine",@"hwModel",@"memorySize",@"diskSize",@"deviceName",@"kernHostname",@"screenWidth",@"screenHeight",@"screenScale",@"nativeScreenWidth",@"nativeScreenHeight",@"bootTimeOffsetSeconds",@"carrierName",@"mcc",@"mnc",@"isoCountryCode"]];
+        // B 方案：基础随机还会同步定向五组（开关+17 个值）与残留隔离四项
+        [basic addObjectsFromArray:@[@"spoofBaiduTargeted",@"spoofBaiduTargetedSystem",@"spoofBaiduTargetedModel",@"spoofBaiduTargetedScreen",@"spoofBaiduTargetedUA",@"spoofBaiduTargetedPush",@"targetedGeneratedAt",@"didRandomizeTargeted",@"targetedSystemVersion",@"targetedSystemBuild",@"targetedDeviceProfileName",@"targetedHwMachine",@"targetedHwModel",@"targetedScreenHwMachine",@"targetedScreenWidth",@"targetedScreenHeight",@"targetedScreenScale",@"targetedNativeScreenWidth",@"targetedNativeScreenHeight",@"targetedUASystemVersion",@"targetedUASystemBuild",@"targetedPushDeviceProfileName",@"targetedPushHwMachine",@"targetedPushHwModel",@"spoofKeychain",@"spoofAppGroup",@"spoofWebKitCookie",@"spoofUserAgent"]];
         config[@"spoofBaiduTargeted"]=@YES;for(NSString *key in BDSTargetedKeys()) config[key]=@YES;
         config[@"spoofWiFi"]=@NO;config[@"spoofKeychain"]=@YES;
         for(int i=0;i<100;i++) {
             NSDictionary *next=BDSCreateRandomConfig(config,BDSRandomModeBasic,[NSSet set]);
-            unchangedOutside(config,next,basic);config=[next mutableCopy];
+            unchangedOutside(config,next,basic);
+            // B 方案：基础随机后定向五组必开，且定向值必须与基础值是同一台机型/同一套系统
+            assert([next[@"spoofBaiduTargeted"] boolValue]);
+            for(NSString *key in BDSTargetedKeys()) assert([next[key] boolValue]);
+            assert([next[@"didRandomizeTargeted"] boolValue] && next[@"targetedGeneratedAt"]);
+            assert([next[@"targetedHwMachine"] isEqual:next[@"hwMachine"]]);
+            assert([next[@"targetedHwModel"] isEqual:next[@"hwModel"]]);
+            assert([next[@"targetedPushHwMachine"] isEqual:next[@"hwMachine"]]);
+            assert([next[@"targetedScreenHwMachine"] isEqual:next[@"hwMachine"]]);
+            assert([next[@"targetedSystemVersion"] isEqual:next[@"systemVersion"]]);
+            assert([next[@"targetedSystemBuild"] isEqual:next[@"systemBuild"]]);
+            assert([next[@"targetedUASystemVersion"] isEqual:next[@"systemVersion"]]);
+            assert([next[@"targetedScreenWidth"] isEqual:next[@"screenWidth"]]);
+            assert([next[@"targetedScreenHeight"] isEqual:next[@"screenHeight"]]);
+            assert([next[@"targetedNativeScreenWidth"] isEqual:next[@"nativeScreenWidth"]]);
+            assert([next[@"targetedDeviceProfileName"] isEqual:next[@"deviceProfileName"]]);
+            for(NSString *key in @[@"spoofKeychain",@"spoofAppGroup",@"spoofWebKitCookie",@"spoofUserAgent"]) assert([next[key] boolValue]);
+            config=[next mutableCopy];
             next=BDSCreateRandomConfig(config,BDSRandomModeAdvanced,[NSSet set]);
             unchangedOutside(config,next,advanced);config=[next mutableCopy];
         }

@@ -225,6 +225,43 @@ static NSArray<NSString *> *BDSTargetedNames(void) {
     return @[@"系统版本", @"机型标识", @"屏幕参数", @"User-Agent", @"Push参数"];
 }
 
+// B 方案：基础随机时，定向五组使用同一台机型/同一套 iOS，保证公共层与百度内部层完全一致。
+static NSDictionary *BDSCoherentTargetedValues(NSDictionary *device, NSDictionary *system) {
+    return @{
+        @"spoofBaiduTargeted": @YES,
+        @"spoofBaiduTargetedSystem": @YES,
+        @"spoofBaiduTargetedModel": @YES,
+        @"spoofBaiduTargetedScreen": @YES,
+        @"spoofBaiduTargetedUA": @YES,
+        @"spoofBaiduTargetedPush": @YES,
+        @"targetedGeneratedAt": @((long long)NSDate.date.timeIntervalSince1970),
+        @"targetedSystemVersion": system[@"version"],
+        @"targetedSystemBuild": system[@"build"],
+        @"targetedDeviceProfileName": device[@"name"],
+        @"targetedHwMachine": device[@"machine"],
+        @"targetedHwModel": device[@"model"],
+        @"targetedScreenHwMachine": device[@"machine"],
+        @"targetedScreenWidth": device[@"width"],
+        @"targetedScreenHeight": device[@"height"],
+        @"targetedScreenScale": device[@"scale"],
+        @"targetedNativeScreenWidth": device[@"nativeWidth"],
+        @"targetedNativeScreenHeight": device[@"nativeHeight"],
+        @"targetedUASystemVersion": system[@"version"],
+        @"targetedUASystemBuild": system[@"build"],
+        @"targetedPushDeviceProfileName": device[@"name"],
+        @"targetedPushHwMachine": device[@"machine"],
+        @"targetedPushHwModel": device[@"model"],
+    };
+}
+
+// 换新身份是显式动作：同时打开残留隔离四项，避免钥匙串/Cookie/共享容器/UA 残留把新旧身份连起来。
+static NSDictionary *BDSCoherentAdvancedSwitches(void) {
+    return @{@"spoofKeychain": @YES,
+             @"spoofAppGroup": @YES,
+             @"spoofWebKitCookie": @YES,
+             @"spoofUserAgent": @YES};
+}
+
 static void BDSSeedIdentityIfNeeded(NSMutableDictionary *config, BOOL force) {
     if(force || ![config[@"idfa"] length]) config[@"idfa"] = NSUUID.UUID.UUIDString.uppercaseString;
     if(force || ![config[@"idfv"] length]) config[@"idfv"] = NSUUID.UUID.UUIDString.uppercaseString;
@@ -294,6 +331,10 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
             @"bootTimeOffsetSeconds": @(86400 + arc4random_uniform(7 * 86400)),
         }];
         [config addEntriesFromDictionary:BDSRandomCarrier()];
+        // 三层一致：定向五组值与基础抽到的是同一台机型，残留隔离四项一并开启。
+        [config addEntriesFromDictionary:BDSCoherentTargetedValues(device, system)];
+        [config addEntriesFromDictionary:BDSCoherentAdvancedSwitches()];
+        BDSMarkRandomModeRun(config, @"targeted");
     } else {
 
         BDSMarkRandomModeRun(config, @"targeted");

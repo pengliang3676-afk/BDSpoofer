@@ -3114,6 +3114,10 @@ static NSDictionary *BDSRandomCarrierValues(void) {
     return carriers[arc4random_uniform((uint32_t)carriers.count)];
 }
 
+// B 方案一致性辅助函数定义在后面，这里前置声明，保证基础随机函数可调用。
+static NSDictionary *BDSCoherentTargetedValuesForPair(NSDictionary *device, NSDictionary *system);
+static NSDictionary *BDSCoherentAdvancedSwitchValues(void);
+
 // 为已经选定的机型/iOS 组合生成一套基础参数。
 // 这里只生成基础参数。开关初始化由 BDSApplyInitialDefaults 单独处理。
 static NSMutableDictionary *BDSRandomBaseValuesForPair(NSDictionary *device,
@@ -3159,6 +3163,8 @@ static NSMutableDictionary *BDSRandomBaseValuesForPair(NSDictionary *device,
     values[@"nativeScreenHeight"] = device[@"nativeHeight"];
     values[@"bootTimeOffsetSeconds"] = @(86400 + arc4random_uniform(7 * 86400));
     [values addEntriesFromDictionary:BDSRandomCarrierValues()];
+    [values addEntriesFromDictionary:BDSCoherentTargetedValuesForPair(device, system)];
+    [values addEntriesFromDictionary:BDSCoherentAdvancedSwitchValues()];
     return values;
 }
 
@@ -3223,6 +3229,44 @@ static NSDictionary *BDSRandomTargetedProfileValues(void) {
         @"targetedPushHwModel": device[@"model"] ?: @"V54AP"
     } mutableCopy];
     return values;
+}
+
+// B 方案：基础随机/机型池套用时，定向五组与基础使用同一台机型和同一套 iOS，公共层=内部层=UA 层。
+static NSDictionary *BDSCoherentTargetedValuesForPair(NSDictionary *device, NSDictionary *system) {
+    return @{
+        @"spoofBaiduTargeted": @YES,
+        @"spoofBaiduTargetedSystem": @YES,
+        @"spoofBaiduTargetedModel": @YES,
+        @"spoofBaiduTargetedScreen": @YES,
+        @"spoofBaiduTargetedUA": @YES,
+        @"spoofBaiduTargetedPush": @YES,
+        @"targetedGeneratedAt": @((long long)NSDate.date.timeIntervalSince1970),
+        @"didRandomizeTargeted": @YES,
+        @"targetedSystemVersion": system[@"version"],
+        @"targetedSystemBuild": system[@"build"],
+        @"targetedDeviceProfileName": device[@"name"],
+        @"targetedHwMachine": device[@"machine"],
+        @"targetedHwModel": device[@"model"],
+        @"targetedScreenHwMachine": device[@"machine"],
+        @"targetedScreenWidth": device[@"width"],
+        @"targetedScreenHeight": device[@"height"],
+        @"targetedScreenScale": device[@"scale"],
+        @"targetedNativeScreenWidth": device[@"nativeWidth"],
+        @"targetedNativeScreenHeight": device[@"nativeHeight"],
+        @"targetedUASystemVersion": system[@"version"],
+        @"targetedUASystemBuild": system[@"build"],
+        @"targetedPushDeviceProfileName": device[@"name"],
+        @"targetedPushHwMachine": device[@"machine"],
+        @"targetedPushHwModel": device[@"model"],
+    };
+}
+
+// 换新身份是显式动作：同时打开残留隔离四项，避免钥匙串/Cookie/共享容器/UA 残留串联新旧身份。
+static NSDictionary *BDSCoherentAdvancedSwitchValues(void) {
+    return @{@"spoofKeychain": @YES,
+             @"spoofAppGroup": @YES,
+             @"spoofWebKitCookie": @YES,
+             @"spoofUserAgent": @YES};
 }
 
 static NSString *BDSRandomRunText(NSString *mode) {
@@ -3567,9 +3611,8 @@ static NSString *BDSConfigSummary(void) {
     }
     NSString *message = [NSString stringWithFormat:
         @"已随机并保存基础参数。\n"
-         "定向参数、定向选择和高级身份参数保持不变。\n"
-         "高级身份参数没有改动；兼容风险测试 4 项保持原状态。\n"
-         "请彻底关闭 App 后重新打开。\n\n"
+         "百度定向 5 组已同步为同一台机型并自动开启；Keychain/Cookie/AppGroup/UA 四项残留隔离已开启。\n"
+         "高级身份 ID 没有改动。请彻底关闭 App 后重新打开。\n\n"
          "随机范围：%@\n机型：%@\n系统：%@ (%@)\n"
          "内存：%@ MB\n磁盘：%@ GB\n设备名称：%@",
         BDSDeviceRangeName(), values[@"deviceProfileName"], values[@"systemVersion"], values[@"systemBuild"],
@@ -3606,6 +3649,8 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
     v[@"screenScale"] = device[@"scale"];
     v[@"nativeScreenWidth"] = device[@"nativeWidth"];
     v[@"nativeScreenHeight"] = device[@"nativeHeight"];
+    [v addEntriesFromDictionary:BDSCoherentTargetedValuesForPair(device, system)];
+    [v addEntriesFromDictionary:BDSCoherentAdvancedSwitchValues()];
     return v;
 }
 
@@ -3653,7 +3698,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
     NSString *msg = [NSString stringWithFormat:
         @"已套用并保存。\n请彻底关闭 App 后重新打开。\n\n"
          "机型：%@（%@）\n系统：iOS %@ (%@)\n点分辨率：%@×%@ @%@x\n物理像素：%@×%@\n"
-         "一键定向指纹：参数和开关保持原设置",
+         "百度定向 5 组已同步为同一机型；残留隔离 4 项已开启",
         values[@"deviceProfileName"], values[@"hwMachine"],
         values[@"systemVersion"], values[@"systemBuild"],
         values[@"screenWidth"], values[@"screenHeight"], values[@"screenScale"],

@@ -113,6 +113,21 @@ for key in targeted_keys:
 assert 'cfgBool(' not in targeted_random
 manager_random=function(manager,'BDSCreateRandomConfig')
 assert 'selectedTargetedKeys = [NSSet setWithArray:BDSTargetedKeys()]' in manager_random
+# B 方案：基础随机三层一致（管理器+插件），残留隔离四项自动开
+assert 'BDSCoherentTargetedValues' in manager and 'BDSCoherentAdvancedSwitches' in manager
+# 剥掉单行前置声明，避免函数提取器把声明当成定义
+plugin_nd=re.sub(r'^static [^\n;]*;\s*$','',plugin,flags=re.M)
+manager_nd=re.sub(r'^static [^\n;]*;\s*$','',manager,flags=re.M)
+mgr_dev=function(manager_nd,'BDSCreateConfigForDevice')
+assert 'BDSCoherentTargetedValues(device, system)' in mgr_dev and 'BDSCoherentAdvancedSwitches()' in mgr_dev
+assert 'BDSCoherentTargetedValuesForPair' in plugin and 'BDSCoherentAdvancedSwitchValues' in plugin
+assert 'BDSCoherentTargetedValuesForPair(device, system)' in function(plugin_nd,'BDSRandomBaseValuesForPair')
+assert 'BDSCoherentTargetedValuesForPair(device, system)' in function(plugin_nd,'BDSProfileApplyValues')
+for coherent in [function(manager_nd,'BDSCoherentTargetedValues'), function(plugin_nd,'BDSCoherentTargetedValuesForPair')]:
+    for key in targeted_keys:
+        assert re.search(r'@"'+re.escape(key)+r'"\s*:\s*@YES',coherent),key
+    for token in ['device[@"machine"]','system[@"version"]','device[@"width"]']:
+        assert token in coherent,token
 def plugin_devices(text):
     body=function(text,'BDSDeviceProfiles')
     blocks=re.findall(r'@\{@"name":\s*@"[^"]+".*?@"disks":\s*@\[(.*?)\]\}',body,re.S)
