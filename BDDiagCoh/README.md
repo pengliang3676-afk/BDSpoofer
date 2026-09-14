@@ -14,7 +14,9 @@ TrollFools 注入时**先选 BDSpoofer dylib，再选 BDDiagCoh.dylib**，保证
 - 开头【三层身份对质表】按 系统版本 / 机型标识 / 物理分辨率 / IDFV / UA中的iOS版本 五个维度，
   自动判 MATCH（全部出口一致）、MISMATCH（括号列出每个值来自哪些出口）、数据不足（该出口本次没被调用）；
 - 公共层直采：UIDevice / NSProcessInfo / sysctl / UIScreen 的报告时刻读数；
-- UA/网络层：NSMutableURLRequest、WKWebView 实际携带的 User-Agent；
+- UA/网络层：NSMutableURLRequest、WKWebView 实际携带的 User-Agent；每条同时给出
+  「入站」（调用方传入的原始值）和「出站最终」（下游伪装链执行后回读到的最终生效值），
+  对质表的 UA 判定优先按出站最终值。
 - 内部层 Hook 明细：17 个百度内部接口 + 2 个 UA 接口的签名、命中次数、返回样本与短栈。
 
 IDFV 只保留前 8 位用于比对，手机号/UUID/token 全部脱敏。
