@@ -13,7 +13,9 @@ assert len(items)==26
 regular=[key for key,off in items if not off];risk=[key for key,off in items if off]
 assert len(regular)==21 and len(risk)==5
 basic_keys=['enabled','spoofAdvertisingIdentifiers','spoofProcessHardware','spoofSysctl','spoofLocale','spoofCarrier','spoofStorage']
-assert all(config[k] is True for k in basic_keys)
+# 总开关默认关闭（新容器=真机参数），其余 6 个基础子开关默认开
+assert config['enabled'] is False
+assert all(config[k] is True for k in basic_keys if k!='enabled')
 assert all(config[k] is True for k in regular if k not in basic_keys)
 assert all(config[k] is False for k in risk)
 advanced_keys=['spoofBaiduSDK','bypassJailbreakDetect','spoofKeychain','spoofAppGroup','spoofWebKitCookie','spoofUserAgent']
@@ -26,7 +28,8 @@ default_block=plugin.split('static NSDictionary *BDSDefaultConfig(void)',1)[1].s
 assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@YES',default_block) for key in advanced_on)
 assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@NO',default_block) for key in advanced_off)
 assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@NO',default_block) for key in targeted_keys)
-assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@YES',default_block) for key in basic_keys)
+assert re.search(r'@"enabled"\s*:\s*@NO',default_block)
+assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@YES',default_block) for key in basic_keys if key!='enabled')
 assert config['spoofScreen'] is False and config['configVersion']==188
 assert config['blockStatCashTelemetry'] is False
 assert 'blockStatCashTelemetry' in policy and 'blockStatCashTelemetry' in plugin
@@ -186,4 +189,4 @@ for name in names:assert function(plugin,name)==function(base,name),name
 for path in ['bdspoofer_config.plist','CraneManager/Info.plist','CraneManager/BDSCraneManager.entitlements','CraneManager/BDSCraneManager.libSandy.plist']:plistlib.loads((root/path).read_bytes())
 manager_info=plistlib.loads((root/'CraneManager/Info.plist').read_bytes())
 assert manager_info['CFBundleShortVersionString']=='1.0.3' and manager_info['CFBundleVersion']=='104' and 'UIApplicationExitsOnSuspend' not in manager_info
-print('PASS 1.8.2 UI1.2 / manager 1.0.3: v188, basic 7 switches (incl. spoofSysctl) default on, advanced first 2 default on and last 4 default off, default preset iPhone 17 Pro Max, 36 synchronized devices')
+print('PASS 1.8.2 UI1.2 / manager 1.0.3: v188, master enabled default OFF, other 6 basic switches default on, advanced first 2 default on and last 4 default off, default preset iPhone 17 Pro Max, 36 synchronized devices')
