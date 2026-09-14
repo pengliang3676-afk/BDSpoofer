@@ -322,9 +322,10 @@ static void bdd_observeVoid(NSMutableDictionary *rec, NSArray *args, id reqSelf)
 
     // 出站回读：此时下游链（含 BDSpoofer）已执行完，读回最终真正生效的值，区分“入站原值”和“出站最终值”
     NSString *postUA = nil;
+    NSString *selName0 = rec[@"selName"];
     t_suppress++;
     @try {
-        if ([selName isEqualToString:@"setCustomUserAgent:"]) {
+        if ([selName0 isEqualToString:@"setCustomUserAgent:"]) {
             if ([reqSelf respondsToSelector:@selector(customUserAgent)]) {
                 id v = ((id (*)(id, SEL))objc_msgSend)(reqSelf, @selector(customUserAgent));
                 if ([v isKindOfClass:NSString.class]) postUA = (NSString *)v;
