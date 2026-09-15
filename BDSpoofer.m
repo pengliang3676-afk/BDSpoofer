@@ -2071,13 +2071,15 @@ static IMP orig_wk_loadHTMLString = NULL;
 static IMP orig_wk_loadData = NULL;
 static IMP orig_wk_loadFileURL = NULL;
 
+static NSString *bds_webCoherenceScript(BOOL doScreen, BOOL doUA);
+
 static void bds_armWebCoherence(id wv) {
     BOOL doScreen = tg_feature_enabled(@"spoofBaiduTargetedScreen");
     BOOL doUA = tg_feature_enabled(@"spoofBaiduTargetedUA");
     if (!doScreen && !doUA || !wv) return;
     @autoreleasepool {
         @try {
-            WKWebViewConfiguration *cfg = [wv configuration];
+            WKWebViewConfiguration *cfg = (WKWebViewConfiguration *)[wv configuration];
             if (!cfg) return;
             static char bdsInjectedKey;
             if (objc_getAssociatedObject(cfg, &bdsInjectedKey)) return;
