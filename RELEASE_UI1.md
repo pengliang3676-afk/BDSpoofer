@@ -1,6 +1,10 @@
-# 卐解 9.15-01 / 卍解 9.15-01
+# 卐解 9.15-02 / 卍解 9.15-02
 
 卐解是注入百度极速版的插件（技术文件名继续使用 `BDSpoofer`），卍解是配套的 Crane 容器管理端。
+
+## 9.15-02 H5 出站 ua= 分辨率改写
+
+真机探针证实：H5 请求公共参数 `ua=宽_高_iphone_…` 并非网页用 window.screen 现算，而是原生桥接播种、JS 公共参数模块直接取用，因此 9.15-01 的 screen 覆盖改不到它。本版本在 DocumentStart 脚本里再包一层 XMLHttpRequest.open/send、fetch、navigator.sendBeacon，请求发出前把 URL 与字符串请求体中的 `ua=数字_数字` 统一替换为定向机型物理分辨率（小_大顺序）；只改这一段，其余参数字节不动。原生 delegate 创建的非 H5 请求不在本版范围。
 
 ## 9.15-01 H5 网页层屏幕/UA 一致性
 
@@ -34,8 +38,8 @@
 
 ## 配套文件
 
-- `BDSpoofer_9.15-01.dylib`：卐解插件，通过巨魔注入器替换百度内旧插件，避免同时保留两个版本。
-- `BDSpooferCraneManager_9.15-01_RootHide.deb`：卍解配套更新，包版本 `9.15-01`，应用版本 9.15.1、构建号 105。
+- `BDSpoofer_9.15-02.dylib`：卐解插件，通过巨魔注入器替换百度内旧插件，避免同时保留两个版本。
+- `BDSpooferCraneManager_9.15-02_RootHide.deb`：卍解配套更新，包版本 `9.15-02`，应用版本 9.15.2、构建号 106。
 - 百度 Bundle ID：`com.baidu.BaiduMobileInfo`。两个程序支持 arm64 / arm64e，最低 iOS 15。
 
 ## 界面和默认设置

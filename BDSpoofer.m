@@ -4,6 +4,8 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  9.15-02：H5 出站公共参数 ua=宽_高 在 XHR/fetch/sendBeacon 发出前统一替换为定向物理分辨率。
+//  9.15-02：H5 出站公共参数 ua=宽_高 在 XHR/fetch/sendBeacon 发出前统一替换为定向物理分辨率。
 //  9.15-01：H5 网页层一致性，WKWebView 注入 DocumentStart 脚本统一 window.screen/devicePixelRatio/navigator.userAgent。
 //  1.8.2 UI1.2：定向一键随机自动开启全部五项并生成整套定向参数。
 //  1.8.1 UI1：基于 1.8.1 合入独立定向指纹与统一设置界面。
@@ -2062,12 +2064,17 @@ static void new_wk_setCustomUserAgent(id self, SEL _cmd, NSString *ua) {
 
 static IMP orig_wk_initWithFrameConfiguration = NULL;
 
-// DocumentStart 脚本：让 H5 里 JS 读到的 window.screen / devicePixelRatio / navigator.userAgent 与定向机型一致。
+// DocumentStart 脚本：让 H5 里 JS 读到的 window.screen / devicePixelRatio / navigator.userAgent 与定向机型一致；
+// 并在 XHR/fetch/sendBeacon 发出前改写公共参数 ua=宽_高（该值由原生桥接播种，改 window.screen 无法影响，只能在出站最后一环替换）。
 // 不动原生 UIScreen（避免原生界面缩放变形），只统一网页层，消除“原生假机型 + H5 真屏/真系统骨架”的三层矛盾。
 static NSString *bds_webCoherenceScript(BOOL doScreen, BOOL doUA) {
     NSInteger pw = tg_pt_w();
     NSInteger ph = tg_pt_h();
     NSInteger sc = tg_scale_i();
+    NSInteger pxW = tg_px_w();
+    NSInteger pxH = tg_px_h();
+    NSInteger uaW = MIN(pxW, pxH);
+    NSInteger uaH = MAX(pxW, pxH);
     NSMutableString *js = [NSMutableString stringWithString:@"(function(){try{"];
     [js appendString:@"function d(o,k,v){try{Object.defineProperty(o,k,{get:function(){return v;},configurable:true});}catch(e){}}"];
     if (doScreen) {
@@ -2086,6 +2093,16 @@ static NSString *bds_webCoherenceScript(BOOL doScreen, BOOL doUA) {
             @"d(window,'innerHeight',h);"
             @"d(window,'outerWidth',w);"
             @"d(window,'outerHeight',h);"];
+        // 出站最后一环：URL 与表单体内的 ua=物理宽_物理高 统一替换为定向机型（小_大顺序）
+        [js appendFormat:
+            @"var TOK='%ld_%ld';"
+            @"function fx(x){try{if(typeof x==='string')return x.replace(/(^|[?&])ua=\\d+_\\d+/g,'$1ua='+TOK);}catch(e){}return x;}"
+            @"var xo=XMLHttpRequest.prototype.open,xs=XMLHttpRequest.prototype.send;"
+            @"XMLHttpRequest.prototype.open=function(m,u){try{arguments[1]=fx(u);}catch(e){}return xo.apply(this,arguments);};"
+            @"XMLHttpRequest.prototype.send=function(b){try{if(typeof b==='string')arguments[0]=fx(b);}catch(e){}return xs.apply(this,arguments);};"
+            @"if(window.fetch){var ff=window.fetch;window.fetch=function(i,o){try{if(typeof i==='string')i=fx(i);if(o&&typeof o.body==='string')o.body=fx(o.body);}catch(e){}return ff.apply(this,arguments);};}"
+            @"if(navigator.sendBeacon){var sb=navigator.sendBeacon.bind(navigator);navigator.sendBeacon=function(u,b){try{arguments[0]=fx(u);if(b&&typeof b==='string')arguments[1]=fx(b);}catch(e){}return sb.apply(null,arguments);};}",
+            (long)uaW, (long)uaH];
     }
     if (doUA) {
         [js appendFormat:
@@ -3648,7 +3665,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 9.15-01";
+    page.title=@"卐解 9.15-02";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
