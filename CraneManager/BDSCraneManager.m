@@ -292,7 +292,7 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
     [config addEntriesFromDictionary:@{
         @"configVersion": @189,
         @"managerGeneratedAt": @([[NSDate date] timeIntervalSince1970]),
-        @"managerProfileVersion": @106,
+        @"managerProfileVersion": @107,
         @"managerRandomMode": mode == BDSRandomModeTargeted ? @"targeted" : @"basic",
     }];
 
@@ -381,7 +381,7 @@ static NSMutableDictionary *BDSCreateRandomConfig(NSDictionary *existing,
     if (mode == BDSRandomModeAdvanced) {
         NSMutableDictionary *config = BDSMergedConfig(existing);
         config[@"managerGeneratedAt"] = @([[NSDate date] timeIntervalSince1970]);
-        config[@"managerProfileVersion"] = @106;
+        config[@"managerProfileVersion"] = @107;
         config[@"managerRandomMode"] = @"advanced";
         BDSMarkRandomModeRun(config, @"advanced");
         // 与插件“一键高级”一致：只更换五个长期身份值，所有参数和开关保持原状态。

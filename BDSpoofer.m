@@ -4,7 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
-//  9.15-02：H5 出站公共参数 ua=宽_高 在 XHR/fetch/sendBeacon 发出前统一替换为定向物理分辨率。
+//  9.15-03：H5 一致性脚本改在导航入口（loadRequest 等）最后挂入，保证 XHR/fetch 包装层在探针之外。
 //  9.15-02：H5 出站公共参数 ua=宽_高 在 XHR/fetch/sendBeacon 发出前统一替换为定向物理分辨率。
 //  9.15-01：H5 网页层一致性，WKWebView 注入 DocumentStart 脚本统一 window.screen/devicePixelRatio/navigator.userAgent。
 //  1.8.2 UI1.2：定向一键随机自动开启全部五项并生成整套定向参数。
@@ -2062,7 +2062,56 @@ static void new_wk_setCustomUserAgent(id self, SEL _cmd, NSString *ua) {
 
 #pragma mark - H5 网页层屏幕/UA 一致性（WKUserScript 注入）
 
-static IMP orig_wk_initWithFrameConfiguration = NULL;
+// 9.15-03：改为在导航入口（loadRequest/loadHTMLString/loadData/loadFileURL）注入。
+// 初始化期所有 dylib 都会 addUserScript，脚本顺序取决于 dylib 加载顺序；探针在自身 XHR 包装入口记录 URL，
+// 若我们的脚本先装（内层），探针日志会显示改写前的旧值（线上其实已改）。导航入口晚于一切初始化挂载，
+// 可保证我们的 DocumentStart 脚本最后加入 → XHR/fetch 包装层在最外，探针日志与线上一致。
+static IMP orig_wk_loadRequest = NULL;
+static IMP orig_wk_loadHTMLString = NULL;
+static IMP orig_wk_loadData = NULL;
+static IMP orig_wk_loadFileURL = NULL;
+
+static void bds_armWebCoherence(id wv) {
+    BOOL doScreen = tg_feature_enabled(@"spoofBaiduTargetedScreen");
+    BOOL doUA = tg_feature_enabled(@"spoofBaiduTargetedUA");
+    if (!doScreen && !doUA || !wv) return;
+    @autoreleasepool {
+        @try {
+            WKWebViewConfiguration *cfg = [wv configuration];
+            if (!cfg) return;
+            static char bdsInjectedKey;
+            if (objc_getAssociatedObject(cfg, &bdsInjectedKey)) return;
+            objc_setAssociatedObject(cfg, &bdsInjectedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            WKUserContentController *ucc = cfg.userContentController;
+            if (!ucc) {
+                ucc = [[WKUserContentController alloc] init];
+                cfg.userContentController = ucc;
+            }
+            WKUserScript *script = [[WKUserScript alloc]
+                initWithSource:bds_webCoherenceScript(doScreen, doUA)
+                 injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+              forMainFrameOnly:NO];
+            [ucc addUserScript:script];
+        } @catch (__unused NSException *e) {}
+    }
+}
+
+static void new_wk_loadRequest(id self, SEL _cmd, id request) {
+    bds_armWebCoherence(self);
+    ((void (*)(id, SEL, id))orig_wk_loadRequest)(self, _cmd, request);
+}
+static void new_wk_loadHTMLString(id self, SEL _cmd, id html, id baseURL) {
+    bds_armWebCoherence(self);
+    ((void (*)(id, SEL, id, id))orig_wk_loadHTMLString)(self, _cmd, html, baseURL);
+}
+static void new_wk_loadData(id self, SEL _cmd, id data, id mime, id enc, id baseURL) {
+    bds_armWebCoherence(self);
+    ((void (*)(id, SEL, id, id, id, id))orig_wk_loadData)(self, _cmd, data, mime, enc, baseURL);
+}
+static id new_wk_loadFileURL(id self, SEL _cmd, id fileURL, id readAccessURL) {
+    bds_armWebCoherence(self);
+    return ((id (*)(id, SEL, id, id))orig_wk_loadFileURL)(self, _cmd, fileURL, readAccessURL);
+}
 
 // DocumentStart 脚本：让 H5 里 JS 读到的 window.screen / devicePixelRatio / navigator.userAgent 与定向机型一致；
 // 并在 XHR/fetch/sendBeacon 发出前改写公共参数 ua=宽_高（该值由原生桥接播种，改 window.screen 无法影响，只能在出站最后一环替换）。
@@ -2113,33 +2162,6 @@ static NSString *bds_webCoherenceScript(BOOL doScreen, BOOL doUA) {
     }
     [js appendString:@"}catch(e){}})();"];
     return js;
-}
-
-static id new_wk_initWithFrameConfiguration(id self, SEL _cmd, CGRect frame, WKWebViewConfiguration *configuration) {
-    typedef id (*BDSWKInitIMP)(id, SEL, CGRect, id);
-    BOOL doScreen = tg_feature_enabled(@"spoofBaiduTargetedScreen");
-    BOOL doUA = tg_feature_enabled(@"spoofBaiduTargetedUA");
-    if (doScreen || doUA) {
-        @autoreleasepool {
-            if (!configuration) configuration = [[WKWebViewConfiguration alloc] init];
-            WKUserContentController *ucc = configuration.userContentController;
-            if (!ucc) {
-                ucc = [[WKUserContentController alloc] init];
-                configuration.userContentController = ucc;
-            }
-            // 同一个 configuration 只注入一次，避免共享配置的多个 WebView 重复叠加脚本
-            static char bdsInjectedKey;
-            if (!objc_getAssociatedObject(configuration, &bdsInjectedKey)) {
-                objc_setAssociatedObject(configuration, &bdsInjectedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                WKUserScript *script = [[WKUserScript alloc]
-                    initWithSource:bds_webCoherenceScript(doScreen, doUA)
-                     injectionTime:WKUserScriptInjectionTimeAtDocumentStart
-                  forMainFrameOnly:NO];
-                [ucc addUserScript:script];
-            }
-        }
-    }
-    return ((BDSWKInitIMP)orig_wk_initWithFrameConfiguration)(self, _cmd, frame, configuration);
 }
 
 static IMP orig_nsmurl_setValue = NULL;
@@ -3665,7 +3687,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 9.15-02";
+    page.title=@"卐解 9.15-03";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -4817,8 +4839,11 @@ static void bds_initialize() {
             if (cls) {
                 hookInst(cls, @selector(customUserAgent), (IMP)new_wk_customUserAgent, &orig_wk_customUserAgent);
                 hookInst(cls, @selector(setCustomUserAgent:), (IMP)new_wk_setCustomUserAgent, &orig_wk_setCustomUserAgent);
-                // H5 网页层屏幕/UA 一致性：在 WebView 初始化时注入 DocumentStart 脚本
-                hookInst(cls, @selector(initWithFrame:configuration:), (IMP)new_wk_initWithFrameConfiguration, &orig_wk_initWithFrameConfiguration);
+                // H5 网页层屏幕/UA 一致性：在导航入口最后挂入 DocumentStart 脚本（保证包装层在最外）
+                hookInst(cls, @selector(loadRequest:), (IMP)new_wk_loadRequest, &orig_wk_loadRequest);
+                hookInst(cls, @selector(loadHTMLString:baseURL:), (IMP)new_wk_loadHTMLString, &orig_wk_loadHTMLString);
+                hookInst(cls, @selector(loadData:MIMEType:characterEncodingName:baseURL:), (IMP)new_wk_loadData, &orig_wk_loadData);
+                hookInst(cls, @selector(loadFileURL:allowingReadAccessToURL:), (IMP)new_wk_loadFileURL, &orig_wk_loadFileURL);
             }
             cls = objc_getClass("NSMutableURLRequest");
             if (cls) {

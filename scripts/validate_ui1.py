@@ -75,10 +75,11 @@ load_end=plugin.index('static BOOL saveConfigValues',load_start)
 load_body=plugin[load_start:load_end]
 assert 'BOOL hasPersistentConfig' in load_body and 'if (!hasPersistentConfig)' in load_body
 assert load_body.index('return;') < load_body.index('NSInteger ver =')
-assert 'page.title=@"卐解 9.15-02"' in plugin
-# 9.15-01：H5 网页层一致性注入必须存在且挂在 WKWebView 指定初始化器上
-assert 'bds_webCoherenceScript' in plugin and 'new_wk_initWithFrameConfiguration' in plugin
-assert "@selector(initWithFrame:configuration:)" in plugin
+assert 'page.title=@"卐解 9.15-03"' in plugin
+# H5 网页层一致性：导航入口挂 DocumentStart 脚本（9.15-03 起不再用初始化器注入）
+assert 'bds_webCoherenceScript' in plugin and 'bds_armWebCoherence' in plugin
+assert "@selector(loadRequest:)" in plugin and "@selector(loadHTMLString:baseURL:)" in plugin
+assert 'initWithFrame:configuration:' not in plugin
 # 9.15-02：XHR/fetch/sendBeacon 出站 ua= 分辨率改写必须存在
 assert 'XMLHttpRequest.prototype.open' in plugin and 'window.fetch' in plugin and 'navigator.sendBeacon' in plugin
 assert '定向总开关及 5 个子开关已全部开启' in plugin
@@ -93,7 +94,7 @@ targeted_values=['targetedDeviceProfileName','targetedSystemVersion','targetedSy
 sparse=dict(config)
 for key in targeted_values:sparse.pop(key,None)
 sparse.pop('managerResolvedPath',None)
-sparse.update(managerContainerIdentifier='12345678-1234-1234-1234-123456789012',managerGeneratedAt=1.0,managerProfileVersion=106,managerRandomMode='basic',didRandomizeBasic=True)
+sparse.update(managerContainerIdentifier='12345678-1234-1234-1234-123456789012',managerGeneratedAt=1.0,managerProfileVersion=107,managerRandomMode='basic',didRandomizeBasic=True)
 assert len(plistlib.dumps(sparse,fmt=plistlib.FMT_XML,sort_keys=False))<4096
 assert 'g_rewardProbe' not in plugin
 assert 'BDSInstallCashSpoofing' not in plugin and 'arc4random_uniform(101)' not in plugin
@@ -103,7 +104,7 @@ for text in ['h2tcbox.baidu.com','/ztbox','zpblog','10290','y_mission_index','c_
 assert 'BDSInstallCashTelemetryBlocking();' in plugin
 assert plugin.count('loadConfig();') >= 3
 assert '0.50' not in release and '触发风控' not in release
-assert 'BDSpoofer_9.15-02.dylib' in build and 'BDSpoofer_9.15-01.dylib' not in build
+assert 'BDSpoofer_9.15-03.dylib' in build and 'BDSpoofer_9.15-02.dylib' not in build
 assert '[verified isEqualToDictionary:config]' in manager
 assert 'targetedScreenHwMachine' in plugin and 'targetedScreenHwMachine' in manager
 def function(text,name):
@@ -193,5 +194,5 @@ names=['bds_c_is_jailbreak_path','bds_is_suspicious_dlopen_path','bds_my_dlopen'
 for name in names:assert function(plugin,name)==function(base,name),name
 for path in ['bdspoofer_config.plist','CraneManager/Info.plist','CraneManager/BDSCraneManager.entitlements','CraneManager/BDSCraneManager.libSandy.plist']:plistlib.loads((root/path).read_bytes())
 manager_info=plistlib.loads((root/'CraneManager/Info.plist').read_bytes())
-assert manager_info['CFBundleShortVersionString']=='9.15.2' and manager_info['CFBundleVersion']=='106' and 'UIApplicationExitsOnSuspend' not in manager_info
-print('PASS 9.15-02 / manager 9.15.2(106): v189, H5 screen/UA coherence + outbound ua= rewrite (XHR/fetch/sendBeacon), master enabled default OFF, other 6 basic switches default on, advanced first 2 default on, default preset iPhone 17 Pro Max, 36 synchronized devices')
+assert manager_info['CFBundleShortVersionString']=='9.15.3' and manager_info['CFBundleVersion']=='107' and 'UIApplicationExitsOnSuspend' not in manager_info
+print('PASS 9.15-03 / manager 9.15.3(107): v189, H5 coherence script armed at navigation entry, outbound ua= rewrite (XHR/fetch/sendBeacon) outermost, master enabled default OFF, other 6 basic switches default on, advanced first 2 default on, default preset iPhone 17 Pro Max, 36 synchronized devices')

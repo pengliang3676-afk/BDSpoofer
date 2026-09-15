@@ -1,6 +1,10 @@
-# 卐解 9.15-02 / 卍解 9.15-02
+# 卐解 9.15-03 / 卍解 9.15-03
 
 卐解是注入百度极速版的插件（技术文件名继续使用 `BDSpoofer`），卍解是配套的 Crane 容器管理端。
+
+## 9.15-03 导航入口注入（最外层包装）
+
+9.15-02 的 XHR/fetch 改写在初始化期挂入，脚本顺序受 dylib 加载顺序影响，可能被探针脚本包在内层（线上已改、探针日志仍显示旧值）。本版本改为在 `loadRequest:`/`loadHTMLString:baseURL:`/`loadData:…`/`loadFileURL:…` 四个导航入口挂入 DocumentStart 脚本，晚于一切初始化挂载，保证 XHR/fetch/sendBeacon 包装层在最外，探针日志与实际出站一致。
 
 ## 9.15-02 H5 出站 ua= 分辨率改写
 
@@ -38,8 +42,8 @@
 
 ## 配套文件
 
-- `BDSpoofer_9.15-02.dylib`：卐解插件，通过巨魔注入器替换百度内旧插件，避免同时保留两个版本。
-- `BDSpooferCraneManager_9.15-02_RootHide.deb`：卍解配套更新，包版本 `9.15-02`，应用版本 9.15.2、构建号 106。
+- `BDSpoofer_9.15-03.dylib`：卐解插件，通过巨魔注入器替换百度内旧插件，避免同时保留两个版本。
+- `BDSpooferCraneManager_9.15-03_RootHide.deb`：卍解配套更新，包版本 `9.15-03`，应用版本 9.15.3、构建号 107。
 - 百度 Bundle ID：`com.baidu.BaiduMobileInfo`。两个程序支持 arm64 / arm64e，最低 iOS 15。
 
 ## 界面和默认设置
