@@ -4,6 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  9.15-01：H5 网页层一致性，WKWebView 注入 DocumentStart 脚本统一 window.screen/devicePixelRatio/navigator.userAgent。
 //  1.8.2 UI1.2：定向一键随机自动开启全部五项并生成整套定向参数。
 //  1.8.1 UI1：基于 1.8.1 合入独立定向指纹与统一设置界面。
 //    三组随机互不改写；基础功能 7 项（含系统硬件参数）首次初始化默认开启，高级前 2 项首次初始化开启，高级后 4 项默认关闭。
@@ -154,7 +155,7 @@ static NSDictionary *BDSDefaultConfig(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @188,
+            @"configVersion": @189,
             @"spoofBaiduTargeted": @NO,
             @"spoofBaiduTargetedSystem": @NO,
             @"spoofBaiduTargetedModel": @NO,
@@ -509,7 +510,7 @@ static void loadConfig() {
     if (ver < 188) {
         // 1.8.2：只升级配置格式；现有定向开关保持原值。
         // 定向总开关和五个子开关仅在用户执行定向一键随机时全部开启。
-        merged[@"configVersion"] = @188;
+        merged[@"configVersion"] = @189;
         [merged writeToFile:p1 atomically:YES];
     }
     BDSApplyInitialDefaults(merged, loaded);
@@ -2057,6 +2058,73 @@ static void new_wk_setCustomUserAgent(id self, SEL _cmd, NSString *ua) {
     if (orig_wk_setCustomUserAgent) ((SetCustomUAIMP)orig_wk_setCustomUserAgent)(self, _cmd, ua);
 }
 
+#pragma mark - H5 网页层屏幕/UA 一致性（WKUserScript 注入）
+
+static IMP orig_wk_initWithFrameConfiguration = NULL;
+
+// DocumentStart 脚本：让 H5 里 JS 读到的 window.screen / devicePixelRatio / navigator.userAgent 与定向机型一致。
+// 不动原生 UIScreen（避免原生界面缩放变形），只统一网页层，消除“原生假机型 + H5 真屏/真系统骨架”的三层矛盾。
+static NSString *bds_webCoherenceScript(BOOL doScreen, BOOL doUA) {
+    NSInteger pw = tg_pt_w();
+    NSInteger ph = tg_pt_h();
+    NSInteger sc = tg_scale_i();
+    NSMutableString *js = [NSMutableString stringWithString:@"(function(){try{"];
+    [js appendString:@"function d(o,k,v){try{Object.defineProperty(o,k,{get:function(){return v;},configurable:true});}catch(e){}}"];
+    if (doScreen) {
+        [js appendFormat:@"var w=%ld,h=%ld,s=%ld;", (long)pw, (long)ph, (long)sc];
+        [js appendString:
+            @"d(window.screen,'width',w);"
+            @"d(window.screen,'height',h);"
+            @"d(window.screen,'availWidth',w);"
+            @"d(window.screen,'availHeight',h);"
+            @"d(window.screen,'availLeft',0);"
+            @"d(window.screen,'availTop',0);"
+            @"d(window.screen,'colorDepth',32);"
+            @"d(window.screen,'pixelDepth',32);"
+            @"d(window,'devicePixelRatio',s);"
+            @"d(window,'innerWidth',w);"
+            @"d(window,'innerHeight',h);"
+            @"d(window,'outerWidth',w);"
+            @"d(window,'outerHeight',h);"];
+    }
+    if (doUA) {
+        [js appendFormat:
+            @"try{var ru=navigator.userAgent.replace(/CPU iPhone OS [0-9_]+/i,'CPU iPhone OS %@');"
+            @"d(Object.getPrototypeOf(navigator),'userAgent',ru);"
+            @"d(navigator,'userAgent',ru);}catch(e){}",
+            tg_ua_ios_under()];
+    }
+    [js appendString:@"}catch(e){}})();"];
+    return js;
+}
+
+static id new_wk_initWithFrameConfiguration(id self, SEL _cmd, CGRect frame, WKWebViewConfiguration *configuration) {
+    typedef id (*BDSWKInitIMP)(id, SEL, CGRect, id);
+    BOOL doScreen = tg_feature_enabled(@"spoofBaiduTargetedScreen");
+    BOOL doUA = tg_feature_enabled(@"spoofBaiduTargetedUA");
+    if (doScreen || doUA) {
+        @autoreleasepool {
+            if (!configuration) configuration = [[WKWebViewConfiguration alloc] init];
+            WKUserContentController *ucc = configuration.userContentController;
+            if (!ucc) {
+                ucc = [[WKUserContentController alloc] init];
+                configuration.userContentController = ucc;
+            }
+            // 同一个 configuration 只注入一次，避免共享配置的多个 WebView 重复叠加脚本
+            static char bdsInjectedKey;
+            if (!objc_getAssociatedObject(configuration, &bdsInjectedKey)) {
+                objc_setAssociatedObject(configuration, &bdsInjectedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                WKUserScript *script = [[WKUserScript alloc]
+                    initWithSource:bds_webCoherenceScript(doScreen, doUA)
+                     injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                  forMainFrameOnly:NO];
+                [ucc addUserScript:script];
+            }
+        }
+    }
+    return ((BDSWKInitIMP)orig_wk_initWithFrameConfiguration)(self, _cmd, frame, configuration);
+}
+
 static IMP orig_nsmurl_setValue = NULL;
 static void new_nsmurl_setValue(id self, SEL _cmd, NSString *value, NSString *field) {
     BOOL changed = NO;
@@ -3580,7 +3648,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.2 UI1.2";
+    page.title=@"卐解 9.15-01";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -4732,6 +4800,8 @@ static void bds_initialize() {
             if (cls) {
                 hookInst(cls, @selector(customUserAgent), (IMP)new_wk_customUserAgent, &orig_wk_customUserAgent);
                 hookInst(cls, @selector(setCustomUserAgent:), (IMP)new_wk_setCustomUserAgent, &orig_wk_setCustomUserAgent);
+                // H5 网页层屏幕/UA 一致性：在 WebView 初始化时注入 DocumentStart 脚本
+                hookInst(cls, @selector(initWithFrame:configuration:), (IMP)new_wk_initWithFrameConfiguration, &orig_wk_initWithFrameConfiguration);
             }
             cls = objc_getClass("NSMutableURLRequest");
             if (cls) {

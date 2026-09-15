@@ -1,6 +1,10 @@
-# 卐解 1.8.2 UI1.2 / 卍解 1.0.3 UI1
+# 卐解 9.15-01 / 卍解 9.15-01
 
-卐解是注入百度极速版的插件（技术文件名继续使用 `BDSpoofer`），卍解是配套的 Crane 容器管理端。本版本合入审核通过的界面与独立定向参数功能。
+卐解是注入百度极速版的插件（技术文件名继续使用 `BDSpoofer`），卍解是配套的 Crane 容器管理端。
+
+## 9.15-01 H5 网页层屏幕/UA 一致性
+
+百度收益与登录页是 WKWebView H5。此前原生公开层与百度内部接口层已按定向机型伪装，但 H5 里 JS 读取的 `window.screen`、`devicePixelRatio`、`navigator.userAgent` 仍来自真实 UIScreen 与 WebKit 内核，会上报真机 750×1334 / iOS15，与伪装机型形成三层矛盾。本版本在每个 WKWebView 初始化时注入一段 DocumentStart 脚本（主帧与子帧均注入），把屏幕宽高、可用宽高、devicePixelRatio、内外窗口宽高以及 UA 中的 `CPU iPhone OS x_x` 骨架统一为定向机型取值；仅在定向屏幕/UA 子开关开启时注入，取不到定向值则放行真机。全局 UIKit UIScreen 不改写，原生界面布局不受影响，只统一网页层。定向关闭时行为与上一版完全一致。
 
 本次将定向一键随机改为完整动作：未执行时定向总开关和 5 个子开关保持现状，新配置默认全部关闭；真正执行后自动开启全部 5 项，并以同一个兼容机型/iOS 组合生成系统、机型、屏幕、User-Agent 和 Push 参数。卐解与卍解行为一致。
 
@@ -30,8 +34,8 @@
 
 ## 配套文件
 
-- `BDSpoofer_1.8.2_UI1.2.dylib`：卐解插件，通过巨魔注入器替换百度内旧插件，避免同时保留两个版本。
-- `BDSpooferCraneManager_1.0.3-ui1_RootHide.deb`：卍解配套更新，包版本 `1.0.3+ui1`，应用构建号 104。
+- `BDSpoofer_9.15-01.dylib`：卐解插件，通过巨魔注入器替换百度内旧插件，避免同时保留两个版本。
+- `BDSpooferCraneManager_9.15-01_RootHide.deb`：卍解配套更新，包版本 `9.15-01`，应用版本 9.15.1、构建号 105。
 - 百度 Bundle ID：`com.baidu.BaiduMobileInfo`。两个程序支持 arm64 / arm64e，最低 iOS 15。
 
 ## 界面和默认设置

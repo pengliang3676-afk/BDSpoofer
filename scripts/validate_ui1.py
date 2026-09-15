@@ -30,7 +30,7 @@ assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@NO',default_block) for key 
 assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@NO',default_block) for key in targeted_keys)
 assert re.search(r'@"enabled"\s*:\s*@NO',default_block)
 assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@YES',default_block) for key in basic_keys if key!='enabled')
-assert config['spoofScreen'] is False and config['configVersion']==188
+assert config['spoofScreen'] is False and config['configVersion']==189
 assert config['blockStatCashTelemetry'] is False
 assert 'blockStatCashTelemetry' in policy and 'blockStatCashTelemetry' in plugin
 assert '金额上报：%@' in plugin and '? @"已开启" : @"已关闭"' in plugin
@@ -75,7 +75,10 @@ load_end=plugin.index('static BOOL saveConfigValues',load_start)
 load_body=plugin[load_start:load_end]
 assert 'BOOL hasPersistentConfig' in load_body and 'if (!hasPersistentConfig)' in load_body
 assert load_body.index('return;') < load_body.index('NSInteger ver =')
-assert 'page.title=@"卐解 1.8.2 UI1.2"' in plugin
+assert 'page.title=@"卐解 9.15-01"' in plugin
+# 9.15-01：H5 网页层一致性注入必须存在且挂在 WKWebView 指定初始化器上
+assert 'bds_webCoherenceScript' in plugin and 'new_wk_initWithFrameConfiguration' in plugin
+assert "@selector(initWithFrame:configuration:)" in plugin
 assert '定向总开关及 5 个子开关已全部开启' in plugin
 assert 'selectedTargetedKeys = [NSSet setWithArray:BDSTargetedKeys()]' in manager
 assert '执行一键随机后自动开启全部 5 项' in (root/'Shared/BDSSettingsUI.h').read_text(encoding='utf-8')
@@ -88,7 +91,7 @@ targeted_values=['targetedDeviceProfileName','targetedSystemVersion','targetedSy
 sparse=dict(config)
 for key in targeted_values:sparse.pop(key,None)
 sparse.pop('managerResolvedPath',None)
-sparse.update(managerContainerIdentifier='12345678-1234-1234-1234-123456789012',managerGeneratedAt=1.0,managerProfileVersion=104,managerRandomMode='basic',didRandomizeBasic=True)
+sparse.update(managerContainerIdentifier='12345678-1234-1234-1234-123456789012',managerGeneratedAt=1.0,managerProfileVersion=105,managerRandomMode='basic',didRandomizeBasic=True)
 assert len(plistlib.dumps(sparse,fmt=plistlib.FMT_XML,sort_keys=False))<4096
 assert 'g_rewardProbe' not in plugin
 assert 'BDSInstallCashSpoofing' not in plugin and 'arc4random_uniform(101)' not in plugin
@@ -98,7 +101,7 @@ for text in ['h2tcbox.baidu.com','/ztbox','zpblog','10290','y_mission_index','c_
 assert 'BDSInstallCashTelemetryBlocking();' in plugin
 assert plugin.count('loadConfig();') >= 3
 assert '0.50' not in release and '触发风控' not in release
-assert 'BDSpoofer_1.8.2_UI1.2.dylib' in build and 'BDSpoofer_1.8.1_UI1.2.dylib' not in build
+assert 'BDSpoofer_9.15-01.dylib' in build and 'BDSpoofer_1.8.2_UI1.2.dylib' not in build
 assert '[verified isEqualToDictionary:config]' in manager
 assert 'targetedScreenHwMachine' in plugin and 'targetedScreenHwMachine' in manager
 def function(text,name):
@@ -188,5 +191,5 @@ names=['bds_c_is_jailbreak_path','bds_is_suspicious_dlopen_path','bds_my_dlopen'
 for name in names:assert function(plugin,name)==function(base,name),name
 for path in ['bdspoofer_config.plist','CraneManager/Info.plist','CraneManager/BDSCraneManager.entitlements','CraneManager/BDSCraneManager.libSandy.plist']:plistlib.loads((root/path).read_bytes())
 manager_info=plistlib.loads((root/'CraneManager/Info.plist').read_bytes())
-assert manager_info['CFBundleShortVersionString']=='1.0.3' and manager_info['CFBundleVersion']=='104' and 'UIApplicationExitsOnSuspend' not in manager_info
-print('PASS 1.8.2 UI1.2 / manager 1.0.3: v188, master enabled default OFF, other 6 basic switches default on, advanced first 2 default on and last 4 default off, default preset iPhone 17 Pro Max, 36 synchronized devices')
+assert manager_info['CFBundleShortVersionString']=='9.15.1' and manager_info['CFBundleVersion']=='105' and 'UIApplicationExitsOnSuspend' not in manager_info
+print('PASS 9.15-01 / manager 9.15.1(105): v189, H5 web-layer coherence injection, master enabled default OFF, other 6 basic switches default on, advanced first 2 default on and last 4 default off, default preset iPhone 17 Pro Max, 36 synchronized devices')
