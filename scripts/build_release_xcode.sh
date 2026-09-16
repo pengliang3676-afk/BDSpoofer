@@ -9,6 +9,10 @@ mkdir -p build-ui1 dist-ui1
 for BDS_ARCH in arm64 arm64e; do
     xcrun --sdk iphoneos clang -arch "$BDS_ARCH" "${BDS_COMMON[@]}" "${BDS_FRAMEWORKS[@]}" -dynamiclib -install_name @rpath/BDSpoofer_9.15-03.dylib BDSpoofer.m -o "build-ui1/BDSpoofer_$BDS_ARCH.dylib"
     xcrun --sdk iphoneos clang -arch "$BDS_ARCH" "${BDS_COMMON[@]}" -framework Foundation -framework UIKit -framework CoreGraphics CraneManager/BDSCraneManager.m -o "build-ui1/BDSCraneManager_$BDS_ARCH"
+    # These iOS harnesses cannot execute on the macOS runner, but compiling and
+    # linking them keeps their assertions and included production sources valid.
+    xcrun --sdk iphoneos clang -arch "$BDS_ARCH" "${BDS_COMMON[@]}" "${BDS_FRAMEWORKS[@]}" tests/PluginConfigTests.m -o "build-ui1/PluginConfigTests_$BDS_ARCH"
+    xcrun --sdk iphoneos clang -arch "$BDS_ARCH" "${BDS_COMMON[@]}" -framework Foundation -framework UIKit -framework CoreGraphics tests/ManagerConfigTests.m -o "build-ui1/ManagerConfigTests_$BDS_ARCH"
 done
 lipo -create build-ui1/BDSpoofer_arm64.dylib build-ui1/BDSpoofer_arm64e.dylib -output dist-ui1/BDSpoofer_9.15-03.dylib
 codesign --force --sign - --timestamp=none dist-ui1/BDSpoofer_9.15-03.dylib

@@ -15,10 +15,11 @@ int main(int argc,char **argv) {
         assert([BDSMergedConfig(newA)[@"idfv"] isEqual:newA[@"idfv"]]);
         NSMutableDictionary *config=BDSMergedConfig(defaults);
         BDSSeedIdentityIfNeeded(config,YES);
-        assert([config[@"configVersion"] integerValue]==188);
+        assert([config[@"configVersion"] integerValue]==189);
         assert(![config[@"blockStatCashTelemetry"] boolValue]);
         NSSet *basicSwitchSet=[NSSet setWithArray:BDSBasicKeys()];
-        for(NSString *key in BDSBasicKeys()) assert([config[key] boolValue]);
+        assert(![config[@"enabled"] boolValue]);
+        for(NSString *key in BDSBasicKeys()) if(![key isEqualToString:@"enabled"]) assert([config[key] boolValue]);
         for(NSString *key in BDSRegularKeys()) if(![basicSwitchSet containsObject:key]) assert([config[key] boolValue]);
         for(NSString *key in BDSRiskKeys()) assert(![config[key] boolValue]);
         assert([defaults[@"hwMachine"] isEqual:@"iPhone18,2"] && [defaults[@"hwModel"] isEqual:@"V54AP"]);

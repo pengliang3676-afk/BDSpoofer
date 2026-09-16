@@ -8,6 +8,10 @@ blocker=(root/'Shared/BDSCashTelemetryBlocker.h').read_text(encoding='utf-8')
 release=(root/'RELEASE_UI1.md').read_text(encoding='utf-8')
 build=(root/'scripts/build_release_xcode.sh').read_text(encoding='utf-8')
 config=plistlib.loads((root/'bdspoofer_config.plist').read_bytes())
+test_sources=[
+    (root/'tests/PluginConfigTests.m').read_text(encoding='utf-8'),
+    (root/'tests/ManagerConfigTests.m').read_text(encoding='utf-8'),
+]
 items=re.findall(r'@\{@"key":@"([^"]+)",@"name":@"[^"]+"(,@"off":@YES)?\}',policy)
 assert len(items)==26
 regular=[key for key,off in items if not off];risk=[key for key,off in items if off]
@@ -31,6 +35,10 @@ assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@NO',default_block) for key 
 assert re.search(r'@"enabled"\s*:\s*@NO',default_block)
 assert all(re.search(r'@"'+re.escape(key)+r'"\s*:\s*@YES',default_block) for key in basic_keys if key!='enabled')
 assert config['spoofScreen'] is False and config['configVersion']==189
+for test_source in test_sources:
+    assert 'config[@"configVersion"] integerValue]==189' in test_source
+    assert 'assert(![config[@"enabled"] boolValue])' in test_source
+    assert 'if(![key isEqualToString:@"enabled"])' in test_source
 assert config['blockStatCashTelemetry'] is False
 assert 'blockStatCashTelemetry' in policy and 'blockStatCashTelemetry' in plugin
 assert '金额上报：%@' in plugin and '? @"已开启" : @"已关闭"' in plugin

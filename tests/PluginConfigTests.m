@@ -25,10 +25,11 @@ int main(void) {
         NSMutableDictionary *config=[BDSDefaultConfig() mutableCopy];
         BDSApplyInitialDefaults(config,nil);
         assert(BDSRegularKeys().count==21 && BDSRiskKeys().count==5);
-        assert([config[@"configVersion"] integerValue]==188);
+        assert([config[@"configVersion"] integerValue]==189);
         assert(![config[@"blockStatCashTelemetry"] boolValue]);
         NSSet *basicSwitchSet=[NSSet setWithArray:BDSBasicKeys()];
-        for(NSString *key in BDSBasicKeys()) assert([config[key] boolValue]);
+        assert(![config[@"enabled"] boolValue]);
+        for(NSString *key in BDSBasicKeys()) if(![key isEqualToString:@"enabled"]) assert([config[key] boolValue]);
         for(NSString *key in BDSRegularKeys()) if(![basicSwitchSet containsObject:key]) assert([config[key] boolValue]);
         for(NSString *key in BDSRiskKeys()) assert(![config[key] boolValue]);
         assert([config[@"hwMachine"] isEqual:@"iPhone18,2"] && [config[@"hwModel"] isEqual:@"V54AP"]);
