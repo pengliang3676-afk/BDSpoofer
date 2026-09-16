@@ -83,6 +83,10 @@ load_end=plugin.index('static BOOL saveConfigValues',load_start)
 load_body=plugin[load_start:load_end]
 assert 'BOOL hasPersistentConfig' in load_body and 'if (!hasPersistentConfig)' in load_body
 assert load_body.index('return;') < load_body.index('NSInteger ver =')
+assert 'BDSApplyInitialDefaults(merged, merged);' in load_body
+assert 'BDSApplyInitialDefaults(merged, loaded);' not in load_body.split('NSInteger ver =',1)[1]
+assert '@selector(requestAccessToEntityType:completion:)' in plugin
+assert plugin.count('@selector(requestAccessForEntityType:completionHandler:)')==1
 assert 'page.title=@"卐解 9.15-03"' in plugin
 # H5 网页层一致性：导航入口挂 DocumentStart 脚本（9.15-03 起不再用初始化器注入）
 assert 'bds_webCoherenceScript' in plugin and 'bds_armWebCoherence' in plugin

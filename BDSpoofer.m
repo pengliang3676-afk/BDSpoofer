@@ -515,7 +515,9 @@ static void loadConfig() {
         merged[@"configVersion"] = @189;
         [merged writeToFile:p1 atomically:YES];
     }
-    BDSApplyInitialDefaults(merged, loaded);
+    // Use the migrated values as the saved policy state. Passing the original
+    // payload here would restore switches that migrations 181/185 forced off.
+    BDSApplyInitialDefaults(merged, merged);
     BDSSeedInitialIdentities(merged, loaded);
     [BDSConfigForPersistentStorage(merged) writeToFile:p1 atomically:YES];
     g_config = [merged copy];
@@ -4929,7 +4931,7 @@ static void bds_initialize() {
             if (cls) {
                 hookClass(cls, @selector(authorizationStatusForEntityType:),
                           (IMP)new_ek_authorizationStatus, &orig_ek_authorizationStatus);
-                hookInst(cls, @selector(requestAccessForEntityType:completionHandler:),
+                hookInst(cls, @selector(requestAccessToEntityType:completion:),
                          (IMP)new_ek_requestAccess, &orig_ek_requestAccess);
             }
         }
