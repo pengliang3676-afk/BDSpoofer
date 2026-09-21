@@ -1,4 +1,8 @@
-# 卐解 1.8.1 UI1.2 9.22-02 / 卍解 1.0.2 UI1 9.22-01
+# 卐解 1.8.1 UI1.2 9.22-03 / 卍解 1.0.2 UI1 9.22-01
+
+## 9.22-03 点「其他登录方式」闪退
+
+9.22-02 在展开登录方式时闪退。已去掉未验签的 `extraQueryParams` / `loadLoginWithType`、以及 dyld 回调里扫描全部类。建档仍只改 `ssologin` / 短信相关 NSURLSession 查询串，以及编码核实过的 SAPI 机型出口。
 
 ## 9.22-02 Passport 登录设备建档
 
@@ -28,7 +32,7 @@
 
 ## 配套文件
 
-- `卐解_1.8.1_UI1.2_9.22-02.dylib`（`BDSpoofer_1.8.1_UI1.2_9.22-02.dylib`）：卐解插件，通过巨魔注入器替换百度内旧插件，避免同时保留两个版本。
+- `卐解_1.8.1_UI1.2_9.22-03.dylib`（`BDSpoofer_1.8.1_UI1.2_9.22-03.dylib`）：卐解插件，通过巨魔注入器替换百度内旧插件，避免同时保留两个版本。
 - `卍解_1.0.2_UI1_9.22-01_RootHide.deb`（`BDSpooferCraneManager_1.0.2-ui1_9.22-01_RootHide.deb`）：卍解配套更新，包版本 `1.0.2+ui1.9.22.01`，应用构建号 9.22.01。
 - 百度 Bundle ID：`com.baidu.BaiduMobileInfo`。两个程序支持 arm64 / arm64e，最低 iOS 15。
 
