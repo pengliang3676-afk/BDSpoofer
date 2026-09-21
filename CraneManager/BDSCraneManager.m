@@ -63,7 +63,7 @@ static NSArray<NSDictionary *> *BDSDeviceProfiles(void) {
             BDSDevice(@"iPhone 11", @"iPhone12,1", @"N104AP", 414, 896, 828, 1792, 2, 4096, @[@64,@128,@256], @"15.0", 26),
             BDSDevice(@"iPhone 11 Pro", @"iPhone12,3", @"D421AP", 375, 812, 1125, 2436, 3, 4096, @[@64,@256,@512], @"15.0", 26),
             BDSDevice(@"iPhone 11 Pro Max", @"iPhone12,5", @"D431AP", 414, 896, 1242, 2688, 3, 4096, @[@64,@256,@512], @"15.0", 26),
-            // iPhone SE (2nd generation) is intentionally excluded until explicitly requested.
+            BDSDevice(@"iPhone SE (2nd generation)", @"iPhone12,8", @"D79AP", 375, 667, 750, 1334, 2, 3072, @[@64,@128,@256], @"15.0", 26),
             BDSDevice(@"iPhone 12 mini", @"iPhone13,1", @"D52gAP", 375, 812, 1080, 2340, 3, 4096, @[@64,@128,@256], @"15.0", 26),
             BDSDevice(@"iPhone 12", @"iPhone13,2", @"D53gAP", 390, 844, 1170, 2532, 3, 4096, @[@64,@128,@256], @"15.0", 26),
             BDSDevice(@"iPhone 12 Pro", @"iPhone13,3", @"D53pAP", 390, 844, 1170, 2532, 3, 6144, @[@128,@256,@512], @"15.0", 26),
@@ -166,6 +166,9 @@ static BOOL BDSVersionInRange(NSString *version, NSDictionary *device) {
     if (version.integerValue > maximumMajor) return NO;
 
     NSString *machine = device[@"machine"];
+    if ([version hasPrefix:@"16.7.15"] || [version hasPrefix:@"16.7.16"]) {
+        return [machine hasPrefix:@"iPhone10,"];
+    }
     if ([version hasPrefix:@"18.7.9"] || [version hasPrefix:@"18.7.10"]) {
         return [machine hasPrefix:@"iPhone11,"];
     }
@@ -407,7 +410,7 @@ static void *BDSLoadCraneLibrary(void) {
 @property(nonatomic, strong) CraneManager *crane;
 @property(nonatomic, strong) NSArray<NSDictionary *> *containers;
 @property(nonatomic, strong) NSMutableSet<NSString *> *selectedContainerIDs;
-@property(nonatomic, copy) NSString *activeContainerID;
+@property(nonatomic, copy) NSString *displayCurrentContainerID;
 @property(nonatomic, copy) NSString *baiduBaseDataPath;
 @property(nonatomic, strong) UILabel *statusLabel;
 @property(nonatomic, strong) UIButton *basicButton;
@@ -422,6 +425,7 @@ static void *BDSLoadCraneLibrary(void) {
 - (void)randomizeAdvancedForSelectedContainers;
 - (void)randomizeTargetedForSelectedContainers;
 - (void)applySelectedContainersWithMode:(BDSRandomMode)mode;
+- (void)reloadContainersShowingErrors:(BOOL)showErrors;
 @end
 
 static NSString *BDSContainerSummary(NSDictionary *config) {
@@ -465,6 +469,14 @@ static NSString *BDSCleanContainerDisplayName(NSString *name, NSString *fallback
         }
     }
     return clean.length ? clean : fallback;
+}
+
+static BOOL BDSContainerHasDefaultMarker(NSString *name) {
+    NSString *candidate=[name stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    for(NSString *suffix in @[@"（默认）", @"(默认)", @"（Default）", @"(Default)"]) {
+        if([candidate hasSuffix:suffix] && candidate.length>suffix.length) return YES;
+    }
+    return NO;
 }
 
 static NSString *BDSTargetedResultDetail(NSDictionary *config, NSSet<NSString *> *selection) {
@@ -516,15 +528,37 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"卍解";
+    self.title = @"卍解 1.0.2 9.22-01";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];
     self.tableView.rowHeight = 96.0;
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh target:self action:@selector(reloadContainers)];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(reloadVisibleContainers)
+                                                 name:UIApplicationDidBecomeActiveNotification
+                                               object:nil];
     [self buildHeaderAndFooter];
     [self reloadContainers];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    if (self.viewLoaded) [self reloadContainersShowingErrors:NO];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)reloadVisibleContainers {
+    if (!self.isViewLoaded || !self.view.window) return;
+    [self reloadContainersShowingErrors:NO];
+}
+
+- (void)reloadContainers {
+    [self reloadContainersShowingErrors:YES];
 }
 
 - (void)buildHeaderAndFooter {
@@ -662,7 +696,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
         stringByAppendingPathComponent:BDSConfigFileName];
 }
 
-- (void)reloadContainers {
+- (void)reloadContainersShowingErrors:(BOOL)showErrors {
     self.basicButton.enabled = NO;
     self.advancedButton.enabled = NO;
     self.targetedButton.enabled = NO;
@@ -670,6 +704,12 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     void *handle = BDSLoadCraneLibrary();
     Class managerClass = NSClassFromString(@"CraneManager");
     if (!handle || !managerClass || ![managerClass respondsToSelector:@selector(sharedManager)]) {
+        if (!showErrors) {
+            self.basicButton.enabled = self.containers.count > 0;
+            self.advancedButton.enabled = self.containers.count > 0;
+            self.targetedButton.enabled = self.containers.count > 0;
+            return;
+        }
         self.containers = @[];
         [self.tableView reloadData];
         NSString *detail = [NSString stringWithFormat:
@@ -681,6 +721,12 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
     self.crane = [managerClass sharedManager];
     if (![self.crane isApplicationSupportedByCrane:BDSBaiduBundleID]) {
+        if (!showErrors) {
+            self.basicButton.enabled = self.containers.count > 0;
+            self.advancedButton.enabled = self.containers.count > 0;
+            self.targetedButton.enabled = self.containers.count > 0;
+            return;
+        }
         self.containers = @[];
         [self.tableView reloadData];
         [self showMessage:@"百度尚未启用 Crane" detail:@"请先在 Crane 中为百度极速版创建至少一个容器。"];
@@ -688,15 +734,24 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     }
 
     NSArray *identifiers = [self.crane containerIdentifiersOfApplicationWithIdentifier:BDSBaiduBundleID] ?: @[];
-    self.activeContainerID = [self.crane activeContainerIdentifierForApplicationWithIdentifier:BDSBaiduBundleID];
+    NSString *actuallyActiveID = [self.crane activeContainerIdentifierForApplicationWithIdentifier:BDSBaiduBundleID];
+    NSString *configuredDefaultID = nil;
+    NSString *systemDefaultID = nil;
     NSMutableArray *rows = [NSMutableArray array];
     for (id rawID in identifiers) {
         if (![rawID isKindOfClass:NSString.class] || ![rawID length]) continue;
         NSString *containerID = rawID;
-        NSString *name = [self.crane displayNameForContainerWithIdentifier:containerID
-                                               ofApplicationWithIdentifier:BDSBaiduBundleID
-                                                     shouldUseShortVersion:NO];
-        name = BDSCleanContainerDisplayName(name, containerID);
+        if([containerID.uppercaseString isEqualToString:@"DEFAULT"]) systemDefaultID=containerID;
+        NSString *rawName = [self.crane displayNameForContainerWithIdentifier:containerID
+                                                  ofApplicationWithIdentifier:BDSBaiduBundleID
+                                                        shouldUseShortVersion:NO];
+        NSString *shortName = [self.crane displayNameForContainerWithIdentifier:containerID
+                                                    ofApplicationWithIdentifier:BDSBaiduBundleID
+                                                          shouldUseShortVersion:YES];
+        if(BDSContainerHasDefaultMarker(rawName) || BDSContainerHasDefaultMarker(shortName)) {
+            configuredDefaultID=containerID;
+        }
+        NSString *name = BDSCleanContainerDisplayName(rawName.length ? rawName : shortName, containerID);
         NSString *path = [self configPathForContainerID:containerID];
         NSDictionary *config = path.length ? [NSDictionary dictionaryWithContentsOfFile:path] : nil;
         NSMutableDictionary *initialized=BDSMergedConfig(config);
@@ -712,6 +767,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     [rows sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
         return [left[@"name"] localizedStandardCompare:right[@"name"]];
     }];
+    self.displayCurrentContainerID = configuredDefaultID ?: systemDefaultID ?: actuallyActiveID;
     self.containers = rows;
     [self.selectedContainerIDs intersectSet:[NSSet setWithArray:[rows valueForKey:@"id"]]];
     self.basicButton.enabled = rows.count > 0;
@@ -731,7 +787,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     NSDictionary *row = self.containers[indexPath.row];
     NSString *containerID = row[@"id"];
     BOOL selected = [self.selectedContainerIDs containsObject:containerID];
-    BOOL active = [containerID isEqualToString:self.activeContainerID];
+    BOOL active = [containerID isEqualToString:self.displayCurrentContainerID];
     NSString *currentSuffix = @"（当前）";
     NSString *title = active ? [NSString stringWithFormat:@"%@%@", row[@"name"], currentSuffix] : row[@"name"];
     NSMutableAttributedString *styledTitle = [[NSMutableAttributedString alloc] initWithString:title];

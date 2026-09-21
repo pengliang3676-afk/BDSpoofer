@@ -41,6 +41,17 @@ int main(int argc,char **argv) {
             for(NSString *key in BDSTargetedKeys()) assert([next[key] boolValue]==[selection containsObject:key]);
         }
         assert(!BDSCreateRandomConfig(config,BDSRandomModeTargeted,[NSSet set]));
+        BOOL sawSE2=NO;
+        for(NSDictionary *device in BDSDeviceProfiles()) {
+            if([device[@"machine"] isEqual:@"iPhone12,8"]) sawSE2=YES;
+        }
+        assert(sawSE2 && BDSDeviceProfiles().count==37);
+        NSDictionary *se2=@{@"machine":@"iPhone12,8",@"minimumOS":@"15.0",@"maximumMajor":@26};
+        NSDictionary *iphone8=@{@"machine":@"iPhone10,1",@"minimumOS":@"15.0",@"maximumMajor":@16};
+        NSDictionary *iphoneXR=@{@"machine":@"iPhone11,8",@"minimumOS":@"15.0",@"maximumMajor":@18};
+        assert(BDSVersionInRange(@"16.7.16", iphone8) && !BDSVersionInRange(@"16.7.16", iphoneXR) && !BDSVersionInRange(@"16.7.16", se2));
+        assert(BDSVersionInRange(@"18.7.9", iphoneXR) && !BDSVersionInRange(@"18.7.9", se2) && !BDSVersionInRange(@"18.7.9", iphone8));
+        assert(BDSVersionInRange(@"26.6", se2) && !BDSVersionInRange(@"26.6", iphoneXR) && !BDSVersionInRange(@"26.6", iphone8));
         for(NSDictionary *device in BDSDeviceProfiles()) {
             NSDictionary *generated=BDSCreateConfigForDevice(defaults,device,BDSRandomModeBasic,[NSSet set]);
             assert([generated[@"deviceProfileName"] isEqual:device[@"name"]]);
@@ -48,6 +59,10 @@ int main(int argc,char **argv) {
             assert([generated[@"hwModel"] isEqual:device[@"model"]]);
             assert([generated[@"screenWidth"] isEqual:device[@"width"]]);
             assert([generated[@"screenHeight"] isEqual:device[@"height"]]);
+            NSString *ver=generated[@"systemVersion"];
+            NSString *machine=device[@"machine"];
+            if([ver hasPrefix:@"16.7.15"] || [ver hasPrefix:@"16.7.16"]) assert([machine hasPrefix:@"iPhone10,"]);
+            if([ver hasPrefix:@"18.7.9"] || [ver hasPrefix:@"18.7.10"]) assert([machine hasPrefix:@"iPhone11,"]);
         }
         [config addEntriesFromDictionary:BDSSafeSwitchValues()];
         NSDictionary *reloaded=BDSMergedConfig(config);for(NSString *key in BDSSafeSwitchValues()) assert(![reloaded[key] boolValue]);
@@ -61,6 +76,8 @@ int main(int argc,char **argv) {
         assert(sparseData.length<4096);
         assert([BDSCleanContainerDisplayName(@"01（默认）", @"fallback") isEqualToString:@"01"]);
         assert([BDSCleanContainerDisplayName(@"默认", @"fallback") isEqualToString:@"默认"]);
+        assert(BDSContainerHasDefaultMarker(@"01（默认）") && BDSContainerHasDefaultMarker(@"02(Default)"));
+        assert(!BDSContainerHasDefaultMarker(@"默认") && !BDSContainerHasDefaultMarker(@"01") && !BDSContainerHasDefaultMarker(@"（默认）"));
         puts("PASS manager: per-mode random state, clean current label, sparse unused targeted values, synchronized device fields and safe restore");
     }
     return 0;

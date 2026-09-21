@@ -4,7 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
-//  1.8.1 UI1：基于 1.8.1 合入独立定向指纹与统一设置界面。
+//  9.22-01：SE2 纳入随机；16.7.15/16.7.16 仅 iPhone 8/X；卍解「当前」跟随 Crane 设为默认的容器，回到前台自动刷新。
 //    三组随机互不改写；21 个常规开关首次初始化开启，保留已保存的手动选择。
 //    修复 UA 缓存短串、Push device_name 字段和独立屏幕元数据。
 //    反越狱检测的底层实现保持 1.8.1 原样，相关排查暂停。
@@ -2961,12 +2961,7 @@ static NSArray<NSDictionary *> *BDSDeviceProfiles(void) {
 }
 
 static NSArray<NSDictionary *> *BDSUnifiedDeviceProfiles(void) {
-    // 与“卍解”统一：资料表保留 SE2 以兼容旧配置，但不参与一键随机。
-    NSMutableArray<NSDictionary *> *filtered = [NSMutableArray array];
-    for (NSDictionary *profile in BDSDeviceProfiles()) {
-        if (![profile[@"machine"] isEqualToString:@"iPhone12,8"]) [filtered addObject:profile];
-    }
-    return filtered;
+    return BDSDeviceProfiles();
 }
 
 static NSString *BDSDeviceRangeName(void) {
@@ -3059,6 +3054,8 @@ static NSArray<NSDictionary *> *BDSSystemProfilesForDevice(NSDictionary *device)
         NSString *version = [profile[@"version"] isKindOfClass:[NSString class]] ? profile[@"version"] : @"";
         if ([version compare:minimum options:NSNumericSearch] == NSOrderedAscending) continue;
         if (version.integerValue > maxMajor) continue;
+        if (([version hasPrefix:@"16.7.15"] || [version hasPrefix:@"16.7.16"]) &&
+            ![machine hasPrefix:@"iPhone10,"]) continue;
         if (([version hasPrefix:@"18.7.9"] || [version hasPrefix:@"18.7.10"]) &&
             ![machine hasPrefix:@"iPhone11,"]) continue;
         if (version.integerValue == 26 &&
@@ -3414,7 +3411,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.2";
+    page.title=@"卐解 1.8.1 UI1.2 9.22-01";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -3564,7 +3561,7 @@ static NSString *BDSConfigSummary(void) {
         values[@"memorySize"], values[@"diskSize"], values[@"deviceName"]];
     [self presentMessage:message title:@"基础参数已更换"];
 }
-#pragma mark - 从机型池一键套用（v1.9.0，复用统一 36 款机型池 + 兼容 iOS 匹配）
+#pragma mark - 从机型池一键套用（v1.9.0，复用统一机型池 + 兼容 iOS 匹配）
 
 static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
     if (![device isKindOfClass:NSDictionary.class]) return nil;
@@ -3604,7 +3601,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
                                                                    message:@"选定机型后自动配套兼容的 iOS 版本/Build、点分辨率与物理像素，并打开百度定向指纹。其他开关不变，保存后请彻底重启百度极速版。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     __weak typeof(self) weakSelf = self;
-    [sheet addAction:[UIAlertAction actionWithTitle:@"随机一款并生成整套基础参数（排除 SE2）"
+    [sheet addAction:[UIAlertAction actionWithTitle:@"随机一款并生成整套基础参数"
                                                style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
         (void)action;
         __strong typeof(weakSelf) self = weakSelf; if (!self) return;

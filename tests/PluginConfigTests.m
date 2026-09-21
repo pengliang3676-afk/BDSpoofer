@@ -35,12 +35,36 @@ int main(void) {
         g_config=[config copy];
         NSSet *identity=[NSSet setWithArray:@[@"idfa",@"idfv",@"deviceID",@"cuid",@"utdid",@"didRandomizeAdvanced"]];
         NSSet *basic=[NSSet setWithArray:@[@"deviceProfileName",@"deviceModel",@"marketingModel",@"systemVersion",@"systemBuild",@"kernOSVersion",@"hwMachine",@"hwModel",@"memorySize",@"diskSize",@"deviceName",@"kernHostname",@"screenWidth",@"screenHeight",@"screenScale",@"nativeScreenWidth",@"nativeScreenHeight",@"bootTimeOffsetSeconds",@"carrierName",@"mcc",@"mnc",@"isoCountryCode",@"localeIdentifier",@"didRandomizeBasic"]];
+        BOOL sawSE2=NO;
+        for(NSDictionary *device in BDSUnifiedDeviceProfiles()) {
+            if([device[@"machine"] isEqual:@"iPhone12,8"]) sawSE2=YES;
+        }
+        assert(sawSE2 && BDSUnifiedDeviceProfiles().count==37);
+        NSDictionary *se2=@{@"machine":@"iPhone12,8"};
+        NSDictionary *iphone8=@{@"machine":@"iPhone10,1"};
+        NSDictionary *iphoneXR=@{@"machine":@"iPhone11,8"};
+        BOOL se2Has26=NO, iphone8HasLate16=NO, xrHasLate16=NO, xrHasLate18=NO, se2HasLate16=NO;
+        for(NSDictionary *profile in BDSSystemProfilesForDevice(se2)) {
+            if([profile[@"version"] isEqual:@"26.6"]) se2Has26=YES;
+            if([profile[@"version"] hasPrefix:@"16.7.15"] || [profile[@"version"] hasPrefix:@"16.7.16"]) se2HasLate16=YES;
+        }
+        for(NSDictionary *profile in BDSSystemProfilesForDevice(iphone8)) {
+            if([profile[@"version"] hasPrefix:@"16.7.15"] || [profile[@"version"] hasPrefix:@"16.7.16"]) iphone8HasLate16=YES;
+        }
+        for(NSDictionary *profile in BDSSystemProfilesForDevice(iphoneXR)) {
+            if([profile[@"version"] hasPrefix:@"16.7.15"] || [profile[@"version"] hasPrefix:@"16.7.16"]) xrHasLate16=YES;
+            if([profile[@"version"] hasPrefix:@"18.7.9"] || [profile[@"version"] hasPrefix:@"18.7.10"]) xrHasLate18=YES;
+        }
+        assert(se2Has26 && iphone8HasLate16 && xrHasLate18 && !xrHasLate16 && !se2HasLate16);
         for(int i=0;i<100;i++) {
             NSDictionary *before=g_config;
             NSMutableDictionary *after=[before mutableCopy]; [after addEntriesFromDictionary:BDSRandomBasicProfileValues()];
             checkUnchanged(before,after,basic);
-            assert(![after[@"hwMachine"] isEqual:@"iPhone12,8"]);
             assert(![after[@"hwMachine"] isEqual:before[@"hwMachine"]]);
+            NSString *ver=after[@"systemVersion"];
+            NSString *machine=after[@"hwMachine"];
+            if([ver hasPrefix:@"16.7.15"] || [ver hasPrefix:@"16.7.16"]) assert([machine hasPrefix:@"iPhone10,"]);
+            if([ver hasPrefix:@"18.7.9"] || [ver hasPrefix:@"18.7.10"]) assert([machine hasPrefix:@"iPhone11,"]);
             g_config=after;
             before=g_config; after=[before mutableCopy]; [after addEntriesFromDictionary:BDSRandomIdentityValues()];
             checkUnchanged(before,after,identity); g_config=after;

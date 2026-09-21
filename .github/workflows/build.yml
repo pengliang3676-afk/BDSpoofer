@@ -14,10 +14,12 @@ jobs:
         run: bash scripts/build_release_xcode.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: BDSpoofer-1.8.1-UI1.2-CraneManager-1.0.2-ui1
+          name: BDSpoofer-1.8.1-UI1.2-9.22-01
           path: |
-            dist-ui1/BDSpoofer_1.8.1_UI1.2.dylib
-            dist-ui1/BDSpooferCraneManager_1.0.2-ui1_RootHide.deb
+            dist-ui1/BDSpoofer_1.8.1_UI1.2_9.22-01.dylib
+            dist-ui1/BDSpooferCraneManager_1.0.2-ui1_9.22-01_RootHide.deb
+            dist-ui1/卐解_1.8.1_UI1.2_9.22-01.dylib
+            dist-ui1/卍解_1.0.2_UI1_9.22-01_RootHide.deb
             dist-ui1/RELEASE_UI1.md
             dist-ui1/bdspoofer_config.plist
             dist-ui1/SHA256SUMS.txt
