@@ -4,6 +4,9 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  9.22-04：ssologin / 短信建档 URL 补上 SAPI 加密 di（deviceInfoForLogin）。
+//    9.22-03 只写了 query 的 PhoneModel/device_name，线上已证实发出去了，Passport 建档不认。
+//    不改 UA、uname；不恢复 extraQueryParams/loadLogin/copyClassList。
 //  9.22-03：点「其他登录方式」闪退修复。去掉未验签的 extraQueryParams/loadLogin、
 //    dyld 里扫完全部类。只改 NSURLSession 的 ssologin/短信 URL 和已核实的 SAPI 机型出口。
 //  9.22-02：微信 ssologin / 短信建档发出去前写入 Passport 机型。
@@ -1797,10 +1800,11 @@ static void tg_schedule_retry(void) {
     });
 }
 
-#pragma mark - Passport 登录设备建档（9.22-03）
+#pragma mark - Passport 登录设备建档（9.22-04）
 // 9.22-02 点登录闪退：extraQueryParams / loadLoginWithType 未验签，且 dyld 回调里
 // objc_copyClassList 会在登录框架刚加载时扫完全部类。本版只改 NSURLSession 发出的
 // ssologin / 短信建档 URL，SAPI 只 hook 已核实编码的机型出口。不改 UA、uname。
+// 9.22-04：query 机型不够，补 SAPI deviceInfoForLogin 的加密 di。
 
 static IMP const BDSPassSkip = (IMP)(uintptr_t)~0ULL;
 static BOOL bds_pass_orig_ok(IMP p) { return p && p != BDSPassSkip; }
@@ -1858,6 +1862,47 @@ static NSDictionary *BDSMergeLoginDevice(id extra) {
     return m;
 }
 
+static NSString *BDSRewriteSapiPlain(NSString *s);
+
+static NSString *BDSPassEncryptedDi(void) {
+    static _Thread_local int busy;
+    if (busy) return nil;
+    Class c = NSClassFromString(@"SAPIDeviceInfoHelper");
+    if (!c) return nil;
+    busy = 1;
+    NSString *di = nil;
+    @try {
+        SEL login = NSSelectorFromString(@"deviceInfoForLogin");
+        if ([c respondsToSelector:login]) {
+            id v = ((id (*)(id, SEL))objc_msgSend)(c, login);
+            if ([v isKindOfClass:NSString.class] && [(NSString *)v length] > 16)
+                di = (NSString *)v;
+        }
+        if (!di) {
+            SEL plainSel = NSSelectorFromString(@"plainDeviceInfoWithInterface:");
+            SEL genSel = NSSelectorFromString(@"generateDeviceInfoWithPlainString:");
+            if ([c respondsToSelector:plainSel] && [c respondsToSelector:genSel]) {
+                id plain = ((id (*)(id, SEL, id))objc_msgSend)(c, plainSel, @"login");
+                if ([plain isKindOfClass:NSString.class]) {
+                    id gen = ((id (*)(id, SEL, id))objc_msgSend)(c, genSel, BDSRewriteSapiPlain(plain));
+                    if ([gen isKindOfClass:NSString.class] && [(NSString *)gen length] > 16)
+                        di = (NSString *)gen;
+                }
+            }
+        }
+    } @catch (__unused NSException *e) {
+        di = nil;
+    }
+    busy = 0;
+    return di;
+}
+
+static BOOL BDSFormHasDi(NSString *s) {
+    if (![s isKindOfClass:NSString.class] || !s.length) return NO;
+    if ([s hasPrefix:@"di="]) return YES;
+    return [s containsString:@"&di="];
+}
+
 static NSURL *BDSURLByAddingLoginDevice(NSURL *u) {
     NSDictionary *add = BDSLoginDeviceDict();
     if (!add || ![u isKindOfClass:NSURL.class] || !BDSPassIsArchiveURL(u)) return u;
@@ -1876,6 +1921,13 @@ static NSURL *BDSURLByAddingLoginDevice(NSURL *u) {
         [items addObject:[NSURLQueryItem queryItemWithName:k value:v]];
         added = YES;
     }];
+    if (![have containsObject:@"di"]) {
+        NSString *di = BDSPassEncryptedDi();
+        if (di.length) {
+            [items addObject:[NSURLQueryItem queryItemWithName:@"di" value:di]];
+            added = YES;
+        }
+    }
     if (!added) return u;
     comp.queryItems = items;
     return comp.URL ?: u;
@@ -1884,10 +1936,36 @@ static NSURL *BDSURLByAddingLoginDevice(NSURL *u) {
 static NSURLRequest *BDSRewriteArchiveRequest(NSURLRequest *req) {
     if (![req isKindOfClass:NSURLRequest.class] || !req.URL) return req;
     NSURL *nu = BDSURLByAddingLoginDevice(req.URL);
-    if (!nu || nu == req.URL || [nu isEqual:req.URL]) return req;
+    NSString *method = (req.HTTPMethod ?: @"GET").uppercaseString;
+    BOOL post = [method isEqualToString:@"POST"] || [method isEqualToString:@"PUT"];
+    NSData *body = req.HTTPBody;
+    BOOL wantBodyDi = post && BDSPassIsArchiveURL(nu ?: req.URL);
+    if (wantBodyDi && body.length) {
+        NSString *s = [[NSString alloc] initWithData:body encoding:NSUTF8StringEncoding];
+        if (BDSFormHasDi(s)) wantBodyDi = NO;
+    }
+    BOOL urlChanged = nu && nu != req.URL && ![nu isEqual:req.URL];
+    if (!urlChanged && !wantBodyDi) return req;
     NSMutableURLRequest *m = [req mutableCopy];
     if (!m) return req;
-    m.URL = nu;
+    if (urlChanged) m.URL = nu;
+    if (wantBodyDi) {
+        NSString *di = BDSPassEncryptedDi();
+        if (di.length) {
+            static NSCharacterSet *ok;
+            static dispatch_once_t once;
+            dispatch_once(&once, ^{
+                NSMutableCharacterSet *cs = [[NSCharacterSet alphanumericCharacterSet] mutableCopy];
+                [cs addCharactersInString:@"-._~"];
+                ok = [cs copy];
+            });
+            NSString *enc = [di stringByAddingPercentEncodingWithAllowedCharacters:ok] ?: di;
+            NSString *s = body.length ? ([[NSString alloc] initWithData:body encoding:NSUTF8StringEncoding] ?: @"") : @"";
+            NSString *ns = s.length ? [s stringByAppendingFormat:@"&di=%@", enc]
+                                    : [NSString stringWithFormat:@"di=%@", enc];
+            m.HTTPBody = [ns dataUsingEncoding:NSUTF8StringEncoding];
+        }
+    }
     return m;
 }
 
@@ -3697,7 +3775,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.2 9.22-03";
+    page.title=@"卐解 1.8.1 UI1.2 9.22-04";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;

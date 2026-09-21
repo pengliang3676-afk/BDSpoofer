@@ -1,4 +1,8 @@
-# 卐解 1.8.1 UI1.2 9.22-03 / 卍解 1.0.2 UI1 9.22-01
+# 卐解 1.8.1 UI1.2 9.22-04 / 卍解 1.0.2 UI1 9.22-01
+
+## 9.22-04 ssologin 补加密 di
+
+微信 `ssologin` / 短信建档发出去之前，除 query 里的 `device_name` / `PhoneModel` 外，再写入 SAPI `deviceInfoForLogin` 生成的加密 `di`。探针 1.5 已证实 9.22-03 的 query 机型上了线，Passport 建档不认；`di` 原先只出现在更晚的 `/v3/login/api/auth`。不改 UA，不 hook `uname`。已登录号列表不会变，须新 Crane 容器 + 新微信验证。
 
 ## 9.22-03 点「其他登录方式」闪退
 
@@ -32,7 +36,7 @@
 
 ## 配套文件
 
-- `卐解_1.8.1_UI1.2_9.22-03.dylib`（`BDSpoofer_1.8.1_UI1.2_9.22-03.dylib`）：卐解插件，通过巨魔注入器替换百度内旧插件，避免同时保留两个版本。
+- `卐解_1.8.1_UI1.2_9.22-04.dylib`（`BDSpoofer_1.8.1_UI1.2_9.22-04.dylib`）：卐解插件，通过巨魔注入器替换百度内旧插件，避免同时保留两个版本。
 - `卍解_1.0.2_UI1_9.22-01_RootHide.deb`（`BDSpooferCraneManager_1.0.2-ui1_9.22-01_RootHide.deb`）：卍解配套更新，包版本 `1.0.2+ui1.9.22.01`，应用构建号 9.22.01。
 - 百度 Bundle ID：`com.baidu.BaiduMobileInfo`。两个程序支持 arm64 / arm64e，最低 iOS 15。
 
