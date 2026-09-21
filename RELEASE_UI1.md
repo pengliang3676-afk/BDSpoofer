@@ -1,4 +1,8 @@
-# 卐解 1.8.1 UI1.2 9.22-04 / 卍解 1.0.2 UI1 9.22-01
+# 卐解 1.8.1 UI1.2 9.22-05 / 卍解 1.0.2 UI1 9.22-01
+
+## 9.22-05 DVIF + uname
+
+探针 1.5 证实 9.22-04 的 query `di` 已上线，Passport 仍建档为未知；`setDeviceInfoToCookie` 有调用，但请求 Cookie 里没有 `DVIF`；`uname.machine` 仍是真机 `iPhone12,8`。本版在 SAPI 写 cookie 之后，把加密设备信息写入 `NSHTTPCookieStorage` 和默认 WK cookie 仓，并在 `ssologin` / 短信建档请求的 Cookie 头补上 `DVIF`。`uname.machine` 在 `spoofSysctl` 开启时跟随 `hw.machine`。不改 User-Agent。已登录号列表不会变，须新 Crane 容器 + 新微信验证。
 
 ## 9.22-04 ssologin 补加密 di
 
@@ -36,7 +40,7 @@
 
 ## 配套文件
 
-- `卐解_1.8.1_UI1.2_9.22-04.dylib`（`BDSpoofer_1.8.1_UI1.2_9.22-04.dylib`）：卐解插件，通过巨魔注入器替换百度内旧插件，避免同时保留两个版本。
+- `卐解_1.8.1_UI1.2_9.22-05.dylib`（`BDSpoofer_1.8.1_UI1.2_9.22-05.dylib`）：卐解插件，通过巨魔注入器替换百度内旧插件，避免同时保留两个版本。
 - `卍解_1.0.2_UI1_9.22-01_RootHide.deb`（`BDSpooferCraneManager_1.0.2-ui1_9.22-01_RootHide.deb`）：卍解配套更新，包版本 `1.0.2+ui1.9.22.01`，应用构建号 9.22.01。
 - 百度 Bundle ID：`com.baidu.BaiduMobileInfo`。两个程序支持 arm64 / arm64e，最低 iOS 15。
 

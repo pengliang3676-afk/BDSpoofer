@@ -4,6 +4,9 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  9.22-05：DVIF 写入 NSHTTPCookieStorage / WK cookie / ssologin Cookie 头；
+//    uname.machine 跟随 spoofSysctl 的 hw.machine。不改 UA。
+//    不恢复 extraQueryParams/loadLogin/copyClassList。
 //  9.22-04：ssologin / 短信建档 URL 补上 SAPI 加密 di（deviceInfoForLogin）。
 //    9.22-03 只写了 query 的 PhoneModel/device_name，线上已证实发出去了，Passport 建档不认。
 //    不改 UA、uname；不恢复 extraQueryParams/loadLogin/copyClassList。
@@ -79,6 +82,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <sys/sysctl.h>
+#import <sys/utsname.h>
 #import <sys/stat.h>
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
@@ -1800,11 +1804,12 @@ static void tg_schedule_retry(void) {
     });
 }
 
-#pragma mark - Passport 登录设备建档（9.22-04）
+#pragma mark - Passport 登录设备建档（9.22-05）
 // 9.22-02 点登录闪退：extraQueryParams / loadLoginWithType 未验签，且 dyld 回调里
 // objc_copyClassList 会在登录框架刚加载时扫完全部类。本版只改 NSURLSession 发出的
-// ssologin / 短信建档 URL，SAPI 只 hook 已核实编码的机型出口。不改 UA、uname。
+// ssologin / 短信建档 URL，SAPI 只 hook 已核实编码的机型出口。不改 UA。
 // 9.22-04：query 机型不够，补 SAPI deviceInfoForLogin 的加密 di。
+// 9.22-05：setDeviceInfoToCookie 调了但请求里没有 DVIF；uname 仍漏真机。
 
 static IMP const BDSPassSkip = (IMP)(uintptr_t)~0ULL;
 static BOOL bds_pass_orig_ok(IMP p) { return p && p != BDSPassSkip; }
@@ -1897,6 +1902,90 @@ static NSString *BDSPassEncryptedDi(void) {
     return di;
 }
 
+static NSString *BDSPassCookieDi(void) {
+    static _Thread_local int busy;
+    if (busy) return BDSPassEncryptedDi();
+    Class c = NSClassFromString(@"SAPIDeviceInfoHelper");
+    if (c) {
+        busy = 1;
+        NSString *s = nil;
+        @try {
+            SEL sel = NSSelectorFromString(@"deviceInfoStringForCookie");
+            if ([c respondsToSelector:sel]) {
+                id v = ((id (*)(id, SEL))objc_msgSend)(c, sel);
+                if ([v isKindOfClass:NSString.class] && [(NSString *)v length] > 8)
+                    s = (NSString *)v;
+            }
+        } @catch (__unused NSException *e) {
+            s = nil;
+        }
+        busy = 0;
+        if (s.length) return s;
+    }
+    return BDSPassEncryptedDi();
+}
+
+static NSString *BDSPassSanitizeCookieValue(NSString *v) {
+    if (![v isKindOfClass:NSString.class] || !v.length) return nil;
+    NSMutableString *m = [v mutableCopy];
+    [m replaceOccurrencesOfString:@"\r" withString:@"" options:0 range:NSMakeRange(0, m.length)];
+    [m replaceOccurrencesOfString:@"\n" withString:@"" options:0 range:NSMakeRange(0, m.length)];
+    [m replaceOccurrencesOfString:@";" withString:@"" options:0 range:NSMakeRange(0, m.length)];
+    [m replaceOccurrencesOfString:@"," withString:@"" options:0 range:NSMakeRange(0, m.length)];
+    return m.length ? m : nil;
+}
+
+static void BDSPassEnsureDVIF(void) {
+    if (!cfgBool(@"enabled", NO) || !cfgBool(@"spoofBaiduSDK", NO)) return;
+    NSString *raw = BDSPassCookieDi();
+    NSString *value = BDSPassSanitizeCookieValue(raw);
+    if (!value.length) return;
+    static NSArray<NSDictionary *> *specs;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        specs = @[
+            @{@"domain": @"wappass.baidu.com"},
+            @{@"domain": @"passport.baidu.com"},
+            @{@"domain": @"pass.baidu.com"},
+            @{@"domain": @".baidu.com"},
+        ];
+    });
+    NSHTTPCookieStorage *store = [NSHTTPCookieStorage sharedHTTPCookieStorage];
+    NSMutableArray<NSHTTPCookie *> *written = [NSMutableArray array];
+    for (NSDictionary *spec in specs) {
+        NSHTTPCookie *c = [NSHTTPCookie cookieWithProperties:@{
+            NSHTTPCookieName: @"DVIF",
+            NSHTTPCookieValue: value,
+            NSHTTPCookieDomain: spec[@"domain"],
+            NSHTTPCookiePath: @"/",
+            NSHTTPCookieSecure: @"TRUE",
+        }];
+        if (!c) continue;
+        [store setCookie:c];
+        [written addObject:c];
+    }
+    if (!written.count) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WKHTTPCookieStore *wk = [WKWebsiteDataStore defaultDataStore].httpCookieStore;
+        if (!wk) return;
+        for (NSHTTPCookie *c in written) {
+            [wk setCookie:c completionHandler:nil];
+        }
+    });
+}
+
+static NSURLRequest *BDSRequestByAddingDVIF(NSURLRequest *req, NSString *value) {
+    if (![req isKindOfClass:NSURLRequest.class] || !value.length) return req;
+    NSString *cur = [req valueForHTTPHeaderField:@"Cookie"] ?: [req valueForHTTPHeaderField:@"cookie"];
+    if (cur.length && [cur rangeOfString:@"DVIF=" options:NSCaseInsensitiveSearch].location != NSNotFound)
+        return req;
+    NSMutableURLRequest *m = [req isKindOfClass:NSMutableURLRequest.class] ? (NSMutableURLRequest *)req : [req mutableCopy];
+    if (!m) return req;
+    NSString *nv = cur.length ? [cur stringByAppendingFormat:@"; DVIF=%@", value] : [NSString stringWithFormat:@"DVIF=%@", value];
+    [m setValue:nv forHTTPHeaderField:@"Cookie"];
+    return m;
+}
+
 static BOOL BDSFormHasDi(NSString *s) {
     if (![s isKindOfClass:NSString.class] || !s.length) return NO;
     if ([s hasPrefix:@"di="]) return YES;
@@ -1945,7 +2034,17 @@ static NSURLRequest *BDSRewriteArchiveRequest(NSURLRequest *req) {
         if (BDSFormHasDi(s)) wantBodyDi = NO;
     }
     BOOL urlChanged = nu && nu != req.URL && ![nu isEqual:req.URL];
-    if (!urlChanged && !wantBodyDi) return req;
+    BOOL wantDVIF = BDSPassIsArchiveURL(nu ?: req.URL);
+    NSString *dvif = nil;
+    if (wantDVIF) {
+        BDSPassEnsureDVIF();
+        dvif = BDSPassSanitizeCookieValue(BDSPassCookieDi());
+        NSString *cur = [req valueForHTTPHeaderField:@"Cookie"] ?: [req valueForHTTPHeaderField:@"cookie"];
+        if (cur.length && [cur rangeOfString:@"DVIF=" options:NSCaseInsensitiveSearch].location != NSNotFound)
+            wantDVIF = NO;
+        if (!dvif.length) wantDVIF = NO;
+    }
+    if (!urlChanged && !wantBodyDi && !wantDVIF) return req;
     NSMutableURLRequest *m = [req mutableCopy];
     if (!m) return req;
     if (urlChanged) m.URL = nu;
@@ -1966,6 +2065,7 @@ static NSURLRequest *BDSRewriteArchiveRequest(NSURLRequest *req) {
             m.HTTPBody = [ns dataUsingEncoding:NSUTF8StringEncoding];
         }
     }
+    if (wantDVIF) return BDSRequestByAddingDVIF(m, dvif);
     return m;
 }
 
@@ -1990,7 +2090,7 @@ static NSString *BDSRewriteSapiPlain(NSString *s) {
 
 static IMP bds_o_devName, bds_o_devModel, bds_o_plain, bds_o_retrieve, bds_o_generate;
 static IMP bds_o_addBase, bds_o_smsWap, bds_o_smsSlim, bds_o_smsLogin;
-static IMP bds_o_dt1, bds_o_dt2;
+static IMP bds_o_dt1, bds_o_dt2, bds_o_setCookie;
 static os_unfair_lock g_bdsPassLock = OS_UNFAIR_LOCK_INIT;
 static int g_bdsPassRetry = 0;
 
@@ -2054,6 +2154,11 @@ static id bds_pass_dt2(id self, SEL _cmd, NSURLRequest *req, id handler) {
     NSURLRequest *r = BDSRewriteArchiveRequest(req);
     if (!bds_pass_orig_ok(bds_o_dt2)) return nil;
     return ((id (*)(id, SEL, id, id))bds_o_dt2)(self, _cmd, r, handler);
+}
+static void bds_pass_setCookie(id self, SEL _cmd) {
+    if (bds_pass_orig_ok(bds_o_setCookie))
+        ((void (*)(id, SEL))bds_o_setCookie)(self, _cmd);
+    BDSPassEnsureDVIF();
 }
 
 static void bds_pass_hook(NSString *clsName, SEL sel, BOOL isClass,
@@ -2128,6 +2233,8 @@ static void bds_pass_install_all(void) {
                   '@', 1, "@", (IMP)bds_pass_generate, &bds_o_generate);
     bds_pass_hook(@"SAPILoginManager", NSSelectorFromString(@"addBaseParamsWith:interface:"), NO,
                   'v', 2, "@@", (IMP)bds_pass_addBase, &bds_o_addBase);
+    bds_pass_hook(@"SAPICookieManager", NSSelectorFromString(@"setDeviceInfoToCookie"), YES,
+                  'v', 0, "", (IMP)bds_pass_setCookie, &bds_o_setCookie);
     bds_pass_hook(@"SAPILoginService",
                   NSSelectorFromString(@"smsWapLoginWithCountryCode:phoneNumber:smsCode:encryptedId:extraParams:success:verify:failure:"),
                   NO, 'v', 8, "@@@@@???", (IMP)bds_pass_smsWap, &bds_o_smsWap);
@@ -2253,6 +2360,19 @@ static int bds_my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
 
     BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStatePassed);
     return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
+}
+
+static int (*orig_uname)(struct utsname *);
+
+static int bds_my_uname(struct utsname *buf) {
+    int r = orig_uname ? orig_uname(buf) : -1;
+    if (r != 0 || !buf) return r;
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofSysctlC)) return r;
+    if (!g_hwMachine[0]) return r;
+    size_t n = sizeof(buf->machine);
+    strncpy(buf->machine, g_hwMachine, n - 1);
+    buf->machine[n - 1] = '\0';
+    return r;
 }
 
 #pragma mark - Keychain Hook（fishhook）
@@ -3102,6 +3222,7 @@ static int bds_my_dlopen_preflight(const char *path) {
 static void installCHooks(void) {
     struct bds_rebinding rebindings[] = {
         {"sysctlbyname", (void *)bds_my_sysctlbyname, (void **)&orig_sysctlbyname},
+        {"uname", (void *)bds_my_uname, (void **)&orig_uname},
         {"SecItemCopyMatching", (void *)bds_my_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching},
         {"_dyld_get_image_name", (void *)bds_my_dyld_get_image_name, (void **)&orig_dyld_get_image_name},
         {"stat", (void *)bds_my_stat, (void **)&orig_stat},
@@ -3775,7 +3896,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.2 9.22-04";
+    page.title=@"卐解 1.8.1 UI1.2 9.22-05";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
