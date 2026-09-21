@@ -93,6 +93,25 @@ int main(void) {
         assert([tg_rewrite_push(@"&device_name=iPhone-ABC123&token=iPhone14,6&x=%26") isEqual:@"&device_name=iPhone%2014%20Pro&token=iPhone14,6&x=%26"]);
         assert([tg_rewrite_push(@"token=iPhone14,6") isEqual:@"token=iPhone14,6"]);
         assert(tg_status_bar()==54);
+        NSDictionary *loginCfg=@{@"enabled":@YES,@"spoofBaiduSDK":@YES,@"hwMachine":@"iPhone17,3",
+                                 @"deviceProfileName":@"iPhone 16",@"systemVersion":@"18.7.2"};
+        g_config=loginCfg;
+        NSDictionary *loginDev=BDSLoginDeviceDict();
+        assert([loginDev[@"PhoneModel"] isEqual:@"iPhone17,3"]);
+        assert([loginDev[@"device_name"] isEqual:@"iPhone 16"]);
+        assert([loginDev[@"SystemVersion"] isEqual:@"18.7.2"]);
+        NSURL *sso=[NSURL URLWithString:@"https://passport.baidu.com/phoenix/account/ssologin?type=42&code=abc"];
+        NSString *ssoOut=BDSURLByAddingLoginDevice(sso).absoluteString;
+        assert([ssoOut containsString:@"PhoneModel=iPhone17,3"]);
+        assert([ssoOut containsString:@"device_name=iPhone%2016"] || [ssoOut containsString:@"device_name=iPhone 16"]);
+        NSURL *already=[NSURL URLWithString:@"https://passport.baidu.com/phoenix/account/ssologin?PhoneModel=keep"];
+        assert([BDSURLByAddingLoginDevice(already).absoluteString containsString:@"PhoneModel=keep"]);
+        assert(![BDSURLByAddingLoginDevice(already).absoluteString containsString:@"PhoneModel=iPhone17,3"]);
+        NSURL *other=[NSURL URLWithString:@"https://nsclick.baidu.com/v.gif"];
+        assert(BDSURLByAddingLoginDevice(other)==other);
+        g_config=[@{@"enabled":@YES,@"spoofBaiduSDK":@NO,@"hwMachine":@"iPhone17,3",@"deviceProfileName":@"iPhone 16"} copy];
+        assert(BDSLoginDeviceDict()==nil);
+        g_config=config;
         NSMutableDictionary *safe=[config mutableCopy];[safe addEntriesFromDictionary:BDSSafeSwitchValues()];
         NSMutableDictionary *reloaded=[safe mutableCopy];BDSApplyInitialDefaults(reloaded,safe);
         for(NSString *key in BDSSafeSwitchValues()) assert(![reloaded[key] boolValue]);

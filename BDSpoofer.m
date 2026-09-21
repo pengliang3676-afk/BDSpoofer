@@ -4,6 +4,9 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  9.22-02：微信 ssologin / 短信建档发出去前写入 Passport 机型。
+//    device_name = 营销名（iPhone 16）；PhoneModel = hw.machine（iPhone17,3）。
+//    不改 UA、不 hook uname。已登录号的设备列表不会变，须新容器新微信验证。
 //  9.22-01：SE2 纳入随机；16.7.15/16.7.16 仅 iPhone 8/X；卍解「当前」跟随 Crane 设为默认的容器，回到前台自动刷新。
 //    三组随机互不改写；21 个常规开关首次初始化开启，保留已保存的手动选择。
 //    修复 UA 缓存短串、Push device_name 字段和独立屏幕元数据。
@@ -1792,6 +1795,352 @@ static void tg_schedule_retry(void) {
     });
 }
 
+#pragma mark - Passport 登录设备建档（9.22-02）
+// 微信 GET /phoenix/account/ssologin 创建会话时不带 di / PhoneModel / device_name，
+// 登录设备会落成「未知」。在请求发出前把基础随机机型写进查询串和 SAPI 参数。
+// 短信建档走同一套字段。不改已签名 POST 的 body（避免动 sig），不 hook uname，不改 UA。
+
+static NSDictionary *BDSLoginDeviceDict(void) {
+    if (!cfgBool(@"enabled", NO) || !cfgBool(@"spoofBaiduSDK", NO)) return nil;
+    NSString *hw = cfgStr(@"hwMachine", @"");
+    if (!hw.length) return nil;
+    NSString *name = cfgStr(@"deviceProfileName", @"");
+    if (!name.length) name = cfgStr(@"marketingModel", @"");
+    if (!name.length) name = hw;
+    NSMutableDictionary *m = [NSMutableDictionary dictionary];
+    m[@"PhoneModel"] = hw;
+    m[@"device_name"] = name;
+    NSString *sv = cfgStr(@"systemVersion", @"");
+    if (sv.length) m[@"SystemVersion"] = sv;
+    return m;
+}
+
+static BOOL BDSPassIsHost(NSURL *u) {
+    NSString *h = (u.host ?: @"").lowercaseString;
+    return [h containsString:@"wappass"] || [h containsString:@"passport.baidu"] ||
+           [h isEqualToString:@"pass.baidu.com"] || [h hasSuffix:@".pass.baidu.com"];
+}
+
+static BOOL BDSPassIsArchiveURL(NSURL *u) {
+    if (![u isKindOfClass:NSURL.class] || !BDSPassIsHost(u)) return NO;
+    NSString *p = (u.path ?: @"").lowercaseString;
+    if ([p containsString:@"ssologin"]) return YES;
+    if ([p containsString:@"guidetouristnormalize"]) return YES;
+    if ([p containsString:@"getdpass"] || [p containsString:@"sendsms"]) return YES;
+    if ([p containsString:@"smslogin"] || [p containsString:@"smswap"] ||
+        [p containsString:@"sms/login"] || [p containsString:@"login/sms"]) return YES;
+    if ([p containsString:@"/wp/api"]) return YES;
+    if ([p containsString:@"/passport/login"]) return YES;
+    NSString *abs = (u.absoluteString ?: @"").lowercaseString;
+    if ([abs containsString:@"act=bind_mobile"]) return YES;
+    return NO;
+}
+
+static void BDSMergeLoginDeviceInto(NSMutableDictionary *m) {
+    NSDictionary *add = BDSLoginDeviceDict();
+    if (!add || !m) return;
+    [add enumerateKeysAndObjectsUsingBlock:^(id k, id v, BOOL *stop) {
+        if (![m[k] isKindOfClass:NSString.class] || ![((NSString *)m[k]) length])
+            m[k] = v;
+    }];
+}
+
+static NSDictionary *BDSMergeLoginDevice(id extra) {
+    NSDictionary *add = BDSLoginDeviceDict();
+    if (!add) return extra;
+    NSMutableDictionary *m = [NSMutableDictionary dictionary];
+    if ([extra isKindOfClass:NSDictionary.class]) [m addEntriesFromDictionary:(NSDictionary *)extra];
+    BDSMergeLoginDeviceInto(m);
+    return m;
+}
+
+static NSURL *BDSURLByAddingLoginDevice(NSURL *u) {
+    NSDictionary *add = BDSLoginDeviceDict();
+    if (!add || ![u isKindOfClass:NSURL.class] || !BDSPassIsArchiveURL(u)) return u;
+    NSURLComponents *comp = [NSURLComponents componentsWithURL:u resolvingAgainstBaseURL:NO];
+    if (!comp) return u;
+    NSMutableArray *items = [NSMutableArray array];
+    if (comp.queryItems.count) [items addObjectsFromArray:comp.queryItems];
+    NSMutableSet *have = [NSMutableSet set];
+    for (NSURLQueryItem *it in items) {
+        if (it.name.length) [have addObject:it.name];
+    }
+    __block BOOL added = NO;
+    [add enumerateKeysAndObjectsUsingBlock:^(NSString *k, NSString *v, BOOL *stop) {
+        if (![k isKindOfClass:NSString.class] || ![v isKindOfClass:NSString.class] || !v.length) return;
+        if ([have containsObject:k]) return;
+        [items addObject:[NSURLQueryItem queryItemWithName:k value:v]];
+        added = YES;
+    }];
+    if (!added) return u;
+    comp.queryItems = items;
+    return comp.URL ?: u;
+}
+
+static NSURLRequest *BDSRewriteArchiveRequest(NSURLRequest *req) {
+    if (![req isKindOfClass:NSURLRequest.class] || !req.URL) return req;
+    NSURL *nu = BDSURLByAddingLoginDevice(req.URL);
+    if (!nu || nu == req.URL || [nu isEqual:req.URL]) return req;
+    NSMutableURLRequest *m = [req mutableCopy];
+    m.URL = nu;
+    return m;
+}
+
+static NSString *BDSRewriteSapiPlain(NSString *s) {
+    NSDictionary *add = BDSLoginDeviceDict();
+    if (!add || ![s isKindOfClass:NSString.class] || !s.length) return s;
+    NSString *sep = @"\x01";
+    if ([s rangeOfString:sep].location == NSNotFound) return s;
+    NSMutableArray<NSString *> *f = [[s componentsSeparatedByString:sep] mutableCopy];
+    if (f.count < 5) return s;
+    NSString *hw = add[@"PhoneModel"];
+    if (hw.length && f.count > 3 && f[3].length) f[3] = hw;
+    NSString *sv = add[@"SystemVersion"];
+    if (sv.length && f.count > 4 && f[4].length) {
+        NSRegularExpression *verRx = [NSRegularExpression regularExpressionWithPattern:
+            @"^\\d+\\.\\d+(?:\\.\\d+)?$" options:0 error:nil];
+        if ([verRx firstMatchInString:f[4] options:0 range:NSMakeRange(0, f[4].length)])
+            f[4] = sv;
+    }
+    return [f componentsJoinedByString:sep];
+}
+
+static IMP bds_o_devName, bds_o_devModel, bds_o_plain, bds_o_retrieve, bds_o_generate, bds_o_diLogin;
+static IMP bds_o_addBase, bds_o_smsWap, bds_o_smsSlim, bds_o_smsLogin;
+static IMP bds_o_extraQP, bds_o_allExtraQP, bds_o_loadType, bds_o_loadCfg, bds_o_addBaseQS;
+static IMP bds_o_wkLoad, bds_o_passLoad;
+static SEL g_bdsPassSelDt1, g_bdsPassSelDt2;
+static os_unfair_lock g_bdsPassLock = OS_UNFAIR_LOCK_INIT;
+static int g_bdsPassRetry = 0;
+
+static NSString *bds_pass_deviceName(id self, SEL _cmd) {
+    NSDictionary *add = BDSLoginDeviceDict();
+    if (add[@"device_name"]) return add[@"device_name"];
+    return bds_o_devName ? ((NSString *(*)(id, SEL))bds_o_devName)(self, _cmd) : @"iPhone";
+}
+static NSString *bds_pass_deviceModel(id self, SEL _cmd) {
+    NSDictionary *add = BDSLoginDeviceDict();
+    if (add[@"PhoneModel"]) return add[@"PhoneModel"];
+    return bds_o_devModel ? ((NSString *(*)(id, SEL))bds_o_devModel)(self, _cmd) : @"iPhone";
+}
+static id bds_pass_plain(id self, SEL _cmd, id iface) {
+    id orig = bds_o_plain ? ((id (*)(id, SEL, id))bds_o_plain)(self, _cmd, iface) : nil;
+    if ([orig isKindOfClass:NSString.class]) return BDSRewriteSapiPlain(orig);
+    if ([orig isKindOfClass:NSDictionary.class]) return BDSMergeLoginDevice(orig);
+    return orig;
+}
+static id bds_pass_retrieve(id self, SEL _cmd, id keys) {
+    id orig = bds_o_retrieve ? ((id (*)(id, SEL, id))bds_o_retrieve)(self, _cmd, keys) : nil;
+    if ([orig isKindOfClass:NSDictionary.class])
+        return BDSMergeLoginDevice(orig);
+    return orig;
+}
+static id bds_pass_generate(id self, SEL _cmd, id plain) {
+    id fed = [plain isKindOfClass:NSString.class] ? BDSRewriteSapiPlain(plain) : plain;
+    return bds_o_generate ? ((id (*)(id, SEL, id))bds_o_generate)(self, _cmd, fed) : fed;
+}
+static id bds_pass_diLogin(id self, SEL _cmd) {
+    id orig = bds_o_diLogin ? ((id (*)(id, SEL))bds_o_diLogin)(self, _cmd) : nil;
+    if ([orig isKindOfClass:NSString.class]) return BDSRewriteSapiPlain(orig);
+    if ([orig isKindOfClass:NSDictionary.class]) return BDSMergeLoginDevice(orig);
+    return orig;
+}
+static void bds_pass_addBase(id self, SEL _cmd, id params, id iface) {
+    if ([params isKindOfClass:NSMutableDictionary.class]) {
+        BDSMergeLoginDeviceInto((NSMutableDictionary *)params);
+    } else {
+        params = BDSMergeLoginDevice(params);
+    }
+    if (bds_o_addBase) ((void (*)(id, SEL, id, id))bds_o_addBase)(self, _cmd, params, iface);
+}
+typedef void (*BDSPassSmsIMP)(id, SEL, id, id, id, id, id, id, id, id);
+static void bds_pass_smsWap(id self, SEL _cmd, id cc, id phone, id code, id enc, id extra,
+                            id success, id verify, id failure) {
+    if (bds_o_smsWap)
+        ((BDSPassSmsIMP)bds_o_smsWap)(self, _cmd, cc, phone, code, enc,
+                                      BDSMergeLoginDevice(extra), success, verify, failure);
+}
+static void bds_pass_smsSlim(id self, SEL _cmd, id cc, id phone, id code, id enc, id extra,
+                             id success, id verify, id failure) {
+    if (bds_o_smsSlim)
+        ((BDSPassSmsIMP)bds_o_smsSlim)(self, _cmd, cc, phone, code, enc,
+                                       BDSMergeLoginDevice(extra), success, verify, failure);
+}
+static void bds_pass_smsLogin(id self, SEL _cmd, id cc, id phone, id code, id enc, id extra,
+                              id success, id verify, id failure) {
+    if (bds_o_smsLogin)
+        ((BDSPassSmsIMP)bds_o_smsLogin)(self, _cmd, cc, phone, code, enc,
+                                        BDSMergeLoginDevice(extra), success, verify, failure);
+}
+static id bds_pass_extraQP(id self, SEL _cmd) {
+    id orig = bds_o_extraQP ? ((id (*)(id, SEL))bds_o_extraQP)(self, _cmd) : nil;
+    return BDSMergeLoginDevice(orig);
+}
+static id bds_pass_allExtraQP(id self, SEL _cmd) {
+    id orig = bds_o_allExtraQP ? ((id (*)(id, SEL))bds_o_allExtraQP)(self, _cmd) : nil;
+    return BDSMergeLoginDevice(orig);
+}
+static void bds_pass_loadType(id self, SEL _cmd, long long type, id extra) {
+    if (bds_o_loadType)
+        ((void (*)(id, SEL, long long, id))bds_o_loadType)(self, _cmd, type, BDSMergeLoginDevice(extra));
+}
+static void bds_pass_loadCfg(id self, SEL _cmd, id cfg, id extra) {
+    if (bds_o_loadCfg)
+        ((void (*)(id, SEL, id, id))bds_o_loadCfg)(self, _cmd, cfg, BDSMergeLoginDevice(extra));
+}
+static id bds_pass_addBaseQS(id self, SEL _cmd, id url, id other) {
+    id merged = ([other isKindOfClass:NSDictionary.class] || other == nil) ? BDSMergeLoginDevice(other) : other;
+    return bds_o_addBaseQS ? ((id (*)(id, SEL, id, id))bds_o_addBaseQS)(self, _cmd, url, merged) : url;
+}
+static id bds_pass_wkLoad(id self, SEL _cmd, NSURLRequest *req) {
+    NSURLRequest *r = BDSRewriteArchiveRequest(req);
+    return bds_o_wkLoad ? ((id (*)(id, SEL, id))bds_o_wkLoad)(self, _cmd, r) : nil;
+}
+static id bds_pass_passLoad(id self, SEL _cmd, NSURLRequest *req) {
+    NSURLRequest *r = BDSRewriteArchiveRequest(req);
+    return bds_o_passLoad ? ((id (*)(id, SEL, id))bds_o_passLoad)(self, _cmd, r) : nil;
+}
+static id bds_pass_dt1(id self, SEL _cmd, NSURLRequest *req) {
+    NSURLRequest *r = BDSRewriteArchiveRequest(req);
+    return ((id (*)(id, SEL, id))objc_msgSend)(self, g_bdsPassSelDt1, r);
+}
+static id bds_pass_dt2(id self, SEL _cmd, NSURLRequest *req, id handler) {
+    NSURLRequest *r = BDSRewriteArchiveRequest(req);
+    return ((id (*)(id, SEL, id, id))objc_msgSend)(self, g_bdsPassSelDt2, r, handler);
+}
+
+static void bds_pass_hook(NSString *clsName, SEL sel, BOOL isClass, IMP newImp, IMP *outOrig) {
+    if (!outOrig || *outOrig) return;
+    Class cls = NSClassFromString(clsName);
+    if (!cls) return;
+    Class hookCls = isClass ? object_getClass(cls) : cls;
+    Method m = class_getInstanceMethod(hookCls, sel);
+    if (!m) return;
+    IMP orig = method_getImplementation(m);
+    if (orig == newImp) { *outOrig = orig; return; }
+    class_addMethod(hookCls, sel, orig, method_getTypeEncoding(m));
+    Method own = class_getInstanceMethod(hookCls, sel);
+    *outOrig = method_getImplementation(own);
+    method_setImplementation(own, newImp);
+}
+
+static BOOL bds_pass_class_has_sel(Class cls, SEL sel) {
+    unsigned n = 0;
+    Method *list = class_copyMethodList(cls, &n);
+    BOOL hit = NO;
+    for (unsigned i = 0; i < n && list; i++) {
+        if (method_getName(list[i]) == sel) { hit = YES; break; }
+    }
+    if (list) free(list);
+    return hit;
+}
+
+static void bds_pass_swap_own(Class cls, SEL origSel, IMP newImp, SEL saveSel) {
+    if (!cls || !saveSel || bds_pass_class_has_sel(cls, saveSel)) return;
+    unsigned n = 0;
+    Method *list = class_copyMethodList(cls, &n);
+    Method found = NULL;
+    for (unsigned i = 0; i < n && list; i++) {
+        if (method_getName(list[i]) == origSel) { found = list[i]; break; }
+    }
+    if (list) free(list);
+    if (!found) return;
+    IMP old = method_getImplementation(found);
+    if (old == newImp) return;
+    class_addMethod(cls, saveSel, old, method_getTypeEncoding(found));
+    method_setImplementation(found, newImp);
+}
+
+static void bds_pass_install_session(void) {
+    if (!g_bdsPassSelDt1) g_bdsPassSelDt1 = sel_registerName("bds_pass_orig_dt1:");
+    if (!g_bdsPassSelDt2) g_bdsPassSelDt2 = sel_registerName("bds_pass_orig_dt2:");
+    Class sess = NSClassFromString(@"NSURLSession");
+    if (!sess) return;
+    unsigned n = 0;
+    Class *classes = objc_copyClassList(&n);
+    if (!classes) return;
+    for (unsigned i = 0; i < n; i++) {
+        Class cc = classes[i];
+        Class c = cc;
+        BOOL match = NO;
+        while (c) {
+            if (c == sess) { match = YES; break; }
+            c = class_getSuperclass(c);
+        }
+        if (!match) continue;
+        bds_pass_swap_own(cc, @selector(dataTaskWithRequest:), (IMP)bds_pass_dt1, g_bdsPassSelDt1);
+        bds_pass_swap_own(cc, @selector(dataTaskWithRequest:completionHandler:),
+                          (IMP)bds_pass_dt2, g_bdsPassSelDt2);
+    }
+    free(classes);
+}
+
+static void bds_pass_install_all(void) {
+    os_unfair_lock_lock(&g_bdsPassLock);
+    bds_pass_hook(@"SAPIDeviceInfoHelper", NSSelectorFromString(@"deviceName"), YES,
+                  (IMP)bds_pass_deviceName, &bds_o_devName);
+    bds_pass_hook(@"SAPIDeviceInfoHelper", NSSelectorFromString(@"deviceModel"), YES,
+                  (IMP)bds_pass_deviceModel, &bds_o_devModel);
+    bds_pass_hook(@"SAPIDeviceInfoHelper", NSSelectorFromString(@"plainDeviceInfoWithInterface:"), YES,
+                  (IMP)bds_pass_plain, &bds_o_plain);
+    bds_pass_hook(@"SAPIDeviceInfoHelper", NSSelectorFromString(@"retrieveDeviceInfoForKeys:"), YES,
+                  (IMP)bds_pass_retrieve, &bds_o_retrieve);
+    bds_pass_hook(@"SAPIDeviceInfoHelper", NSSelectorFromString(@"generateDeviceInfoWithPlainString:"), YES,
+                  (IMP)bds_pass_generate, &bds_o_generate);
+    bds_pass_hook(@"SAPIDeviceInfoHelper", NSSelectorFromString(@"deviceInfoForLogin"), YES,
+                  (IMP)bds_pass_diLogin, &bds_o_diLogin);
+    bds_pass_hook(@"SAPILoginManager", NSSelectorFromString(@"addBaseParamsWith:interface:"), NO,
+                  (IMP)bds_pass_addBase, &bds_o_addBase);
+    bds_pass_hook(@"SAPILoginService",
+                  NSSelectorFromString(@"smsWapLoginWithCountryCode:phoneNumber:smsCode:encryptedId:extraParams:success:verify:failure:"),
+                  NO, (IMP)bds_pass_smsWap, &bds_o_smsWap);
+    bds_pass_hook(@"SAPILoginService",
+                  NSSelectorFromString(@"smsWapLoginWithCountryCodeSlim:phoneNumber:smsCode:encryptedId:extraParams:success:verify:failure:"),
+                  NO, (IMP)bds_pass_smsSlim, &bds_o_smsSlim);
+    bds_pass_hook(@"SAPILoginService",
+                  NSSelectorFromString(@"smsLoginWithCountryCode:phoneNumber:smsCode:encryptedId:extraParams:success:verify:failure:"),
+                  NO, (IMP)bds_pass_smsLogin, &bds_o_smsLogin);
+    bds_pass_hook(@"PASSWebViewController", NSSelectorFromString(@"extraQueryParams"), NO,
+                  (IMP)bds_pass_extraQP, &bds_o_extraQP);
+    bds_pass_hook(@"PASSWebViewController", NSSelectorFromString(@"allExtraQueryParams"), NO,
+                  (IMP)bds_pass_allExtraQP, &bds_o_allExtraQP);
+    bds_pass_hook(@"SAPIWebView", NSSelectorFromString(@"loadLoginWithType:extraParams:"), NO,
+                  (IMP)bds_pass_loadType, &bds_o_loadType);
+    bds_pass_hook(@"SAPIWebView", NSSelectorFromString(@"loadLoginWithConfig:extraParams:"), NO,
+                  (IMP)bds_pass_loadCfg, &bds_o_loadCfg);
+    bds_pass_hook(@"SAPIURLHelper", NSSelectorFromString(@"addBaseQueryToURLString:otherQuery:"), YES,
+                  (IMP)bds_pass_addBaseQS, &bds_o_addBaseQS);
+    bds_pass_hook(@"WKWebView", @selector(loadRequest:), NO, (IMP)bds_pass_wkLoad, &bds_o_wkLoad);
+    bds_pass_hook(@"PASSWebView", @selector(loadRequest:), NO, (IMP)bds_pass_passLoad, &bds_o_passLoad);
+    bds_pass_install_session();
+    os_unfair_lock_unlock(&g_bdsPassLock);
+}
+
+static void bds_pass_schedule_retry(void);
+static volatile int g_bdsPassDrainQueued = 0;
+static void bds_pass_add_image_cb(const struct mach_header *mh, intptr_t slide) {
+    (void)mh; (void)slide;
+    if (__sync_lock_test_and_set(&g_bdsPassDrainQueued, 1)) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        __sync_lock_release(&g_bdsPassDrainQueued);
+        bds_pass_install_all();
+    });
+}
+static void installPassportLoginArchiveHooks(void) {
+    bds_pass_install_all();
+    _dyld_register_func_for_add_image(bds_pass_add_image_cb);
+    bds_pass_schedule_retry();
+}
+static void bds_pass_schedule_retry(void) {
+    if (g_bdsPassRetry >= 20) return;
+    g_bdsPassRetry++;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        bds_pass_install_all();
+        if (g_bdsPassRetry < 20) bds_pass_schedule_retry();
+    });
+}
+
 #pragma mark - sysctlbyname Hook（fishhook，纯 C）
 
 static int (*orig_sysctlbyname)(const char *, void *, size_t *, void *, size_t);
@@ -3411,7 +3760,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.2 9.22-01";
+    page.title=@"卐解 1.8.1 UI1.2 9.22-02";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -4564,6 +4913,7 @@ static void bds_initialize() {
         // 百度 SDK 设备标识 hook
         if (cfgBool(@"spoofBaiduSDK", NO)) {
             installBaiduSDKHooks();
+            if (basicEnabled) installPassportLoginArchiveHooks();
         }
 
         // 定向机型/iOS/屏幕不依赖基础总开关；内部 IDFV 出口随高级身份一起安装并共用同一个值。

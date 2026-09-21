@@ -1,4 +1,8 @@
-# 卐解 1.8.1 UI1.2 9.22-01 / 卍解 1.0.2 UI1 9.22-01
+# 卐解 1.8.1 UI1.2 9.22-02 / 卍解 1.0.2 UI1 9.22-01
+
+## 9.22-02 Passport 登录设备建档
+
+微信 `ssologin` 和短信建档发出去之前，把基础随机机型写入 Passport：`device_name` 用营销名（如 `iPhone 16`），`PhoneModel` 用 `hw.machine`（如 `iPhone17,3`）。不改 User-Agent，不 hook `uname`。已登录账号的设备列表不会变，必须新 Crane 容器 + 新微信验证。
 
 卐解是注入百度极速版的插件（技术文件名继续使用 `BDSpoofer`），卍解是配套的 Crane 容器管理端。本版本合入审核通过的界面与独立定向参数功能。
 
@@ -24,7 +28,7 @@
 
 ## 配套文件
 
-- `卐解_1.8.1_UI1.2_9.22-01.dylib`（`BDSpoofer_1.8.1_UI1.2_9.22-01.dylib`）：卐解插件，通过巨魔注入器替换百度内旧插件，避免同时保留两个版本。
+- `卐解_1.8.1_UI1.2_9.22-02.dylib`（`BDSpoofer_1.8.1_UI1.2_9.22-02.dylib`）：卐解插件，通过巨魔注入器替换百度内旧插件，避免同时保留两个版本。
 - `卍解_1.0.2_UI1_9.22-01_RootHide.deb`（`BDSpooferCraneManager_1.0.2-ui1_9.22-01_RootHide.deb`）：卍解配套更新，包版本 `1.0.2+ui1.9.22.01`，应用构建号 9.22.01。
 - 百度 Bundle ID：`com.baidu.BaiduMobileInfo`。两个程序支持 arm64 / arm64e，最低 iOS 15。
 
