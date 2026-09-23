@@ -4,6 +4,10 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  9.23-01：加密前 di 的空格也写入。[3] PhoneModel = hw.machine，
+//    [4] SystemVersion = 配置系统，[27] device_name = deviceModel（单词 iPhone）。
+//    9.22-05 只在 [3]/[4] 已有字时改写，极速 6.59 这三格是空的，原样加密后列表为未知。
+//    不改 UA。不改 query 里的营销名。
 //  9.22-05：DVIF 写入 NSHTTPCookieStorage / WK cookie / ssologin Cookie 头；
 //    uname.machine 跟随 spoofSysctl 的 hw.machine。不改 UA。
 //    不恢复 extraQueryParams/loadLogin/copyClassList。
@@ -2077,13 +2081,13 @@ static NSString *BDSRewriteSapiPlain(NSString *s) {
     NSMutableArray<NSString *> *f = [[s componentsSeparatedByString:sep] mutableCopy];
     if (f.count < 5) return s;
     NSString *hw = add[@"PhoneModel"];
-    if (hw.length && f.count > 3 && f[3].length) f[3] = hw;
+    if (hw.length && f.count > 3) f[3] = hw;
     NSString *sv = add[@"SystemVersion"];
-    if (sv.length && f.count > 4 && f[4].length) {
-        NSRegularExpression *verRx = [NSRegularExpression regularExpressionWithPattern:
-            @"^\\d+\\.\\d+(?:\\.\\d+)?$" options:0 error:nil];
-        if ([verRx firstMatchInString:f[4] options:0 range:NSMakeRange(0, f[4].length)])
-            f[4] = sv;
+    if (sv.length && f.count > 4) f[4] = sv;
+    if (f.count > 27) {
+        NSString *shown = cfgStr(@"deviceModel", @"iPhone");
+        if (!shown.length) shown = @"iPhone";
+        f[27] = shown;
     }
     return [f componentsJoinedByString:sep];
 }
@@ -3896,7 +3900,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.2 9.22-05";
+    page.title=@"卐解 1.8.1 UI1.2 9.23-01";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;

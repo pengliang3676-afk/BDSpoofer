@@ -37,7 +37,7 @@ assert 'closeApp' not in manager and 'NSSelectorFromString(@"suspend")' not in m
 assert 'config[@"deviceProfileName"] ?: config[@"hwMachine"]' in manager
 assert 'config[@"targetedDeviceProfileName"] ?: config[@"targetedHwMachine"]' in manager
 assert 'NSString *currentSuffix = @"（当前）"' in manager and 'UIColor.systemRedColor' in manager
-assert 'page.title=@"卐解 1.8.1 UI1.2 9.22-05"' in plugin
+assert 'page.title=@"卐解 1.8.1 UI1.2 9.23-01"' in plugin
 assert 'didRandomize%@%@' in policy
 for text in ['BDSMarkRandomModeRun','BDSRandomModeWasRun','BDSConfigForPersistentStorage']:
     assert text in plugin+manager+policy,text
@@ -57,12 +57,12 @@ for text in ['h2tcbox.baidu.com','/ztbox','zpblog','10290','y_mission_index','c_
 assert 'BDSInstallCashTelemetryBlocking();' in plugin
 assert plugin.count('loadConfig();') >= 3
 assert '0.50' not in release and '触发风控' not in release
-assert 'BDSpoofer_1.8.1_UI1.2_9.22-05.dylib' in build and 'UI1.1.dylib' not in build
-assert 'BDSpooferCraneManager_1.0.2-ui1_9.22-01_RootHide.deb' in build
+assert 'BDSpoofer_1.8.1_UI1.2_9.23-01.dylib' in build and 'UI1.1.dylib' not in build
+assert 'BDSpooferCraneManager_1.0.2-ui1_9.23-01_RootHide.deb' in build
 assert 'BDSLoginDeviceDict' in plugin and 'ssologin' in plugin
 assert 'BDSPassEncryptedDi' in plugin and 'deviceInfoForLogin' in plugin
 assert 'BDSPassEnsureDVIF' in plugin and 'bds_my_uname' in plugin and '{"uname"' in plugin
-assert 'self.title = @"卍解 1.0.2 9.22-01"' in manager
+assert 'self.title = @"卍解 1.0.2 9.23-01"' in manager
 assert '[verified isEqualToDictionary:config]' in manager
 assert 'targetedScreenHwMachine' in plugin and 'targetedScreenHwMachine' in manager
 def function(text,name):
@@ -109,6 +109,10 @@ names=['bds_c_is_jailbreak_path','bds_is_suspicious_dlopen_path','bds_my_dlopen'
 for name in names:assert function(plugin,name)==function(base,name),name
 for path in ['bdspoofer_config.plist','CraneManager/Info.plist','CraneManager/BDSCraneManager.entitlements','CraneManager/BDSCraneManager.libSandy.plist']:plistlib.loads((root/path).read_bytes())
 manager_info=plistlib.loads((root/'CraneManager/Info.plist').read_bytes())
-assert manager_info['CFBundleVersion']=='9.22.01' and manager_info['CFBundleShortVersionString']=='1.0.2-9.22.01'
+assert manager_info['CFBundleVersion']=='9.23.01' and manager_info['CFBundleShortVersionString']=='1.0.2-9.23.01'
+assert 'if (hw.length && f.count > 3) f[3] = hw;' in plugin
+assert 'if (sv.length && f.count > 4) f[4] = sv;' in plugin
+assert 'if (f.count > 27)' in plugin and 'cfgStr(@"deviceModel", @"iPhone")' in plugin
+assert 'f[3].length' not in plugin and 'f[4].length' not in plugin
 assert 'UIApplicationExitsOnSuspend' not in manager_info
 print('PASS UI1.2: v187, 21 on / 5 off, exact telemetry block, 37 synchronized devices, UI1.2 package names, 11 baseline jailbreak functions unchanged')
