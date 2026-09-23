@@ -4,10 +4,12 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  9.23-02：网页标识里的 CPU iPhone OS 15_4_1 改成配置系统（16.3 → 16_3）。
+//    只改这一处。不改整段 UA，不改 P2 后缀，不改 query 营销名，不改 di 格子。
 //  9.23-01：加密前 di 的空格也写入。[3] PhoneModel = hw.machine，
 //    [4] SystemVersion = 配置系统，[27] device_name = deviceModel（单词 iPhone）。
 //    9.22-05 只在 [3]/[4] 已有字时改写，极速 6.59 这三格是空的，原样加密后列表为未知。
-//    不改 UA。不改 query 里的营销名。
+//    不改 query 里的营销名。
 //  9.22-05：DVIF 写入 NSHTTPCookieStorage / WK cookie / ssologin Cookie 头；
 //    uname.machine 跟随 spoofSysctl 的 hw.machine。不改 UA。
 //    不恢复 extraQueryParams/loadLogin/copyClassList。
@@ -2421,6 +2423,34 @@ static OSStatus bds_my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *res
 
 #pragma mark - User-Agent Hook
 
+static NSString *BDSRewriteWebOSToken(NSString *ua) {
+    if (![ua isKindOfClass:NSString.class] || !ua.length) return ua;
+    NSString *sv = BDSLoginDeviceDict()[@"SystemVersion"];
+    if (![sv isKindOfClass:NSString.class] || !sv.length) return ua;
+    NSString *token = [sv stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+    NSString *prefix = @"CPU iPhone OS ";
+    NSRange found = [ua rangeOfString:prefix];
+    if (found.location == NSNotFound) return ua;
+    NSUInteger start = NSMaxRange(found);
+    NSUInteger i = start;
+    while (i < ua.length) {
+        unichar c = [ua characterAtIndex:i];
+        if ((c >= '0' && c <= '9') || c == '_') i++;
+        else break;
+    }
+    if (i == start) return ua;
+    if ([[ua substringWithRange:NSMakeRange(start, i - start)] isEqualToString:token]) return ua;
+    return [ua stringByReplacingCharactersInRange:NSMakeRange(start, i - start) withString:token];
+}
+
+static IMP orig_wk_setCustomUserAgent = NULL;
+static void new_wk_setCustomUserAgent(id self, SEL _cmd, NSString *ua) {
+    typedef void (*SetUAIMP)(id, SEL, NSString *);
+    if (orig_wk_setCustomUserAgent) {
+        ((SetUAIMP)orig_wk_setCustomUserAgent)(self, _cmd, BDSRewriteWebOSToken(ua));
+    }
+}
+
 static IMP orig_wk_customUserAgent = NULL;
 static NSString *new_wk_customUserAgent(id self, SEL _cmd) {
     typedef NSString *(*UserAgentGetterIMP)(id, SEL);
@@ -3900,7 +3930,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.2 9.23-01";
+    page.title=@"卐解 1.8.1 UI1.2 9.23-02";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5059,6 +5089,14 @@ static void bds_initialize() {
         // 定向机型/iOS/屏幕不依赖基础总开关；内部 IDFV 出口随高级身份一起安装并共用同一个值。
         if (cfgBool(@"spoofBaiduTargeted", NO) || cfgBool(@"spoofBaiduSDK", NO)) {
             installBaiduTargetedHooks();
+        }
+
+        // 登录页网页标识：只替换 CPU iPhone OS 的系统号，跟随 di 的 SystemVersion。
+        if (cfgBool(@"spoofBaiduSDK", NO)) {
+            cls = objc_getClass("WKWebView");
+            if (cls) {
+                hookInst(cls, @selector(setCustomUserAgent:), (IMP)new_wk_setCustomUserAgent, &orig_wk_setCustomUserAgent);
+            }
         }
 
         // User-Agent hook
