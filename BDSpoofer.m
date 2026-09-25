@@ -4,6 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  9.25-01：未点一键基础/一键高级前不写配置，也不套用默认机型。
 //  9.23-02：网页标识里的 CPU iPhone OS 15_4_1 改成配置系统（16.3 → 16_3）。
 //    只改这一处。不改整段 UA，不改 P2 后缀，不改 query 营销名，不改 di 格子。
 //  9.23-01：加密前 di 的空格也写入。[3] PhoneModel = hw.machine，
@@ -290,9 +291,12 @@ static void bds_update_c_cache(void) {
 
 static void loadConfig() {
     NSString *p1 = configPath();
-    NSString *p2 = [[NSBundle mainBundle] pathForResource:@"bdspoofer_config" ofType:@"plist"];
-    NSString *path = [[NSFileManager defaultManager] fileExistsAtPath:p1] ? p1 : p2;
-    NSDictionary *loaded = path ? [NSDictionary dictionaryWithContentsOfFile:path] : nil;
+    if (![[NSFileManager defaultManager] fileExistsAtPath:p1]) {
+        g_config = @{};
+        bds_update_c_cache();
+        return;
+    }
+    NSDictionary *loaded = [NSDictionary dictionaryWithContentsOfFile:p1];
     NSMutableDictionary *merged = [BDSDefaultConfig() mutableCopy];
     if (loaded) [merged addEntriesFromDictionary:loaded];
     NSInteger ver = [loaded[@"configVersion"] integerValue];
@@ -507,8 +511,25 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     BDSApplyInitialDefaults(merged, loaded);
-    BDSSeedInitialIdentities(merged, loaded);
-    [BDSConfigForPersistentStorage(merged) writeToFile:p1 atomically:YES];
+    // 没点过一键基础：内存里关掉机型伪装，不把默认 SE 写回文件。
+    if (!BDSRandomModeWasRun(merged, @"basic")) {
+        for (NSString *key in @[@"enabled", @"spoofProcessHardware", @"spoofStorage",
+                                @"spoofSysctl", @"spoofCPU", @"spoofCarrier",
+                                @"spoofBootTime", @"spoofLocale", @"spoofBaiduSDK",
+                                @"deviceProfileName", @"hwMachine", @"hwModel",
+                                @"systemVersion", @"systemBuild", @"kernOSVersion",
+                                @"deviceModel", @"marketingModel", @"deviceName",
+                                @"kernHostname", @"memorySize", @"diskSize"]) {
+            if ([key hasPrefix:@"spoof"] || [key isEqualToString:@"enabled"]) merged[key] = @NO;
+            else [merged removeObjectForKey:key];
+        }
+    }
+    // 没点过一键高级：不使用启动时自动生成的五项身份。
+    if (!BDSRandomModeWasRun(merged, @"advanced")) {
+        for (NSString *key in @[@"idfa", @"idfv", @"deviceID", @"cuid", @"utdid"]) {
+            [merged removeObjectForKey:key];
+        }
+    }
     g_config = [merged copy];
     bds_update_c_cache();
 }
@@ -955,7 +976,14 @@ static NSInteger new_batteryState(id self, SEL _cmd) {
 
 static IMP orig_identifierForVendor = NULL;
 static NSUUID *new_identifierForVendor(id self, SEL _cmd) {
-    NSString *uuid = cfgStr(@"idfv", @"A1B2C3D4-E5F6-7890-ABCD-EF1234567890");
+    if (!BDSRandomModeWasRun(g_config, @"advanced")) {
+        BDS_DIAG_RECORD(g_diagIDFV, BDSDiagStatePassed);
+        if (orig_identifierForVendor) {
+            return ((NSUUID *(*)(id, SEL))orig_identifierForVendor)(self, _cmd);
+        }
+        return nil;
+    }
+    NSString *uuid = cfgStr(@"idfv", @"");
     NSUUID *value = [[NSUUID alloc] initWithUUIDString:uuid];
     if (value) {
         BDS_DIAG_RECORD(g_diagIDFV, BDSDiagStateChanged);
@@ -993,6 +1021,10 @@ static BOOL bds_realAdvertisingTrackingEnabled(id manager) {
 static NSUUID *new_advertisingIdentifier(id self, SEL _cmd) {
     NSUUID *original = orig_advertisingIdentifier
         ? ((NSUUID *(*)(id, SEL))orig_advertisingIdentifier)(self, _cmd) : nil;
+    if (!BDSRandomModeWasRun(g_config, @"advanced")) {
+        BDS_DIAG_RECORD(g_diagAdvertising, BDSDiagStatePassed);
+        return original;
+    }
     NSUUID *value = nil;
     if (bds_realAdvertisingTrackingEnabled(self)) {
         NSString *uuid = cfgStr(@"idfa", @"FEDCBA98-7654-3210-FEDC-BA9876543210");
@@ -1149,13 +1181,13 @@ static NSMutableDictionary<NSString *, NSValue *> *g_baiduOrigImps = nil;
 static NSMutableSet<NSString *> *g_baiduHookedKeys = nil;
 
 static NSString *bds_cuid_value(void) {
-    return cfgStr(@"cuid", @"A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6");
+    return BDSRandomModeWasRun(g_config, @"advanced") ? cfgStr(@"cuid", @"") : @"";
 }
 static NSString *bds_utdid_value(void) {
-    return cfgStr(@"utdid", @"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6");
+    return BDSRandomModeWasRun(g_config, @"advanced") ? cfgStr(@"utdid", @"") : @"";
 }
 static NSString *bds_deviceID_value(void) {
-    return cfgStr(@"deviceID", @"A1B2C3D4-E5F6-A7B8-C9D0-E1F2A3B4C5D6");
+    return BDSRandomModeWasRun(g_config, @"advanced") ? cfgStr(@"deviceID", @"") : @"";
 }
 
 static NSString *bds_fake_value_for_cmd(SEL _cmd) {
@@ -1190,8 +1222,13 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
         IMP orig = [origValue pointerValue];
         id result = ((id (*)(id, SEL))orig)(self, _cmd);
         if ([result isKindOfClass:[NSString class]]) {
+            NSString *fake = bds_fake_value_for_cmd(_cmd);
+            if (!fake.length) {
+                BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStatePassed);
+                return result;
+            }
             BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStateChanged);
-            return bds_fake_value_for_cmd(_cmd);
+            return fake;
         }
         BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStatePassed);
         return result;
@@ -1604,7 +1641,7 @@ static id tg_bdp_sysver(id self, SEL _cmd) {
 static id tg_bdp_idfv(id self, SEL _cmd) {
     id orig = tg_o_bdp_idfv ? ((id (*)(id, SEL))tg_o_bdp_idfv)(self, _cmd) : nil;
     // IDFV 只有一套：跟随“高级身份”开关和高级参数，不在定向随机中重复生成。
-    if (!cfgBool(@"spoofBaiduSDK", NO)) {
+    if (!cfgBool(@"spoofBaiduSDK", NO) || !BDSRandomModeWasRun(g_config, @"advanced")) {
         BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStatePassed);
         return orig;
     }
@@ -3930,7 +3967,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.2 9.23-02";
+    page.title=@"卐解 1.8.1 UI1.2 9.25-01";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -4063,7 +4100,15 @@ static NSString *BDSConfigSummary(void) {
 }
 
 - (void)randomizeBasicProfile {
-    NSDictionary *values = BDSRandomBasicProfileValues();
+    NSMutableDictionary *values = [BDSRandomBasicProfileValues() mutableCopy];
+    values[@"enabled"] = @YES;
+    values[@"spoofProcessHardware"] = @YES;
+    values[@"spoofStorage"] = @YES;
+    values[@"spoofSysctl"] = @YES;
+    values[@"spoofCPU"] = @YES;
+    values[@"spoofCarrier"] = @YES;
+    values[@"spoofBootTime"] = @YES;
+    values[@"spoofBaiduSDK"] = @YES;
     BOOL saved = saveConfigValues(values);
     if (!saved) {
         [self presentMessage:@"配置文件写入失败，基础参数没有更换。" title:@"保存失败"];
@@ -4199,7 +4244,9 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
 }
 
 - (void)randomizeAdvancedProfile {
-    NSDictionary *values = BDSRandomIdentityValues();
+    NSMutableDictionary *values = [BDSRandomIdentityValues() mutableCopy];
+    values[@"spoofBaiduSDK"] = @YES;
+    values[@"spoofAdvertisingIdentifiers"] = @YES;
     BOOL saved = saveConfigValues(values);
     if (!saved) {
         [self presentMessage:@"配置文件写入失败，高级参数没有更换。" title:@"保存失败"];
@@ -5003,7 +5050,6 @@ static void bds_initialize() {
             NSInteger offsetSeconds = cfgInt(@"bootTimeOffsetSeconds", 0);
             if (offsetSeconds < 86400 || offsetSeconds >= 8 * 86400) {
                 offsetSeconds = 86400 + (NSInteger)arc4random_uniform(7 * 86400);
-                saveConfigValues(@{@"bootTimeOffsetSeconds": @(offsetSeconds)});
             }
             struct timeval realBootTime = {0, 0};
             size_t realBootTimeLength = sizeof(realBootTime);

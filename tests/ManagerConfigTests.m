@@ -11,8 +11,12 @@ int main(int argc,char **argv) {
         assert(argc==2);
         NSDictionary *defaults=[NSDictionary dictionaryWithContentsOfFile:@(argv[1])];assert(defaults.count>20);
         NSDictionary *newA=BDSMergedConfig(nil), *newB=BDSMergedConfig(nil);
-        assert(![newA[@"idfv"] isEqual:newB[@"idfv"]]);
-        assert([BDSMergedConfig(newA)[@"idfv"] isEqual:newA[@"idfv"]]);
+        assert(![newA[@"idfv"] length] && ![newB[@"idfv"] length]);
+        NSMutableDictionary *kept=[newA mutableCopy];
+        kept[@"idfv"]=@"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE";
+        assert([BDSMergedConfig(kept)[@"idfv"] isEqual:kept[@"idfv"]]);
+        NSDictionary *basicFresh=BDSCreateConfigForDevice(nil, BDSDeviceProfiles().firstObject, BDSRandomModeBasic, [NSSet set]);
+        assert(![basicFresh[@"idfv"] length] && ![basicFresh[@"idfa"] length] && ![basicFresh[@"deviceID"] length] && ![basicFresh[@"cuid"] length] && ![basicFresh[@"utdid"] length]);
         NSMutableDictionary *config=BDSMergedConfig(defaults);
         BDSSeedIdentityIfNeeded(config,YES);
         assert([config[@"configVersion"] integerValue]==187);

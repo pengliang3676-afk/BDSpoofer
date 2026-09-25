@@ -240,7 +240,6 @@ static NSMutableDictionary *BDSMergedConfig(NSDictionary *existing) {
     NSMutableDictionary *config=[BDSDefaultConfig() mutableCopy];
     if(existing.count) [config addEntriesFromDictionary:existing];
     BDSApplyInitialDefaults(config,existing);
-    BDSSeedInitialIdentities(config,existing);
     return config;
 }
 
@@ -250,7 +249,6 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
                                                        NSSet<NSString *> *selectedTargetedKeys) {
     if (![device isKindOfClass:NSDictionary.class]) return nil;
     if (mode == BDSRandomModeTargeted && !selectedTargetedKeys.count) return nil;
-    BOOL hadExistingConfig = existing.count > 0;
     NSMutableDictionary *config = BDSMergedConfig(existing);
 
     NSDictionary *system = BDSRandomSystemForDevice(device);
@@ -325,7 +323,6 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
         }
     }
 
-    if (!hadExistingConfig) BDSSeedIdentityIfNeeded(config, YES);
     return config;
 }
 
@@ -528,7 +525,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"卍解 1.0.2 9.23-01";
+    self.title = @"卍解 1.0.2 9.25-01";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];
@@ -754,13 +751,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
         NSString *name = BDSCleanContainerDisplayName(rawName.length ? rawName : shortName, containerID);
         NSString *path = [self configPathForContainerID:containerID];
         NSDictionary *config = path.length ? [NSDictionary dictionaryWithContentsOfFile:path] : nil;
-        NSMutableDictionary *initialized=BDSMergedConfig(config);
-        BDSSeedIdentityIfNeeded(initialized,NO);
-        initialized[@"managerContainerIdentifier"]=containerID;
-        initialized=BDSConfigForPersistentStorage(initialized);
-        BOOL ready=[initialized isEqualToDictionary:config] || BDSWriteContainerConfig(path,initialized);
-        if(ready) config=initialized;
-        NSString *summary = ready ? BDSContainerSummary(config) : @"初始化保存失败，请刷新重试";
+        NSString *summary = BDSContainerSummary(config);
         [rows addObject:@{@"id": containerID, @"name": name ?: containerID,
                           @"summary": summary, @"path": path ?: @""}];
     }
