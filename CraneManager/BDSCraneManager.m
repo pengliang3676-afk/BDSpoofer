@@ -249,16 +249,20 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
                                                        NSSet<NSString *> *selectedTargetedKeys) {
     if (![device isKindOfClass:NSDictionary.class]) return nil;
     if (mode == BDSRandomModeTargeted && !selectedTargetedKeys.count) return nil;
-    NSMutableDictionary *config = BDSMergedConfig(existing);
+    // 一键基础与极速里的 M 一样：只在已有文件上改，新容器不套用模板。
+    NSMutableDictionary *config = (mode == BDSRandomModeBasic)
+        ? (existing.count ? [existing mutableCopy] : [NSMutableDictionary dictionary])
+        : BDSMergedConfig(existing);
 
     NSDictionary *system = BDSRandomSystemForDevice(device);
 
-    [config addEntriesFromDictionary:@{
-        @"configVersion": @187,
+    NSMutableDictionary *stamp = [@{
         @"managerGeneratedAt": @([[NSDate date] timeIntervalSince1970]),
         @"managerProfileVersion": @103,
         @"managerRandomMode": mode == BDSRandomModeTargeted ? @"targeted" : @"basic",
-    }];
+    } mutableCopy];
+    if (mode != BDSRandomModeBasic) stamp[@"configVersion"] = @187;
+    [config addEntriesFromDictionary:stamp];
 
     if (mode == BDSRandomModeBasic) {
         BDSMarkRandomModeRun(config, @"basic");
@@ -287,15 +291,12 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
             @"bootTimeOffsetSeconds": @(86400 + arc4random_uniform(7 * 86400)),
         }];
         [config addEntriesFromDictionary:BDSRandomCarrier()];
-        // 与卐解一键基础一致：只打开这 8 个开关，其余伪装开关关闭。
-        NSSet<NSString *> *basicOn = [NSSet setWithArray:@[
-            @"enabled", @"spoofProcessHardware", @"spoofStorage", @"spoofSysctl",
-            @"spoofCPU", @"spoofCarrier", @"spoofBootTime", @"spoofBaiduSDK"]];
-        for (NSString *key in BDSRegularKeys()) config[key] = @([basicOn containsObject:key]);
-        for (NSString *key in BDSRiskKeys()) config[key] = @NO;
-        for (NSString *key in BDSSelectedTargetKeys()) config[key] = @NO;
-        config[@"spoofBaiduTargeted"] = @NO;
-        config[@"spoofScreen"] = @NO;
+        NSArray<NSArray<NSDictionary *> *> *groups = BDSSettingGroups();
+        for (NSDictionary *item in groups[0]) config[item[@"key"]] = @YES;
+        for (NSUInteger i = 0; i < 3 && i < groups[1].count; i++) config[groups[1][i][@"key"]] = @YES;
+        for (NSUInteger i = 3; i < groups[1].count; i++) config[groups[1][i][@"key"]] = @NO;
+        for (NSUInteger i = 0; i < 12 && i < groups[2].count; i++) config[groups[2][i][@"key"]] = @YES;
+        for (NSUInteger i = 12; i < groups[2].count; i++) config[groups[2][i][@"key"]] = @NO;
     } else {
 
         BDSMarkRandomModeRun(config, @"targeted");
@@ -348,7 +349,16 @@ static NSMutableDictionary *BDSCreateRandomConfig(NSDictionary *existing,
         BDSSeedIdentityIfNeeded(config, YES);
         return config;
     }
-    NSArray<NSDictionary *> *devices = BDSDeviceProfiles();
+    NSMutableArray<NSDictionary *> *devices = [BDSDeviceProfiles() mutableCopy];
+    if (mode == BDSRandomModeBasic) {
+        NSString *current = [existing[@"hwMachine"] isKindOfClass:NSString.class] ? existing[@"hwMachine"] : @"";
+        if (current.length) {
+            [devices filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *device, NSDictionary *bindings) {
+                (void)bindings;
+                return ![device[@"machine"] isEqual:current];
+            }]];
+        }
+    }
     if (!devices.count) return nil;
     NSDictionary *device = devices[arc4random_uniform((uint32_t)devices.count)];
     return BDSCreateConfigForDevice(existing, device, mode, selectedTargetedKeys);
@@ -534,7 +544,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"卍解 1.0.2 9.28-01";
+    self.title = @"卍解 1.0.2 9.28-02";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];

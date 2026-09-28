@@ -17,6 +17,9 @@ int main(int argc,char **argv) {
         assert([BDSMergedConfig(kept)[@"idfv"] isEqual:kept[@"idfv"]]);
         NSDictionary *basicFresh=BDSCreateConfigForDevice(nil, BDSDeviceProfiles().firstObject, BDSRandomModeBasic, [NSSet set]);
         assert(![basicFresh[@"idfv"] length] && ![basicFresh[@"idfa"] length] && ![basicFresh[@"deviceID"] length] && ![basicFresh[@"cuid"] length] && ![basicFresh[@"utdid"] length]);
+        assert(!basicFresh[@"configVersion"] && [basicFresh[@"spoofWiFi"] boolValue] && [basicFresh[@"enabled"] boolValue]);
+        assert(![basicFresh[@"spoofKeychain"] boolValue] && [basicFresh[@"spoofBattery"] boolValue] && ![basicFresh[@"blockStatCashTelemetry"] boolValue]);
+        assert([basicFresh[@"hwMachine"] isEqual:@"iPhone10,1"]);
         NSMutableDictionary *config=BDSMergedConfig(defaults);
         BDSSeedIdentityIfNeeded(config,YES);
         assert([config[@"configVersion"] integerValue]==187);
@@ -30,13 +33,18 @@ int main(int argc,char **argv) {
         [basic addObjectsFromArray:BDSRegularKeys()];[basic addObjectsFromArray:BDSRiskKeys()];[basic addObjectsFromArray:BDSSelectedTargetKeys()];
         config[@"spoofBaiduTargeted"]=@YES;for(NSString *key in BDSTargetedKeys()) config[key]=@YES;
         config[@"spoofWiFi"]=@NO;config[@"spoofKeychain"]=@YES;
-        NSSet *basicOn=[NSSet setWithArray:@[@"enabled",@"spoofProcessHardware",@"spoofStorage",@"spoofSysctl",@"spoofCPU",@"spoofCarrier",@"spoofBootTime",@"spoofBaiduSDK"]];
         for(int i=0;i<100;i++) {
             NSDictionary *next=BDSCreateRandomConfig(config,BDSRandomModeBasic,[NSSet set]);
             unchangedOutside(config,next,basic);
-            for(NSString *key in BDSRegularKeys()) assert([next[key] boolValue]==[basicOn containsObject:key]);
-            for(NSString *key in BDSRiskKeys()) assert(![next[key] boolValue]);
-            assert(![next[@"spoofScreen"] boolValue] && ![next[@"spoofBaiduTargeted"] boolValue]);
+            NSArray *groups=BDSSettingGroups();
+            for(NSDictionary *item in groups[0]) assert([next[item[@"key"]] boolValue]);
+            for(NSUInteger n=0;n<3;n++) assert([next[groups[1][n][@"key"]] boolValue]);
+            for(NSUInteger n=3;n<((NSArray *)groups[1]).count;n++) assert(![next[groups[1][n][@"key"]] boolValue]);
+            for(NSUInteger n=0;n<12;n++) assert([next[groups[2][n][@"key"]] boolValue]);
+            for(NSUInteger n=12;n<((NSArray *)groups[2]).count;n++) assert(![next[groups[2][n][@"key"]] boolValue]);
+            assert([next[@"spoofBaiduTargeted"] boolValue]);
+            assert([next[@"idfv"] isEqual:config[@"idfv"]]);
+            assert(![next[@"hwMachine"] isEqual:config[@"hwMachine"]]);
             config=[next mutableCopy];
             next=BDSCreateRandomConfig(config,BDSRandomModeAdvanced,[NSSet set]);
             unchangedOutside(config,next,advanced);config=[next mutableCopy];

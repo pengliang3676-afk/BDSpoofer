@@ -4,6 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  9.28-02：一键基础打开基础 6 项、高级前 3 项、反关联前 12 项。
 //  9.25-01：未点一键基础/一键高级前不写配置，也不套用默认机型。
 //  9.23-02：网页标识里的 CPU iPhone OS 15_4_1 改成配置系统（16.3 → 16_3）。
 //    只改这一处。不改整段 UA，不改 P2 后缀，不改 query 营销名，不改 di 格子。
@@ -3967,7 +3968,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.2 9.25-01";
+    page.title=@"卐解 1.8.1 UI1.2 9.28-02";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -4101,14 +4102,12 @@ static NSString *BDSConfigSummary(void) {
 
 - (void)randomizeBasicProfile {
     NSMutableDictionary *values = [BDSRandomBasicProfileValues() mutableCopy];
-    values[@"enabled"] = @YES;
-    values[@"spoofProcessHardware"] = @YES;
-    values[@"spoofStorage"] = @YES;
-    values[@"spoofSysctl"] = @YES;
-    values[@"spoofCPU"] = @YES;
-    values[@"spoofCarrier"] = @YES;
-    values[@"spoofBootTime"] = @YES;
-    values[@"spoofBaiduSDK"] = @YES;
+    NSArray<NSArray<NSDictionary *> *> *groups = BDSSettingGroups();
+    for (NSDictionary *item in groups[0]) values[item[@"key"]] = @YES;
+    for (NSUInteger i = 0; i < 3 && i < groups[1].count; i++) values[groups[1][i][@"key"]] = @YES;
+    for (NSUInteger i = 3; i < groups[1].count; i++) values[groups[1][i][@"key"]] = @NO;
+    for (NSUInteger i = 0; i < 12 && i < groups[2].count; i++) values[groups[2][i][@"key"]] = @YES;
+    for (NSUInteger i = 12; i < groups[2].count; i++) values[groups[2][i][@"key"]] = @NO;
     BOOL saved = saveConfigValues(values);
     if (!saved) {
         [self presentMessage:@"配置文件写入失败，基础参数没有更换。" title:@"保存失败"];
@@ -4116,8 +4115,8 @@ static NSString *BDSConfigSummary(void) {
     }
     NSString *message = [NSString stringWithFormat:
         @"已随机并保存基础参数。\n"
-         "定向参数、定向选择和高级身份参数保持不变。\n"
-         "高级身份参数没有改动；兼容风险测试 4 项保持原状态。\n"
+         "基础 6 项、高级前 3 项、反关联前 12 项已打开。\n"
+         "高级身份没有改动。Keychain、App Group、WebKit Cookie、自定义 User-Agent、阻止金额统计上报保持关闭。\n"
          "请彻底关闭 App 后重新打开。\n\n"
          "随机范围：%@\n机型：%@\n系统：%@ (%@)\n"
          "内存：%@ MB\n磁盘：%@ GB\n设备名称：%@",
