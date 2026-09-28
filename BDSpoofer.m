@@ -4,6 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  9.28-03：一键随机后重启保留参数；已随机配置不再被旧升级清开关/改机型。
 //  9.28-02：一键基础打开基础 6 项、高级前 3 项、反关联前 12 项。
 //  9.25-01：未点一键基础/一键高级前不写配置，也不套用默认机型。
 //  9.23-02：网页标识里的 CPU iPhone OS 15_4_1 改成配置系统（16.3 → 16_3）。
@@ -301,6 +302,13 @@ static void loadConfig() {
     NSMutableDictionary *merged = [BDSDefaultConfig() mutableCopy];
     if (loaded) [merged addEntriesFromDictionary:loaded];
     NSInteger ver = [loaded[@"configVersion"] integerValue];
+    // 已点过一键随机：保留文件里的机型和开关，不要当旧配置升级清掉。
+    BOOL preserveUserRandom = BDSRandomModeWasRun(loaded, @"basic") || BDSRandomModeWasRun(loaded, @"advanced");
+    if (preserveUserRandom && ver < 187) {
+        ver = 187;
+        merged[@"configVersion"] = @187;
+        [merged writeToFile:p1 atomically:YES];
+    }
     if (ver < 150) {
         [merged addEntriesFromDictionary:@{
             @"configVersion": @150,
@@ -3968,7 +3976,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.2 9.28-02";
+    page.title=@"卐解 1.8.1 UI1.2 9.28-03";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -4108,6 +4116,7 @@ static NSString *BDSConfigSummary(void) {
     for (NSUInteger i = 3; i < groups[1].count; i++) values[groups[1][i][@"key"]] = @NO;
     for (NSUInteger i = 0; i < 12 && i < groups[2].count; i++) values[groups[2][i][@"key"]] = @YES;
     for (NSUInteger i = 12; i < groups[2].count; i++) values[groups[2][i][@"key"]] = @NO;
+    values[@"configVersion"] = @187;
     BOOL saved = saveConfigValues(values);
     if (!saved) {
         [self presentMessage:@"配置文件写入失败，基础参数没有更换。" title:@"保存失败"];
@@ -4246,6 +4255,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
     NSMutableDictionary *values = [BDSRandomIdentityValues() mutableCopy];
     values[@"spoofBaiduSDK"] = @YES;
     values[@"spoofAdvertisingIdentifiers"] = @YES;
+    values[@"configVersion"] = @187;
     BOOL saved = saveConfigValues(values);
     if (!saved) {
         [self presentMessage:@"配置文件写入失败，高级参数没有更换。" title:@"保存失败"];

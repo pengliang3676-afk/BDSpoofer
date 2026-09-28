@@ -257,11 +257,11 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
     NSDictionary *system = BDSRandomSystemForDevice(device);
 
     NSMutableDictionary *stamp = [@{
+        @"configVersion": @187,
         @"managerGeneratedAt": @([[NSDate date] timeIntervalSince1970]),
         @"managerProfileVersion": @103,
         @"managerRandomMode": mode == BDSRandomModeTargeted ? @"targeted" : @"basic",
     } mutableCopy];
-    if (mode != BDSRandomModeBasic) stamp[@"configVersion"] = @187;
     [config addEntriesFromDictionary:stamp];
 
     if (mode == BDSRandomModeBasic) {
@@ -544,7 +544,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"卍解 1.0.2 9.28-02";
+    self.title = @"卍解 1.0.2 9.28-03";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];
