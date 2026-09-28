@@ -287,6 +287,15 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
             @"bootTimeOffsetSeconds": @(86400 + arc4random_uniform(7 * 86400)),
         }];
         [config addEntriesFromDictionary:BDSRandomCarrier()];
+        // 与卐解一键基础一致：只打开这 8 个开关，其余伪装开关关闭。
+        NSSet<NSString *> *basicOn = [NSSet setWithArray:@[
+            @"enabled", @"spoofProcessHardware", @"spoofStorage", @"spoofSysctl",
+            @"spoofCPU", @"spoofCarrier", @"spoofBootTime", @"spoofBaiduSDK"]];
+        for (NSString *key in BDSRegularKeys()) config[key] = @([basicOn containsObject:key]);
+        for (NSString *key in BDSRiskKeys()) config[key] = @NO;
+        for (NSString *key in BDSSelectedTargetKeys()) config[key] = @NO;
+        config[@"spoofBaiduTargeted"] = @NO;
+        config[@"spoofScreen"] = @NO;
     } else {
 
         BDSMarkRandomModeRun(config, @"targeted");
@@ -525,7 +534,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"卍解 1.0.2 9.25-01";
+    self.title = @"卍解 1.0.2 9.28-01";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];

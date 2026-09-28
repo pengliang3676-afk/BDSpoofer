@@ -23,16 +23,16 @@ codesign --force --sign - --timestamp=none --entitlements CraneManager/BDSCraneM
 printf '2.0\n' > build-ui1/deb/debian-binary
 COPYFILE_DISABLE=1 tar -C build-ui1/package/DEBIAN -czf build-ui1/deb/control.tar.gz .
 COPYFILE_DISABLE=1 tar -C build-ui1/package --exclude='./DEBIAN' -czf build-ui1/deb/data.tar.gz .
-(cd build-ui1/deb && ar -rc ../../dist-ui1/BDSpooferCraneManager_1.0.2-ui1_9.25-01_RootHide.deb debian-binary control.tar.gz data.tar.gz)
+(cd build-ui1/deb && ar -rc ../../dist-ui1/BDSpooferCraneManager_1.0.2-ui1_9.28-01_RootHide.deb debian-binary control.tar.gz data.tar.gz)
 codesign --verify --strict dist-ui1/BDSpoofer_1.8.1_UI1.2_9.25-01.dylib
 codesign --verify --strict "$BDS_APP"
 lipo -info dist-ui1/BDSpoofer_1.8.1_UI1.2_9.25-01.dylib
 lipo -info "$BDS_APP/BDSCraneManager"
 otool -hv dist-ui1/BDSpoofer_1.8.1_UI1.2_9.25-01.dylib
 otool -L dist-ui1/BDSpoofer_1.8.1_UI1.2_9.25-01.dylib
-ar -t dist-ui1/BDSpooferCraneManager_1.0.2-ui1_9.25-01_RootHide.deb
+ar -t dist-ui1/BDSpooferCraneManager_1.0.2-ui1_9.28-01_RootHide.deb
 tar -tzf build-ui1/deb/data.tar.gz
 cp RELEASE_UI1.md bdspoofer_config.plist dist-ui1/
 cp dist-ui1/BDSpoofer_1.8.1_UI1.2_9.25-01.dylib "dist-ui1/卐解_1.8.1_UI1.2_9.25-01.dylib"
-cp dist-ui1/BDSpooferCraneManager_1.0.2-ui1_9.25-01_RootHide.deb "dist-ui1/卍解_1.0.2_UI1_9.25-01_RootHide.deb"
-(cd dist-ui1 && shasum -a 256 BDSpoofer_1.8.1_UI1.2_9.25-01.dylib BDSpooferCraneManager_1.0.2-ui1_9.25-01_RootHide.deb > SHA256SUMS.txt)
+cp dist-ui1/BDSpooferCraneManager_1.0.2-ui1_9.28-01_RootHide.deb "dist-ui1/卍解_1.0.2_UI1_9.28-01_RootHide.deb"
+(cd dist-ui1 && shasum -a 256 BDSpoofer_1.8.1_UI1.2_9.25-01.dylib BDSpooferCraneManager_1.0.2-ui1_9.28-01_RootHide.deb > SHA256SUMS.txt)

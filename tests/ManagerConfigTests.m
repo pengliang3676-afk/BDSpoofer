@@ -26,12 +26,18 @@ int main(int argc,char **argv) {
         NSString *retained=config[@"idfv"];config[@"idfa"]=@"";BDSSeedIdentityIfNeeded(config,NO);assert([retained isEqual:config[@"idfv"]]);assert([config[@"idfa"] length]>0);
         NSMutableSet *meta=[NSMutableSet setWithArray:@[@"managerGeneratedAt",@"managerProfileVersion",@"managerRandomMode",@"didRandomizeBasic",@"didRandomizeAdvanced",@"didRandomizeTargeted"]];
         NSMutableSet *advanced=[meta mutableCopy];[advanced addObjectsFromArray:@[@"idfa",@"idfv",@"deviceID",@"cuid",@"utdid"]];
-        NSMutableSet *basic=[meta mutableCopy];[basic addObjectsFromArray:@[@"deviceProfileName",@"deviceModel",@"marketingModel",@"systemVersion",@"systemBuild",@"kernOSVersion",@"hwMachine",@"hwModel",@"memorySize",@"diskSize",@"deviceName",@"kernHostname",@"screenWidth",@"screenHeight",@"screenScale",@"nativeScreenWidth",@"nativeScreenHeight",@"bootTimeOffsetSeconds",@"carrierName",@"mcc",@"mnc",@"isoCountryCode"]];
+        NSMutableSet *basic=[meta mutableCopy];[basic addObjectsFromArray:@[@"deviceProfileName",@"deviceModel",@"marketingModel",@"systemVersion",@"systemBuild",@"kernOSVersion",@"hwMachine",@"hwModel",@"memorySize",@"diskSize",@"deviceName",@"kernHostname",@"screenWidth",@"screenHeight",@"screenScale",@"nativeScreenWidth",@"nativeScreenHeight",@"bootTimeOffsetSeconds",@"carrierName",@"mcc",@"mnc",@"isoCountryCode",@"spoofBaiduTargeted",@"spoofScreen"]];
+        [basic addObjectsFromArray:BDSRegularKeys()];[basic addObjectsFromArray:BDSRiskKeys()];[basic addObjectsFromArray:BDSSelectedTargetKeys()];
         config[@"spoofBaiduTargeted"]=@YES;for(NSString *key in BDSTargetedKeys()) config[key]=@YES;
         config[@"spoofWiFi"]=@NO;config[@"spoofKeychain"]=@YES;
+        NSSet *basicOn=[NSSet setWithArray:@[@"enabled",@"spoofProcessHardware",@"spoofStorage",@"spoofSysctl",@"spoofCPU",@"spoofCarrier",@"spoofBootTime",@"spoofBaiduSDK"]];
         for(int i=0;i<100;i++) {
             NSDictionary *next=BDSCreateRandomConfig(config,BDSRandomModeBasic,[NSSet set]);
-            unchangedOutside(config,next,basic);config=[next mutableCopy];
+            unchangedOutside(config,next,basic);
+            for(NSString *key in BDSRegularKeys()) assert([next[key] boolValue]==[basicOn containsObject:key]);
+            for(NSString *key in BDSRiskKeys()) assert(![next[key] boolValue]);
+            assert(![next[@"spoofScreen"] boolValue] && ![next[@"spoofBaiduTargeted"] boolValue]);
+            config=[next mutableCopy];
             next=BDSCreateRandomConfig(config,BDSRandomModeAdvanced,[NSSet set]);
             unchangedOutside(config,next,advanced);config=[next mutableCopy];
         }
