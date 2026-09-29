@@ -27,11 +27,12 @@ int main(void) {
     @autoreleasepool {
         NSMutableDictionary *config=[BDSDefaultConfig() mutableCopy];
         BDSApplyInitialDefaults(config,nil);
-        assert(BDSRegularKeys().count==21 && BDSRiskKeys().count==5);
+        assert(BDSRegularKeys().count==20 && BDSRiskKeys().count==6);
         assert([config[@"configVersion"] integerValue]==187);
         assert(![config[@"blockStatCashTelemetry"] boolValue]);
         for(NSString *key in BDSRegularKeys()) assert([config[key] boolValue]);
         for(NSString *key in BDSRiskKeys()) assert(![config[key] boolValue]);
+        assert(![config[@"bypassJailbreakDetect"] boolValue]);  // 9.30-07 默认关闭
         [config addEntriesFromDictionary:BDSRandomIdentityValues()];
         for(NSString *key in BDSTargetedChildKeys()) config[key]=@YES;
         config[@"spoofBaiduTargeted"]=@YES;

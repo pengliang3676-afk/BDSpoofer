@@ -25,7 +25,7 @@
 //    device_name = 营销名（iPhone 16）；PhoneModel = hw.machine（iPhone17,3）。
 //    不改 UA、不 hook uname。已登录号的设备列表不会变，须新容器新微信验证。
 //  9.22-01：SE2 纳入随机；16.7.15/16.7.16 仅 iPhone 8/X；卍解「当前」跟随 Crane 设为默认的容器，回到前台自动刷新。
-//    三组随机互不改写；21 个常规开关首次初始化开启，保留已保存的手动选择。
+//    三组随机互不改写；20 个常规开关首次初始化开启，保留已保存的手动选择。
 //    修复 UA 缓存短串、Push device_name 字段和独立屏幕元数据。
 //    反越狱检测的底层实现保持 1.8.1 原样，相关排查暂停。
 //  1.8.1：
@@ -521,6 +521,13 @@ static void loadConfig() {
         merged[@"configVersion"] = @187;
         if (!loaded[@"blockStatCashTelemetry"]) merged[@"blockStatCashTelemetry"] = @NO;
         [merged removeObjectForKey:@"spoofStatCash"];
+        [merged writeToFile:p1 atomically:YES];
+    }
+    if (ver < 188) {
+        // 9.30-07：防越狱检测改为默认关闭，并且一键基础 / 一键高级都不再打开它。
+        // 老配置里这个键通常已经存着 @YES，光靠默认值救不了，必须强制写一次 @NO。
+        merged[@"configVersion"] = @188;
+        merged[@"bypassJailbreakDetect"] = @NO;
         [merged writeToFile:p1 atomically:YES];
     }
     BDSApplyInitialDefaults(merged, loaded);
@@ -1500,6 +1507,29 @@ static NSString *tg_rewrite_ua_device_info(NSString *value) {
     return [[value substringToIndex:NSMaxRange(delimiter)] stringByAppendingString:tg_ua_ios_version()];
 }
 
+// 只替换 UA 里 CPU iPhone OS 后面那个系统号，其余（WebKit 版本、Mobile 列车号、
+// 应用版本、Talos/SDK 版本、以及 (Baidu; P2 …) 段）一律不动。
+//
+// 为什么需要它：P2 段是百度按配置的 systemVersion 自己填的，而 CPU 段的系统号是
+// 百度从真机读的。只改 osVersion / phoneModel 而不管 UA 时，同一段 UA 会同时出现
+// “CPU iPhone OS 15_1” 和 “(Baidu; P2 18.7.2)” 两个不同系统号，等于自证被改过。
+// 这里跟随“系统版本”改写一起生效，不需要打开“自定义 User-Agent”或“User-Agent 参数”。
+static NSString *tg_rewrite_ua_cpu_only(NSString *ua) {
+    if (![ua isKindOfClass:NSString.class] || !ua.length) return ua;
+    static NSRegularExpression *rx;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        rx = [NSRegularExpression regularExpressionWithPattern:@"CPU iPhone OS [0-9_]+ like"
+                                                      options:0 error:nil];
+    });
+    if (!rx) return ua;
+    NSString *token = [NSString stringWithFormat:@"CPU iPhone OS %@ like", tg_ua_ios_under()];
+    return [rx stringByReplacingMatchesInString:ua
+                                        options:0
+                                          range:NSMakeRange(0, ua.length)
+                                   withTemplate:tg_tpl_escape(token)];
+}
+
 // ---- Talos platformInfo / getBasicPlatformInfo 字典改写 ----
 static NSDictionary *tg_rewrite_talos(NSDictionary *orig) {
     if (![orig isKindOfClass:NSDictionary.class]) return orig;
@@ -1518,6 +1548,12 @@ static NSDictionary *tg_rewrite_talos(NSDictionary *orig) {
     if (rewriteUA) {
         id ua = m[@"userAgent"];
         if ([ua isKindOfClass:NSString.class]) m[@"userAgent"] = tg_rewrite_ua(ua);
+    } else if (rewriteSystem) {
+        // 未开“自定义/定向 UA”时，也要让 CPU 段的系统号跟上配置值，
+        // 否则 UA 里会同时出现真机与配置两个系统号（P2 段已经是配置值）。
+        // 只动这一个数字，不碰其余任何片段。
+        id ua = m[@"userAgent"];
+        if ([ua isKindOfClass:NSString.class]) m[@"userAgent"] = tg_rewrite_ua_cpu_only(ua);
     }
     if (rewriteScreen) {
         id si = m[@"screenInfo"];
@@ -4095,7 +4131,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-06";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-07";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -4230,11 +4266,15 @@ static NSString *BDSConfigSummary(void) {
 - (void)randomizeBasicProfile {
     NSMutableDictionary *values = [BDSRandomBasicProfileValues() mutableCopy];
     NSArray<NSArray<NSDictionary *> *> *groups = BDSSettingGroups();
-    for (NSDictionary *item in groups[0]) values[item[@"key"]] = @YES;
-    for (NSUInteger i = 0; i < 3 && i < groups[1].count; i++) values[groups[1][i][@"key"]] = @YES;
-    for (NSUInteger i = 3; i < groups[1].count; i++) values[groups[1][i][@"key"]] = @NO;
-    for (NSUInteger i = 0; i < 12 && i < groups[2].count; i++) values[groups[2][i][@"key"]] = @YES;
-    for (NSUInteger i = 12; i < groups[2].count; i++) values[groups[2][i][@"key"]] = @NO;
+    for (NSString *key in BDSFirstEnabledKeys(groups[0], 6)) values[key] = @YES;
+    for (NSString *key in BDSFirstEnabledKeys(groups[1], 3)) values[key] = @YES;
+    for (NSDictionary *item in groups[1]) {
+        if (![item[@"off"] boolValue] && !values[item[@"key"]]) values[item[@"key"]] = @NO;
+    }
+    for (NSString *key in BDSFirstEnabledKeys(groups[2], 12)) values[key] = @YES;
+    for (NSDictionary *item in groups[2]) {
+        if (![item[@"off"] boolValue] && !values[item[@"key"]]) values[item[@"key"]] = @NO;
+    }
     // 屏幕同步必须放在上面这些开关循环之后：spoofBaiduTargetedScreen 落在
     // groups[1] 的 i>=3 档，写在循环之前会被那个 @NO 循环覆盖掉。
     if (g_lastBasicDevice) {

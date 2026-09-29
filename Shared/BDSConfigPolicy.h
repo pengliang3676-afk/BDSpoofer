@@ -10,7 +10,7 @@ static NSArray<NSArray<NSDictionary *> *> *BDSSettingGroups(void) {
           @{@"key":@"spoofStorage",@"name":@"存储参数"}],
         @[@{@"key":@"spoofBaiduSDK",@"name":@"百度身份参数"},
           @{@"key":@"spoofSysctl",@"name":@"系统硬件参数"},
-          @{@"key":@"bypassJailbreakDetect",@"name":@"防越狱检测"},
+          @{@"key":@"bypassJailbreakDetect",@"name":@"防越狱检测",@"off":@YES},
           @{@"key":@"spoofKeychain",@"name":@"Keychain 拦截",@"off":@YES},
           @{@"key":@"spoofAppGroup",@"name":@"App Group 隔离",@"off":@YES},
           @{@"key":@"spoofWebKitCookie",@"name":@"WebKit Cookie 过滤",@"off":@YES},
@@ -39,6 +39,21 @@ static NSArray<NSString *> *BDSRegularKeys(void) {
 static NSArray<NSString *> *BDSRiskKeys(void) {
     return @[@"spoofKeychain",@"spoofAppGroup",@"spoofWebKitCookie",@"spoofUserAgent",
              @"blockStatCashTelemetry"];
+}
+// “一键基础”要打开的开关，按组内顺序取前 count 个可改项。
+// 关键点：带 @"off":@YES 的项要跳过，不能占名额。
+// 否则一旦某个默认关闭的项排在第 count 位之前，它就会被一键基础打开，
+// 与“默认关闭”的策略直接打架（防越狱检测、阻止金额统计上报都踩过这个坑）。
+// 跳过之后，前面被跳过的名额由后面第一个可改项补上，
+// 所以“一键基础打开前 N 个常规开关”的语义保持不变。
+static NSArray<NSString *> *BDSFirstEnabledKeys(NSArray<NSDictionary *> *group, NSUInteger count) {
+    NSMutableArray *keys=[NSMutableArray array];
+    for(NSDictionary *item in group) {
+        if([item[@"off"] boolValue]) continue;
+        [keys addObject:item[@"key"]];
+        if(keys.count>=count) break;
+    }
+    return keys;
 }
 static NSArray<NSString *> *BDSSelectedTargetKeys(void) {
     return @[@"spoofBaiduTargetedSystem",@"spoofBaiduTargetedModel",@"spoofBaiduTargetedScreen",@"spoofBaiduTargetedUA",@"spoofBaiduTargetedPush"];

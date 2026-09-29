@@ -24,6 +24,7 @@ int main(int argc,char **argv) {
         BDSSeedIdentityIfNeeded(config,YES);
         assert([config[@"configVersion"] integerValue]==187);
         assert(![config[@"blockStatCashTelemetry"] boolValue]);
+        assert(![config[@"bypassJailbreakDetect"] boolValue]);  // 9.30-07 默认关闭
         for(NSString *key in BDSRegularKeys()) assert([config[key] boolValue]);
         for(NSString *key in BDSRiskKeys()) assert(![config[key] boolValue]);
         NSString *retained=config[@"idfv"];config[@"idfa"]=@"";BDSSeedIdentityIfNeeded(config,NO);assert([retained isEqual:config[@"idfv"]]);assert([config[@"idfa"] length]>0);
