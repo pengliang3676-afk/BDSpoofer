@@ -134,23 +134,66 @@ static void BDSApplyInitialDefaults(NSMutableDictionary *config, NSDictionary *s
 // 留空则返回 NULL。虽然 NULL 也不算泄露，但“有 Wi-Fi 权限却读不到任何网络”本身不自然。
 // 所以一键基础顺手配一个常见的、烂大街的名字，让返回结果看起来像普通用户。
 //
-// 取名原则：只用真实世界最常见的默认名（运营商光猫 / 路由器出厂名 / 大众化个人名），
-// 不用随机字符串 —— 生僻或乱码的 SSID 反而比 NULL 更显眼。
-// 全部为 ASCII，长度远小于 32 字节上限。
+// 取名原则：
+//   1. 只用真实世界最常见的形态（运营商光猫 / 路由器出厂名 / 大众化个人名）
+//   2. 不用随机乱码 —— 生僻名比 NULL 更显眼
+//   3. 交给组合生成而不是硬编字符串：多设备场景下（几十台）撞名会变成关联信号，
+//      硬编几十个名字必然重复，组合生成可把空间扩到万级
+//
+// 长度：全部 ASCII 且 <= 20 字节，远小于 g_wifiSSID 的 64 字节缓冲。
+static NSString *BDSRandomHexLower(NSUInteger digits) {
+    static const char *set = "0123456789abcdef";
+    char buf[8];
+    if (digits == 0 || digits >= sizeof(buf)) digits = 4;
+    for (NSUInteger i = 0; i < digits; i++) buf[i] = set[arc4random_uniform(16)];
+    buf[digits] = '\0';
+    return [NSString stringWithUTF8String:buf];
+}
 static NSArray<NSString *> *BDSCommonSSIDPool(void) {
-    return @[@"ChinaNet-7Fk2", @"ChinaNet-3mQd", @"ChinaNet-8xTp",
-             @"CMCC-5G-Home", @"CMCC-Family", @"CMCC-2.4G",
-             @"ChinaUnicom-5G", @"ChinaUnicom-Home",
-             @"TP-LINK_5F2A", @"TP-LINK_8C10", @"TP-LINK_3E7B",
-             @"MERCURY_2F88", @"MERCURY_5G",
-             @"Tenda_4A6C20", @"Tenda_5G_9F",
-             @"HUAWEI-3F8A", @"HUAWEI-5G-2C",
-             @"Xiaomi_5G", @"Xiaomi_AX6000",
-             @"TP-LINK_2.4G", @"NETGEAR-Home",
+    return @[@"ChinaNet-7Fk2", @"CMCC-5G-Home", @"TP-LINK_5F2A", @"MERCURY_2F88",
+             @"Tenda_4A6C20", @"HUAWEI-3F8A", @"Xiaomi_5G", @"NETGEAR-Home",
              @"HOME-2.4G", @"HOME-5G", @"HomeWiFi", @"FamilyWiFi",
-             @"WIFI-201", @"WiFi-A1B2"];
+             @"WIFI-201", @"WiFi-A1B2", @"MyHome-5G", @"ChinaUnicom-Home"];
 }
 static NSString *BDSRandomCommonSSID(void) {
-    NSArray<NSString *> *pool = BDSCommonSSIDPool();
-    return pool.count ? pool[arc4random_uniform((uint32_t)pool.count)] : @"HOME-2.4G";
+    // 四类形态按真实占比加权：运营商光猫最多，其次是路由器出厂名，个人命名其次
+    NSUInteger kind = arc4random_uniform(100);
+    if (kind < 34) {
+        // 运营商光猫：ChinaNet-xxxx / CMCC-xxxx / ChinaUnicom-xxxx / ChinaTelecom-xxxx
+        NSArray *isp = @[@"ChinaNet-", @"CMCC-", @"ChinaUnicom-", @"ChinaTelecom-", @"CU-"];
+        NSString *p = isp[arc4random_uniform((uint32_t)isp.count)];
+        // 光猫后缀有 4 位十六进制，也有 4 位纯数字
+        NSString *suffix = arc4random_uniform(2)
+            ? BDSRandomHexLower(4)
+            : [NSString stringWithFormat:@"%04u", arc4random_uniform(10000)];
+        return [p stringByAppendingString:suffix];
+    }
+    if (kind < 62) {
+        // 路由器出厂默认名：TP-LINK_XXXX / MERCURY_XXXX / Tenda_xxxxxx / HUAWEI-XXXX / Xiaomi_XXXX
+        NSUInteger r = arc4random_uniform(5);
+        if (r == 0) return [@"TP-LINK_" stringByAppendingString:[BDSRandomHexLower(4) uppercaseString]];
+        if (r == 1) return [@"MERCURY_" stringByAppendingString:[BDSRandomHexLower(4) uppercaseString]];
+        if (r == 2) return [@"Tenda_" stringByAppendingString:BDSRandomHexLower(6)];
+        if (r == 3) return [@"HUAWEI-" stringByAppendingString:BDSRandomHexLower(4)];
+        return [@"Xiaomi_" stringByAppendingString:[BDSRandomHexLower(4) uppercaseString]];
+    }
+    if (kind < 82) {
+        // 大众化个人命名 + 常见区分后缀
+        NSArray *base = @[@"HOME", @"Home", @"MyHome", @"Family", @"WiFi", @"WIFI",
+                          @"HomeWiFi", @"MyWiFi", @"House", @"Sweet Home"];
+        NSArray *tail = @[@"-2.4G", @"-5G", @"_5G", @"-WiFi", @"_2.4G", @""];
+        NSString *b = base[arc4random_uniform((uint32_t)base.count)];
+        NSString *s = tail[arc4random_uniform((uint32_t)tail.count)];
+        NSString *name = [b stringByAppendingString:s];
+        // 一半概率再加个门牌/年份后缀，进一步降低撞名
+        if (arc4random_uniform(2)) {
+            NSArray *num = @[[NSString stringWithFormat:@"%u", 101 + arc4random_uniform(1900)],
+                             [NSString stringWithFormat:@"%u", 2018 + arc4random_uniform(9)]];
+            name = [name stringByAppendingFormat:@"-%@", num[arc4random_uniform(2)]];
+        }
+        return name;
+    }
+    // 少量固定形态，取自真实常见名（保留原池，分布上更自然）
+    NSArray *fixed = BDSCommonSSIDPool();
+    return fixed[arc4random_uniform((uint32_t)fixed.count)];
 }
