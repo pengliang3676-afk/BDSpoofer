@@ -524,7 +524,7 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 188) {
-        // 9.30-09：防越狱检测改为默认关闭，并且一键基础 / 一键高级都不再打开它。
+        // 9.30-10：防越狱检测改为默认关闭，并且一键基础 / 一键高级都不再打开它。
         // 老配置里这个键通常已经存着 @YES，光靠默认值救不了，必须强制写一次 @NO。
         merged[@"configVersion"] = @188;
         merged[@"bypassJailbreakDetect"] = @NO;
@@ -1507,6 +1507,29 @@ static NSString *tg_rewrite_ua_device_info(NSString *value) {
     return [[value substringToIndex:NSMaxRange(delimiter)] stringByAppendingString:tg_ua_ios_version()];
 }
 
+// ---- 排查用：记录 UA 改写的实际输入/输出 ----
+// 之前几轮都出现“代码看起来该生效、真机上却没变”，靠读代码定位不了。
+// 这里把关键中间值记下来，由外部探针（BDSScreenProbe）直接打印，用事实代替推断。
+// 只记录，不改变任何行为。
+static NSMutableDictionary<NSString *, NSString *> *g_uaDebug;
+static os_unfair_lock g_uaDebugLock = OS_UNFAIR_LOCK_INIT;
+static void tg_ua_debug_set(NSString *key, NSString *value) {
+    if (!key.length) return;
+    os_unfair_lock_lock(&g_uaDebugLock);
+    if (!g_uaDebug) g_uaDebug = [NSMutableDictionary dictionary];
+    g_uaDebug[key] = value ?: @"(nil)";
+    os_unfair_lock_unlock(&g_uaDebugLock);
+}
+
+// 给外部只读探针取值用（BDSScreenProbe 通过 dlsym 查找这个符号）。
+// 只读：返回一份拷贝，调用方无法改到插件内部状态。
+NSDictionary *BDSpooferUADebugSnapshot(void) {
+    os_unfair_lock_lock(&g_uaDebugLock);
+    NSDictionary *copy = g_uaDebug ? [g_uaDebug copy] : @{};
+    os_unfair_lock_unlock(&g_uaDebugLock);
+    return copy;
+}
+
 // 只替换 UA 里 CPU iPhone OS 后面那个系统号，其余（WebKit 版本、Mobile 列车号、
 // 应用版本、Talos/SDK 版本、以及 (Baidu; P2 …) 段）一律不动。
 //
@@ -1547,14 +1570,48 @@ static NSDictionary *tg_rewrite_talos(NSDictionary *orig) {
     }
     if (rewriteUA) {
         id ua = m[@"userAgent"];
-        if ([ua isKindOfClass:NSString.class]) m[@"userAgent"] = tg_rewrite_ua(ua);
+        if ([ua isKindOfClass:NSString.class]) {
+            NSString *out = tg_rewrite_ua(ua);
+            tg_ua_debug_set(@"A. 走到 tg_rewrite_ua（整段，含 P2）", @"是");
+            tg_ua_debug_set(@"A. 输入 userAgent", ua);
+            tg_ua_debug_set(@"A. 输出 userAgent", out);
+            m[@"userAgent"] = out;
+        } else {
+            tg_ua_debug_set(@"A. 走到 tg_rewrite_ua（整段，含 P2）", @"是，但 userAgent 不是字符串");
+            tg_ua_debug_set(@"A. 输入 userAgent", @"(非字符串)");
+        }
     } else if (rewriteSystem) {
         // 未开“自定义/定向 UA”时，也要让 CPU 段的系统号跟上配置值，
         // 否则 UA 里会同时出现真机与配置两个系统号（P2 段已经是配置值）。
         // 只动这一个数字，不碰其余任何片段。
         id ua = m[@"userAgent"];
-        if ([ua isKindOfClass:NSString.class]) m[@"userAgent"] = tg_rewrite_ua_cpu_only(ua);
+        if ([ua isKindOfClass:NSString.class]) {
+            NSString *out = tg_rewrite_ua_cpu_only(ua);
+            tg_ua_debug_set(@"B. 走到 tg_rewrite_ua_cpu_only（只改 CPU 段）", @"是");
+            tg_ua_debug_set(@"B. 输入 userAgent", ua);
+            tg_ua_debug_set(@"B. 输出 userAgent", out);
+            m[@"userAgent"] = out;
+        } else {
+            tg_ua_debug_set(@"B. 走到 tg_rewrite_ua_cpu_only（只改 CPU 段）", @"是，但 userAgent 不是字符串");
+            tg_ua_debug_set(@"B. 输入 userAgent", @"(非字符串)");
+        }
+    } else {
+        tg_ua_debug_set(@"C. 两个 UA 分支都没进",
+                        [NSString stringWithFormat:@"rewriteUA=%d rewriteSystem=%d",
+                         (int)rewriteUA, (int)rewriteSystem]);
     }
+    tg_ua_debug_set(@"汇总. 开关",
+                    [NSString stringWithFormat:@"spoofBaiduTargeted=%d system=%d model=%d UA=%d screen=%d",
+                     (int)cfgBool(@"spoofBaiduTargeted", NO),
+                     (int)cfgBool(@"spoofBaiduTargetedSystem", NO),
+                     (int)cfgBool(@"spoofBaiduTargetedModel", NO),
+                     (int)cfgBool(@"spoofBaiduTargetedUA", NO),
+                     (int)cfgBool(@"spoofBaiduTargetedScreen", NO)]);
+    tg_ua_debug_set(@"汇总. 取到的值",
+                    [NSString stringWithFormat:@"targetedSystemVersion=%@ targetedUASystemVersion=%@ tg_ua_ios_under=%@",
+                     cfgStr(@"targetedSystemVersion", @"(缺)"),
+                     cfgStr(@"targetedUASystemVersion", @"(缺)"),
+                     tg_ua_ios_under() ?: @"(nil)"]);
     if (rewriteScreen) {
         id si = m[@"screenInfo"];
         if ([si isKindOfClass:NSDictionary.class]) {
@@ -4161,7 +4218,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-09";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-10";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
