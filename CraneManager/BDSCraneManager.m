@@ -245,7 +245,8 @@ static NSMutableDictionary *BDSMergedConfig(NSDictionary *existing) {
 
 // 屏幕参数同步到百度侧出口（只改 B 层，UIScreen 保持真机，界面不会错版）。
 // 规则必须与卐解 BDSBaiduScreenSyncValues 完全一致：
-// 只写入定向屏幕键并打开 spoofBaiduTargetedScreen 这一个子开关，
+// 写入定向屏幕键、打开 spoofBaiduTargetedScreen，并同时打开 spoofBaiduTargetedUA
+// （让 UA 里 CPU 段的系统号跟上配置值，避免同段 UA 出现两个系统号）；
 // 其余定向项目与开关一律不动。
 static NSDictionary *BDSBaiduScreenSyncValues(NSDictionary *device) {
     if (![device isKindOfClass:NSDictionary.class]) return @{};
@@ -263,6 +264,7 @@ static NSDictionary *BDSBaiduScreenSyncValues(NSDictionary *device) {
         @"targetedNativeScreenWidth": nw,
         @"targetedNativeScreenHeight": nh,
         @"spoofBaiduTargetedScreen": @YES,
+        @"spoofBaiduTargetedUA": @YES,
     };
 }
 
@@ -581,7 +583,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"卍解 1.0.2 9.30-07";
+    self.title = @"卍解 1.0.2 9.30-08";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];

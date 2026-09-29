@@ -524,7 +524,7 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 188) {
-        // 9.30-07：防越狱检测改为默认关闭，并且一键基础 / 一键高级都不再打开它。
+        // 9.30-08：防越狱检测改为默认关闭，并且一键基础 / 一键高级都不再打开它。
         // 老配置里这个键通常已经存着 @YES，光靠默认值救不了，必须强制写一次 @NO。
         merged[@"configVersion"] = @188;
         merged[@"bypassJailbreakDetect"] = @NO;
@@ -3802,6 +3802,11 @@ static NSDictionary *BDSBaiduScreenSyncValues(NSDictionary *device) {
         @"targetedNativeScreenWidth": nw,
         @"targetedNativeScreenHeight": nh,
         @"spoofBaiduTargetedScreen": @YES,
+        // UA 里的 CPU 段系统号也要跟上配置值：百度按配置填 (Baidu; P2 16.3)，
+        // 而 CPU 段读的是真机，不改就会出现同段 UA 两个系统号（自证被改过）。
+        // 走的是与屏幕相同的已验证通路：写定向键 + 打开对应子开关。
+        // 只影响 tg_rewrite_ua 覆盖的那几处百度出口，不影响“自定义 User-Agent”。
+        @"spoofBaiduTargetedUA": @YES,
     };
 }
 
@@ -4131,7 +4136,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-07";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-08";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
