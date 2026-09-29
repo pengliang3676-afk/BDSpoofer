@@ -20,7 +20,7 @@ jobs:
               -miphoneos-version-min=15.0 -fobjc-arc -fblocks \
               -Werror=return-type -Werror=implicit-function-declaration \
               -dynamiclib -install_name @rpath/BDSScreenProbe.dylib \
-              -framework Foundation -framework UIKit \
+              -framework Foundation -framework UIKit -framework CoreGraphics \
               BDSScreenProbe.m -o "out/BDSScreenProbe_$ARCH.dylib"
           done
           lipo -create out/BDSScreenProbe_arm64.dylib out/BDSScreenProbe_arm64e.dylib \
