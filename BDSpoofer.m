@@ -321,7 +321,7 @@ static void loadConfig() {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            // 9.30-12 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
+            // 9.30-13 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
             // （v189 迁移还会兜底强制关一次。）
             @"bypassJailbreakDetect": @NO
         }];
@@ -528,9 +528,9 @@ static void loadConfig() {
     BDSApplyInitialDefaults(merged, loaded);
     // 注意顺序：迁移必须放在 BDSApplyInitialDefaults 之后。
     // 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
-    // 写在它之前会被它设回 @YES（9.30-12 实测就是这个原因导致开关关不掉）。
+    // 写在它之前会被它设回 @YES（9.30-13 实测就是这个原因导致开关关不掉）。
     if (ver < 189) {
-        // 9.30-12：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
+        // 9.30-13：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
         // 老配置里这个键通常已存 @YES，光靠默认值救不了，必须强制写一次 @NO。
         // 用独立的版本号 189 是为了让已经处在 188 的配置也能被这次修正覆盖到，
         // 且只执行一次：之后用户在面板手动打开仍然有效。
@@ -1658,6 +1658,9 @@ static NSDictionary *tg_rewrite_talos(NSDictionary *orig) {
             tg_set_first_present(s, @[@"safeAreaLeftMagrin", @"safeAreaLeftMargin", @"safeLeft"], @0);
             tg_set_first_present(s, @[@"safeAreaRightMagrin", @"safeAreaRightMargin", @"safeRight"], @0);
             m[@"screenInfo"] = s;
+            tg_ua_debug_set(@"屏幕. screenInfo 写入",
+                            [NSString stringWithFormat:@"width=%ld height=%ld scale=%ld statusBar=%ld",
+                             (long)tg_pt_w(), (long)tg_pt_h(), (long)tg_scale_i(), (long)tg_status_bar()]);
         }
         id wi = m[@"windowInfo"];
         if ([wi isKindOfClass:NSDictionary.class]) {
@@ -1665,6 +1668,9 @@ static NSDictionary *tg_rewrite_talos(NSDictionary *orig) {
             tg_set_if_key(w, @"width", @(tg_pt_w()));
             tg_set_if_key(w, @"height", @(tg_pt_h()));
             m[@"windowInfo"] = w;
+            tg_ua_debug_set(@"屏幕. windowInfo 写入",
+                            [NSString stringWithFormat:@"width=%ld height=%ld",
+                             (long)tg_pt_w(), (long)tg_pt_h()]);
         }
     }
     // 明确保留：hostVersion(App版本)/talosVersion(SDK版本)/hostName(包名)/os/manufacturer/brand/deviceScore/videoScore/environment/pad
@@ -1789,9 +1795,30 @@ static NSString *tg_bp_resolution(id self, SEL _cmd) {
 }
 // BDPTalosBaseInfo +platformInfo / +getBasicPlatformInfo
 static id tg_talos(id self, SEL _cmd) {
-    IMP o = [NSStringFromSelector(_cmd) isEqualToString:@"getBasicPlatformInfo"] ? tg_o_talos_basic : tg_o_talos_platform;
+    NSString *selName = NSStringFromSelector(_cmd);
+    BOOL isBasic = [selName isEqualToString:@"getBasicPlatformInfo"];
+    IMP o = isBasic ? tg_o_talos_basic : tg_o_talos_platform;
     id orig = o ? ((id (*)(id, SEL))o)(self, _cmd) : nil;
+    // 诊断：每个出口用的是哪个原函数、拿到什么、改完是什么
+    {
+        NSDictionary *si = [orig isKindOfClass:NSDictionary.class] ? orig[@"screenInfo"] : nil;
+        tg_ua_debug_set([NSString stringWithFormat:@"出口. %@", selName],
+                        [NSString stringWithFormat:@"原函数=%@ 原值=%@",
+                         o ? (isBasic ? @"basic" : @"platform") : @"(NULL!)",
+                         [si isKindOfClass:NSDictionary.class]
+                            ? [NSString stringWithFormat:@"%@x%@ scale=%@ bar=%@",
+                               si[@"width"], si[@"height"], si[@"scale"], si[@"statusBarHeight"]]
+                            : @"(无 screenInfo)"]);
+    }
     id out = tg_rewrite_talos(orig);
+    {
+        NSDictionary *si = [out isKindOfClass:NSDictionary.class] ? out[@"screenInfo"] : nil;
+        tg_ua_debug_set([NSString stringWithFormat:@"出口. %@ 改后", selName],
+                        [si isKindOfClass:NSDictionary.class]
+                            ? [NSString stringWithFormat:@"%@x%@ scale=%@ bar=%@",
+                               si[@"width"], si[@"height"], si[@"scale"], si[@"statusBarHeight"]]
+                            : @"(无 screenInfo)");
+    }
     BOOL changed = !((orig == out) || [orig isEqual:out]);
     BDS_DIAG_RECORD(g_diagBaiduTargeted, changed ? BDSDiagStateChanged : BDSDiagStatePassed);
     return out;
@@ -4251,7 +4278,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-12";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-13";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
