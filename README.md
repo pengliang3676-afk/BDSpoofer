@@ -36,13 +36,13 @@
 
 ### 一键随机参数
 
-注入插件和外部 Crane 配置器统一使用 36 款机型、78 个稳定 iOS/Build 资料生成兼容组合，覆盖 iPhone 8 至 iPhone 17 系列；iPhone SE2 保留兼容记录但不参与随机。iPhone 8/X 只匹配 iOS 15/16，新机型按实际最低系统版本选择，iPhone 11 及更新机型可以匹配 iOS 26。
+注入插件和外部 Crane 配置器统一使用 37 条机型资料、78 个稳定 iOS/Build 资料生成兼容组合，覆盖 iPhone 8 至 iPhone 17 系列；其中 36 款参与随机，iPhone SE2 只作为兼容记录保留在机型池里，不参与随机抽取。iPhone 8/X 只匹配 iOS 15/16，新机型按实际最低系统版本选择，iPhone 11 及更新机型可以匹配 iOS 26。
 
 “一键随机整套基础参数”会生成匹配的 iOS/Build、硬件型号、内存、磁盘、设备名称和主机名。点击后会自动开启基础总开关、5 个基础子开关及常规高级功能，屏幕继续使用真机尺寸；高级身份参数不变。
 
 基础随机不会改变兼容风险测试 4 项：Keychain、App Group、WebKit Cookie、User-Agent。代理隐藏属于常规高级功能，会随基础随机自动开启。
 
-“一键随机整套高级参数”单独生成并持久保存 IDFA、IDFV、DeviceID、CUID 和 UTDID，不修改基础参数。
+“一键随机整套高级参数”单独生成并持久保存 IDFA、IDFV、DeviceID、CUID 和 UTDID，不修改基础参数，也不改动任何开关。卐解和卍解的这个按钮行为一致。
 
 ### 隐私功能
 
@@ -51,6 +51,10 @@
 - 通讯录、日历权限返回拒绝
 - WebKit 设备标识 Cookie 过滤，保留 BDUSS/STOKEN 登录 Cookie
 - 相机和照片权限均不 Hook
+
+### 金额统计上报控制（默认关闭）
+
+「反关联参数」组内的「阻止金额统计上报」开关，默认关闭；关闭时完全不装拦截，保持原上报行为。开启后只拦已经核实的收益页金额浏览埋点（HTTPS `h2tcbox.baidu.com/ztbox`、`action=zpblog`、`data.actiondata.id=10290`、`page=y_mission_index`、`type=c_pv`，并且含 `ext.num`），原生请求返回本地空响应，网页端覆盖图片、`sendBeacon`、`fetch` 与 `XMLHttpRequest` 四条通道。判定每次请求都读开关，所以关掉立即恢复原上报行为，不必重启。该功能不伪造金额，也不修改服务端余额。
 
 ### 兼容风险测试页面
 

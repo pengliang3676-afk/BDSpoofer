@@ -20,6 +20,9 @@ static NSURLRequest *cashTelemetryRequest(NSString *host, id eventID, NSString *
                             [NSURLQueryItem queryItemWithName:@"data" value:value]];
     return [NSURLRequest requestWithURL:components.URL];
 }
+static BOOL g_testCashSwitch = NO;
+static BOOL testCashSwitchValue(void) { return g_testCashSwitch; }
+
 int main(void) {
     @autoreleasepool {
         NSMutableDictionary *config=[BDSDefaultConfig() mutableCopy];
@@ -40,6 +43,16 @@ int main(void) {
             if([device[@"machine"] isEqual:@"iPhone12,8"]) sawSE2=YES;
         }
         assert(sawSE2 && BDSUnifiedDeviceProfiles().count==37);
+        // SE2 保留在机型池里，但不参与随机抽取
+        assert(BDSRandomEligibleProfiles().count==36);
+        BOOL se2Eligible=NO, se2InRange=NO;
+        for(NSDictionary *device in BDSRandomEligibleProfiles()) {
+            if([device[@"machine"] isEqual:@"iPhone12,8"]) se2Eligible=YES;
+        }
+        for(NSDictionary *device in BDSUnifiedDeviceProfiles()) {
+            if([device[@"machine"] isEqual:@"iPhone12,8"]) se2InRange=YES;
+        }
+        assert(!se2Eligible && se2InRange);
         NSDictionary *se2=@{@"machine":@"iPhone12,8"};
         NSDictionary *iphone8=@{@"machine":@"iPhone10,1"};
         NSDictionary *iphoneXR=@{@"machine":@"iPhone11,8"};
@@ -61,6 +74,7 @@ int main(void) {
             NSMutableDictionary *after=[before mutableCopy]; [after addEntriesFromDictionary:BDSRandomBasicProfileValues()];
             checkUnchanged(before,after,basic);
             assert(![after[@"hwMachine"] isEqual:before[@"hwMachine"]]);
+            assert(![after[@"hwMachine"] isEqual:@"iPhone12,8"]);  // SE2 不参与抽取
             NSString *ver=after[@"systemVersion"];
             NSString *machine=after[@"hwMachine"];
             if([ver hasPrefix:@"16.7.15"] || [ver hasPrefix:@"16.7.16"]) assert([machine hasPrefix:@"iPhone10,"]);
@@ -79,6 +93,7 @@ int main(void) {
             if(!mask) assert(delta.count==0);
             NSMutableDictionary *after=[before mutableCopy];[after addEntriesFromDictionary:delta];
             checkUnchanged(before,after,allowed);
+            assert(![after[@"targetedHwMachine"] isEqual:@"iPhone12,8"]);  // 定向随机同样不抽 SE2
         }
         config=[g_config mutableCopy];config[@"targetedUASystemVersion"]=@"17.4.1";
         config[@"targetedPushDeviceProfileName"]=@"iPhone 14 Pro";
@@ -121,6 +136,25 @@ int main(void) {
         assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"other_page", @"c_pv", @"3.03")));
         assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"example.com", @10290, @"y_mission_index", @"c_pv", @"3.03")));
         assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_index", @"c_pv", nil)));
+        // 一键高级只换五项身份值：必须不动任何开关（与卍解语义一致）
+        NSMutableDictionary *advBefore=[config mutableCopy];
+        advBefore[@"spoofBaiduSDK"]=@NO; advBefore[@"spoofAdvertisingIdentifiers"]=@NO;
+        NSDictionary *advDelta=BDSRandomIdentityValues();
+        assert(!advDelta[@"spoofBaiduSDK"] && !advDelta[@"spoofAdvertisingIdentifiers"]);
+        NSMutableDictionary *advAfter=[advBefore mutableCopy];
+        [advAfter addEntriesFromDictionary:advDelta];
+        checkUnchanged(advBefore,advAfter,identity);
+        assert(![advAfter[@"spoofBaiduSDK"] boolValue]);
+        assert(![advAfter[@"spoofAdvertisingIdentifiers"] boolValue]);
+        // 金额上报拦截：判定入口必须实时看开关，关掉立即恢复原上报行为
+        BDSCashTelemetrySwitchProvider=testCashSwitchValue;
+        g_testCashSwitch=NO;
+        assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_index", @"c_pv", @"3.03")));
+        g_testCashSwitch=YES;
+        assert(BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_index", @"c_pv", @"3.03")));
+        g_testCashSwitch=NO;
+        assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_index", @"c_pv", @"3.03")));
+        BDSCashTelemetrySwitchProvider=NULL;
         NSMutableDictionary *unusedTarget=[BDSDefaultConfig() mutableCopy];
         for(NSString *key in BDSSelectedTargetKeys()) unusedTarget[key]=@NO;
         unusedTarget[@"spoofBaiduTargeted"]=@NO; unusedTarget[@"targetedGeneratedAt"]=@0;
@@ -132,7 +166,7 @@ int main(void) {
         unusedTarget[@"didRandomizeTargeted"]=@YES;
         NSDictionary *preserved=BDSConfigForPersistentStorage(unusedTarget);
         for(NSString *key in BDSTargetedStoredValueKeys()) assert(preserved[key]);
-        puts("PASS plugin: compact summary state, sparse unused targeted values, independent random modes, exact cash telemetry matcher, UA/Push/screen regressions");
+        puts("PASS plugin: compact summary state, sparse unused targeted values, independent random modes, advanced random touches no switch, cash telemetry switch honored at request time, SE2 out of the random pool, UA/Push/screen regressions");
     }
     return 0;
 }

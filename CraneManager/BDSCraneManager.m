@@ -349,7 +349,12 @@ static NSMutableDictionary *BDSCreateRandomConfig(NSDictionary *existing,
         BDSSeedIdentityIfNeeded(config, YES);
         return config;
     }
-    NSMutableArray<NSDictionary *> *devices = [BDSDeviceProfiles() mutableCopy];
+    // iPhone SE2 保留在机型池里，但不参与抽取，与區解 BDSRandomEligibleProfiles 一致。
+    NSMutableArray<NSDictionary *> *devices = [NSMutableArray array];
+    for (NSDictionary *device in BDSDeviceProfiles()) {
+        if ([device[@"machine"] isEqualToString:@"iPhone12,8"]) continue;
+        [devices addObject:device];
+    }
     if (mode == BDSRandomModeBasic) {
         NSString *current = [existing[@"hwMachine"] isKindOfClass:NSString.class] ? existing[@"hwMachine"] : @"";
         if (current.length) {
@@ -544,7 +549,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"卍解 1.0.2 9.28-03";
+    self.title = @"卍解 1.0.2 9.30-01";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];

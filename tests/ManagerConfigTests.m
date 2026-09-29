@@ -63,7 +63,14 @@ int main(int argc,char **argv) {
         for(NSDictionary *device in BDSDeviceProfiles()) {
             if([device[@"machine"] isEqual:@"iPhone12,8"]) sawSE2=YES;
         }
-        assert(sawSE2 && BDSDeviceProfiles().count==37);
+        assert(sawSE2 && BDSDeviceProfiles().count==37);  // 池里保留 SE2 作为兼容记录
+        // SE2 不参与随机抽取：跑 200 次一键基础，一次都不许抽到它
+        for(int i=0;i<200;i++) {
+            NSDictionary *picked=BDSCreateRandomConfig(defaults,BDSRandomModeBasic,[NSSet set]);
+            assert(![picked[@"hwMachine"] isEqual:@"iPhone12,8"]);
+            NSDictionary *pickedTargeted=BDSCreateRandomConfig(defaults,BDSRandomModeTargeted,[NSSet setWithObject:@"spoofBaiduTargetedModel"]);
+            assert(![pickedTargeted[@"targetedHwMachine"] isEqual:@"iPhone12,8"]);
+        }
         NSDictionary *se2=@{@"machine":@"iPhone12,8",@"minimumOS":@"15.0",@"maximumMajor":@26};
         NSDictionary *iphone8=@{@"machine":@"iPhone10,1",@"minimumOS":@"15.0",@"maximumMajor":@16};
         NSDictionary *iphoneXR=@{@"machine":@"iPhone11,8",@"minimumOS":@"15.0",@"maximumMajor":@18};
@@ -96,7 +103,7 @@ int main(int argc,char **argv) {
         assert([BDSCleanContainerDisplayName(@"默认", @"fallback") isEqualToString:@"默认"]);
         assert(BDSContainerHasDefaultMarker(@"01（默认）") && BDSContainerHasDefaultMarker(@"02(Default)"));
         assert(!BDSContainerHasDefaultMarker(@"默认") && !BDSContainerHasDefaultMarker(@"01") && !BDSContainerHasDefaultMarker(@"（默认）"));
-        puts("PASS manager: per-mode random state, clean current label, sparse unused targeted values, synchronized device fields and safe restore");
+        puts("PASS manager: per-mode random state, clean current label, sparse unused targeted values, synchronized device fields, SE2 kept in the pool but never drawn, safe restore");
     }
     return 0;
 }

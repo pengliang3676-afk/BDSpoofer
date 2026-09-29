@@ -37,7 +37,7 @@ assert 'closeApp' not in manager and 'NSSelectorFromString(@"suspend")' not in m
 assert 'config[@"deviceProfileName"] ?: config[@"hwMachine"]' in manager
 assert 'config[@"targetedDeviceProfileName"] ?: config[@"targetedHwMachine"]' in manager
 assert 'NSString *currentSuffix = @"（当前）"' in manager and 'UIColor.systemRedColor' in manager
-assert 'page.title=@"卐解 1.8.1 UI1.2 9.28-03"' in plugin
+assert 'page.title=@"卐解 1.8.1 UI1.3 9.30-01"' in plugin
 assert 'didRandomize%@%@' in policy
 for text in ['BDSMarkRandomModeRun','BDSRandomModeWasRun','BDSConfigForPersistentStorage']:
     assert text in plugin+manager+policy,text
@@ -57,17 +57,28 @@ for text in ['h2tcbox.baidu.com','/ztbox','zpblog','10290','y_mission_index','c_
 assert 'BDSInstallCashTelemetryBlocking();' in plugin
 assert plugin.count('loadConfig();') >= 3
 assert '0.50' not in release and '触发风控' not in release
-assert 'BDSpoofer_1.8.1_UI1.2_9.28-03.dylib' in build and 'UI1.1.dylib' not in build
-assert 'BDSpooferCraneManager_1.0.2-ui1_9.28-03_RootHide.deb' in build
+assert 'BDSpoofer_1.8.1_UI1.3_9.30-01.dylib' in build and 'UI1.1.dylib' not in build
+assert 'BDSpooferCraneManager_1.0.2-ui1_9.30-01_RootHide.deb' in build
 assert 'BDSLoginDeviceDict' in plugin and 'ssologin' in plugin
 assert 'BDSPassEncryptedDi' in plugin and 'deviceInfoForLogin' in plugin
 assert 'BDSPassEnsureDVIF' in plugin and 'bds_my_uname' in plugin and '{"uname"' in plugin
-assert 'self.title = @"卍解 1.0.2 9.28-03"' in manager
+assert 'self.title = @"卍解 1.0.2 9.30-01"' in manager
 assert '[verified isEqualToDictionary:config]' in manager
 assert 'targetedScreenHwMachine' in plugin and 'targetedScreenHwMachine' in manager
 def function(text,name):
-    match=re.search(r'^static [^\n]*\b'+name+r'\(',text,re.M);assert match,name
-    pos=text.index('{',match.start())
+    # 支持 static C 函数与 Objective-C 实例/类方法两种形态。
+    # 方法名在 @interface 里也有声明（以 ';' 结尾、没有函数体），必须跳过声明行，
+    # 否则会从声明处一路括号配对吃到下一个函数。
+    def pick(pattern):
+        for m in re.finditer(pattern,text,re.M):
+            brace=text.find('{',m.start())
+            if brace<0: continue
+            if ';' in text[m.end():brace]: continue
+            return m,brace
+        return None,None
+    match,pos=pick(r'^static [^\n]*\b'+name+r'\(')
+    if not match: match,pos=pick(r'^[-+]\s*\([^)\n]*\)\s*'+name+r'\b')
+    assert match,name
     stripped=re.sub(r'//[^\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',lambda m:' '*len(m[0]),text)
     depth=0
     for i in range(pos,len(text)):
@@ -105,15 +116,60 @@ plugin_systems=re.findall(r'BDSSystem\(@"([^"]+)",\s*@"([^"]+)"\)',function(plug
 manager_systems=re.findall(r'BDSSystem\(@"([^"]+)",\s*@"([^"]+)"\)',function(manager,'BDSSystemProfiles'))
 assert plugin_systems==manager_systems and len(plugin_systems)>50
 base=subprocess.check_output(['git','show','b65d42ab33948455ef84e57d109d0dbede2a1b72:BDSpoofer.m'],cwd=root).decode('utf-8')
-names=['bds_c_is_jailbreak_path','bds_is_suspicious_dlopen_path','bds_my_dlopen','bds_my_dlopen_preflight','bds_my_stat','bds_my_lstat','bds_my_access','bds_my_fopen','bds_my_opendir','bds_perform_rebinding_with_section','bds_rebind_symbols_for_image']
-for name in names:assert function(plugin,name)==function(base,name),name
+# 9.30-01 起这些是“故意改动”的函数，因此不再做整函数基线比对：
+#   bds_is_suspicious_dlopen_path（分量边界匹配 + /private/var/jb）
+#   bds_my_dlopen / bds_my_dlopen_preflight（去掉固定哨兵路径、orig 判空）
+#   bds_perform_rebinding_with_section（页对齐、orig 只捕获一次、symtab 边界）
+#   bds_my_stat/lstat/access/fopen/opendir（新增 orig 判空，属于纯增量加固）
+# bds_c_is_jailbreak_path 必须与基线逐字节一致；上面那五个 C 包装函数要求
+# “去掉新增判空行之后”仍与基线一致，即改动只能是加判空，语义不许动。
+assert function(plugin,'bds_c_is_jailbreak_path')==function(base,'bds_c_is_jailbreak_path')
+def strip_guards(text, name):
+    body=function(text,name)
+    return '\n'.join(l.strip() for l in body.splitlines() if 'if (!orig_' not in l)
+for name in ['bds_my_stat','bds_my_lstat','bds_my_access','bds_my_fopen','bds_my_opendir']:
+    assert strip_guards(plugin,name)==strip_guards(base,name),name
 for path in ['bdspoofer_config.plist','CraneManager/Info.plist','CraneManager/BDSCraneManager.entitlements','CraneManager/BDSCraneManager.libSandy.plist']:plistlib.loads((root/path).read_bytes())
 manager_info=plistlib.loads((root/'CraneManager/Info.plist').read_bytes())
-assert manager_info['CFBundleVersion']=='9.28.03' and manager_info['CFBundleShortVersionString']=='1.0.2-9.28.03'
+assert manager_info['CFBundleVersion']=='9.30.01' and manager_info['CFBundleShortVersionString']=='1.0.2-9.30.01'
 assert 'CPU iPhone OS ' in plugin and 'setCustomUserAgent:' in plugin
 assert 'if (hw.length && f.count > 3) f[3] = hw;' in plugin
 assert 'if (sv.length && f.count > 4) f[4] = sv;' in plugin
 assert 'if (f.count > 27)' in plugin and 'cfgStr(@"deviceModel", @"iPhone")' in plugin
 assert 'f[3].length' not in plugin and 'f[4].length' not in plugin
 assert 'UIApplicationExitsOnSuspend' not in manager_info
-print('PASS UI1.2: v187, 21 on / 5 off, exact telemetry block, 37 synchronized devices, UI1.2 package names, 11 baseline jailbreak functions unchanged')
+# ---- 9.30-01：开关生效、X/M 语义一致、随机池、健壮性 ----
+# 金额阻断必须每次请求都读开关，否则“关掉开关仍在拦”。
+assert 'static BOOL (*BDSCashTelemetrySwitchProvider)(void)' in blocker
+assert 'if (!BDSCashTelemetrySwitchIsOn()) return NO;' in blocker
+assert 'static BOOL BDSCashTelemetrySwitchEnabled(void)' in plugin
+assert 'BDSCashTelemetrySwitchProvider = BDSCashTelemetrySwitchEnabled;' in plugin
+assert 'if (cfgBool(@"blockStatCashTelemetry", NO)) BDSInstallCashTelemetryBlocking();' not in plugin
+assert 'dispatch_once(&onceToken' in blocker and 'registerClass:BDSCashTelemetryBlockProtocol.class' in blocker
+assert 'arrayByAddingObject:BDSCashTelemetryBlockProtocol.class' in blocker
+for text2 in ["typeof window.__bdsBlockStatCashTelemetry==='boolean'","navigator.sendBeacon","window.fetch","XMLHttpRequest.prototype.open"]:
+    assert text2 in blocker,text2
+assert 'NSLog' not in blocker
+advanced=function(plugin,'randomizeAdvancedProfile')
+assert 'BDSRandomIdentityValues()' in advanced
+assert 'spoofBaiduSDK"] = @YES' not in advanced and 'spoofAdvertisingIdentifiers"] = @YES' not in advanced
+assert 'static NSArray<NSDictionary *> *BDSRandomEligibleProfiles(void)' in plugin
+assert '[device[@"machine"] isEqualToString:@"iPhone12,8"]' in plugin
+assert '[device[@"machine"] isEqualToString:@"iPhone12,8"]' in manager
+assert 'BDSRandomEligibleProfiles() mutableCopy' in plugin and 'BDSRandomEligibleProfiles();' in plugin
+dlopen_match=function(plugin,'bds_is_suspicious_dlopen_path')
+assert 'int atComponentStart' in dlopen_match and 'hit[-1]' in dlopen_match
+assert '"/private/var/jb"' in dlopen_match
+assert 'strstr(path, badPaths[i])' not in dlopen_match
+assert 'stat/access/fopen \u5df2\u62e6\u622a' not in plugin
+assert 'C\u51fd\u6570\u68c0\u6d4b\uff1a\u5df2\u62e6\u622a %llu \u6b21 / \u547d\u4e2d %llu \u6b21' in plugin
+assert 'static vm_address_t bds_page_mask(void)' in plugin
+assert 'page_mask' in function(plugin,'bds_perform_rebinding_with_section')
+assert '*(cur->rebindings[j].replaced) == NULL' in function(plugin,'bds_perform_rebinding_with_section')
+assert 'if (!orig_stat) { errno = ENOENT; return -1; }' in plugin
+assert 'if (!orig_opendir) { errno = ENOENT; return NULL; }' in plugin
+assert 'if (!orig_dlopen) { errno = ENOENT; return NULL; }' in plugin
+assert 'orig_dlopen("/.bds_blocked_nonexistent"' not in plugin
+assert '[NSThread isMainThread]' in function(plugin,'bds_dyld_add_image_cb')
+assert 'g_bdsRebindFailures++' in plugin
+print('PASS UI1.3 9.30-01: v187, 21 on / 5 off, runtime switch honored by the cash blocker, X/M advanced-random parity, SE2 out of the random pool, boundary-matched dlopen paths, measured C-hook self-check, 9 baseline jailbreak functions unchanged')

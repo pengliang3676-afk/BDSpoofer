@@ -257,6 +257,10 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
     return v ? [v integerValue] : def;
 }
 
+// 金额统计上报拦截的运行期开关查询：每次请求都读一次，关掉立即生效。
+static BOOL BDSCashTelemetrySwitchEnabled(void) {
+    return cfgBool(@"blockStatCashTelemetry", NO);
+}
 static BOOL BDSHasEnabledCHookFeature(void) {
     return cfgBool(@"spoofSysctl", NO) ||
            cfgBool(@"spoofKeychain", NO) ||
@@ -717,6 +721,19 @@ struct bds_rebindings_entry {
 
 static struct bds_rebindings_entry *bds_rebindings_head = NULL;
 
+// fishhook 写入时的诊断：vm_protect 失败与 chained fixups 都会让 C 层 hook 静默失效。
+static int g_bdsRebindFailures = 0;
+static kern_return_t g_bdsLastRebindFailure = KERN_SUCCESS;
+
+static vm_address_t bds_page_mask(void) {
+    vm_size_t page = vm_page_size;
+    if (page == 0) {
+        long sysPage = sysconf(_SC_PAGESIZE);
+        page = sysPage > 0 ? (vm_size_t)sysPage : 16384;
+    }
+    return (vm_address_t)(page - 1);
+}
+
 static int bds_prepend_rebindings(struct bds_rebindings_entry **head,
                                   struct bds_rebinding rebindings[],
                                   size_t nel) {
@@ -737,12 +754,14 @@ static void bds_perform_rebinding_with_section(struct bds_rebindings_entry *rebi
                                                bds_section_t *section,
                                                intptr_t slide,
                                                bds_nlist_t *symtab,
+                                               uint32_t nsyms,
                                                char *strtab,
                                                uint32_t *indirect_symtab,
                                                uint32_t nindirectsyms) {
     uint32_t *indirect_symbol_indices = indirect_symtab + section->reserved1;
     void **indirect_symbol_bindings = (void **)((uintptr_t)slide + section->addr);
     uint32_t pointer_count = (uint32_t)(section->size / sizeof(void *));
+    uint8_t sect_type = section->flags & SECTION_TYPE;
 
     // 越界保护：reserved1 + 指针数不能超过间接符号表大小
     if (section->reserved1 >= nindirectsyms ||
@@ -758,6 +777,7 @@ static void bds_perform_rebinding_with_section(struct bds_rebindings_entry *rebi
             symtab_index == (INDIRECT_SYMBOL_LOCAL | INDIRECT_SYMBOL_ABS)) {
             continue;
         }
+        if (symtab_index >= nsyms) continue;  // 符号表越界，跳过
         uint32_t strtab_offset = symtab[symtab_index].n_un.n_strx;
         char *symbol_name = strtab + strtab_offset;
         if (!symbol_name[0] || !symbol_name[1]) continue;
@@ -766,15 +786,26 @@ static void bds_perform_rebinding_with_section(struct bds_rebindings_entry *rebi
             for (uint j = 0; j < cur->rebindings_nel; j++) {
                 if (strcmp(&symbol_name[1], cur->rebindings[j].name) == 0) {
                     // 延迟到真正需要写入时才解除该 GOT 区域的写保护
+                    // 地址与长度按页对齐，否则 vm_protect 可能整体失败。
                     if (!protected_region) {
-                        kern_return_t vr = vm_protect(mach_task_self(),
-                            (vm_address_t)indirect_symbol_bindings,
-                            (vm_size_t)section->size, NO,
+                        vm_address_t page_mask = bds_page_mask();
+                        vm_address_t page_start = (vm_address_t)indirect_symbol_bindings & ~page_mask;
+                        vm_address_t page_end = ((vm_address_t)indirect_symbol_bindings
+                            + (vm_size_t)section->size + page_mask) & ~page_mask;
+                        kern_return_t vr = vm_protect(mach_task_self(), page_start,
+                            (vm_size_t)(page_end - page_start), NO,
                             VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
-                        if (vr != KERN_SUCCESS) return;  // 写保护解除失败，跳过整个节
+                        if (vr != KERN_SUCCESS) {
+                            g_bdsRebindFailures++;
+                            g_bdsLastRebindFailure = vr;
+                            return;
+                        }
                         protected_region = 1;
                     }
+                    // 只接受一次真正的原函数地址，且只从非惰性槽位取。
                     if (cur->rebindings[j].replaced != NULL &&
+                        sect_type == S_NON_LAZY_SYMBOL_POINTERS &&
+                        *(cur->rebindings[j].replaced) == NULL &&
                         indirect_symbol_bindings[i] != cur->rebindings[j].replacement) {
                         *(cur->rebindings[j].replaced) = indirect_symbol_bindings[i];
                     }
@@ -813,7 +844,8 @@ static void bds_rebind_symbols_for_image(struct bds_rebindings_entry *rebindings
     }
 
     if (!symtab_cmd || !dysymtab_cmd || !linkedit_segment) return;
-    if (dysymtab_cmd->nindirectsyms == 0) return;
+    // chained fixups 镜像的间接符号表为空：以前静默跳过，现在记一笔。
+    if (dysymtab_cmd->nindirectsyms == 0) { g_bdsRebindFailures++; return; }
 
     uintptr_t linkedit_base =
         (uintptr_t)slide + linkedit_segment->vmaddr - linkedit_segment->fileoff;
@@ -840,7 +872,8 @@ static void bds_rebind_symbols_for_image(struct bds_rebindings_entry *rebindings
                 if (sect_type == S_LAZY_SYMBOL_POINTERS ||
                     sect_type == S_NON_LAZY_SYMBOL_POINTERS) {
                     bds_perform_rebinding_with_section(rebindings, sect, slide,
-                                                       symtab, strtab, indirect_symtab,
+                                                       symtab, symtab_cmd->nsyms,
+                                                       strtab, indirect_symtab,
                                                        dysymtab_cmd->nindirectsyms);
                 }
             }
@@ -900,6 +933,8 @@ static const char *bds_jailbreak_path_strings[] = {
     "/var/jb",
     "/var/jb/Library",
     "/var/jb/basebin",
+    "/private/var/jb",
+    "/private/preboot",
     "/var/jb/usr/lib/TweakInject",
     "/.bootstrapped_electra",
     "/.cydia_no_stash",
@@ -1328,7 +1363,12 @@ static void bds_scanBaiduSDKClasses(void) {
 
 static void bds_dyld_add_image_cb(const struct mach_header *mh, intptr_t vmaddr_slide) {
     (void)mh; (void)vmaddr_slide;
-    bds_scanBaiduSDKClasses();
+    // dyld 回调可能不在主线程：只投递，swizzle 一律回主队列。
+    if ([NSThread isMainThread]) {
+        bds_scanBaiduSDKClasses();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), ^{ bds_scanBaiduSDKClasses(); });
+    }
 }
 
 static void installBaiduSDKHooks(void) {
@@ -2612,6 +2652,7 @@ static int bds_my_stat(const char *path, struct stat *buf) {
         return -1;
     }
     BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStatePassed);
+    if (!orig_stat) { errno = ENOENT; return -1; }
     return orig_stat(path, buf);
 }
 
@@ -2623,6 +2664,7 @@ static int bds_my_lstat(const char *path, struct stat *buf) {
         return -1;
     }
     BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStatePassed);
+    if (!orig_lstat) { errno = ENOENT; return -1; }
     return orig_lstat(path, buf);
 }
 
@@ -2634,6 +2676,7 @@ static int bds_my_access(const char *path, int mode) {
         return -1;
     }
     BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStatePassed);
+    if (!orig_access) { errno = ENOENT; return -1; }
     return orig_access(path, mode);
 }
 
@@ -2645,6 +2688,7 @@ static FILE *bds_my_fopen(const char *path, const char *mode) {
         return NULL;
     }
     BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStatePassed);
+    if (!orig_fopen) { errno = ENOENT; return NULL; }
     return orig_fopen(path, mode);
 }
 
@@ -2656,6 +2700,7 @@ static DIR *bds_my_opendir(const char *path) {
         return NULL;
     }
     BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStatePassed);
+    if (!orig_opendir) { errno = ENOENT; return NULL; }
     return orig_opendir(path);
 }
 
@@ -3262,24 +3307,33 @@ static int (*orig_dlopen_preflight)(const char *);
 static BOOL bds_is_suspicious_dlopen_path(const char *path) {
     if (!path) return NO;
     static const char *badPaths[] = {
-        "/var/jb", "/Library/MobileSubstrate", "/bootstrap",
+        "/var/jb", "/private/var/jb", "/bootstrap", "/Library/MobileSubstrate",
         "/usr/lib/TweakInject", "/.jailbreak", "/.cydia",
-        "/jb/", "/electra", "/chimera", "/odyssey",
+        "/jb", "/electra", "/chimera", "/odyssey",
         "/var/containers/Bundle/trollstore", "/TrollFools",
         NULL
     };
     for (int i = 0; badPaths[i]; i++) {
-        if (strstr(path, badPaths[i])) return YES;
+        const char *needle = badPaths[i];
+        const char *hit = path;
+        while ((hit = strstr(hit, needle)) != NULL) {
+            int atComponentStart = (hit == path) || (hit > path && hit[-1] == '/');
+            size_t end = (size_t)(hit - path) + strlen(needle);
+            if (atComponentStart && (path[end] == '\0' || path[end] == '/')) return YES;
+            hit++;
+        }
     }
     return NO;
 }
 
 static void *bds_my_dlopen(const char *path, int mode) {
+    if (!orig_dlopen) { errno = ENOENT; return NULL; }
     if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_spoofDlopenC) &&
         bds_is_suspicious_dlopen_path(path)) {
         BDS_DIAG_RECORD(g_diagDlopen, BDSDiagStateBlocked);
         // 让系统加载一个不存在的路径，自然设置 dlerror 并返回 NULL
-        return orig_dlopen("/.bds_blocked_nonexistent", mode);
+        errno = ENOENT;
+        return NULL;
     }
     BDS_DIAG_RECORD(g_diagDlopen, BDSDiagStatePassed);
     return orig_dlopen(path, mode);
@@ -3289,7 +3343,7 @@ static int bds_my_dlopen_preflight(const char *path) {
     if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_spoofDlopenC) &&
         bds_is_suspicious_dlopen_path(path)) {
         BDS_DIAG_RECORD(g_diagDlopen, BDSDiagStateBlocked);
-        if (orig_dlopen_preflight) return orig_dlopen_preflight("/.bds_blocked_nonexistent");
+        // 不再借用固定哨兵路径，避免把插件标记写进 dlerror()。
         return 0;
     }
     BDS_DIAG_RECORD(g_diagDlopen, BDSDiagStatePassed);
@@ -3529,9 +3583,24 @@ static NSArray<NSDictionary *> *BDSUnifiedDeviceProfiles(void) {
     return BDSDeviceProfiles();
 }
 
+// iPhone SE2 只作为兼容记录保留在机型池里，不参与随机抽取；池 37 条、可抽取 36 款。
+static NSArray<NSDictionary *> *BDSRandomEligibleProfiles(void) {
+    static NSArray<NSDictionary *> *eligible;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSMutableArray<NSDictionary *> *list = [NSMutableArray array];
+        for (NSDictionary *device in BDSDeviceProfiles()) {
+            if ([device[@"machine"] isEqualToString:@"iPhone12,8"]) continue;
+            [list addObject:device];
+        }
+        eligible = [list copy];
+    });
+    return eligible;
+}
+
 static NSString *BDSDeviceRangeName(void) {
     return [NSString stringWithFormat:@"统一随机（%lu款）",
-            (unsigned long)BDSUnifiedDeviceProfiles().count];
+            (unsigned long)BDSRandomEligibleProfiles().count];
 }
 
 static NSDictionary *BDSSystem(NSString *version, NSString *build) {
@@ -3697,7 +3766,7 @@ static NSMutableDictionary *BDSRandomBaseValuesForPair(NSDictionary *device,
 }
 
 static NSDictionary *BDSRandomBasicProfileValues(void) {
-    NSMutableArray<NSDictionary *> *allDevices = [BDSUnifiedDeviceProfiles() mutableCopy];
+    NSMutableArray<NSDictionary *> *allDevices = [BDSRandomEligibleProfiles() mutableCopy];
     NSString *current = cfgStr(@"hwMachine", @"");
     [allDevices filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *d, NSDictionary *bindings) { (void)bindings; return ![d[@"machine"] isEqual:current]; }]];
     if (!allDevices.count) return @{};
@@ -3731,7 +3800,7 @@ static BOOL BDSAnyTargetedChildEnabled(void) {
 // 一次操作只抽取一个兼容机型/iOS 组合，因此同时选中的类别彼此一致。
 static NSDictionary *BDSRandomTargetedProfileValues(void) {
     if (!BDSAnyTargetedChildEnabled()) return @{};
-    NSArray<NSDictionary *> *allDevices = BDSUnifiedDeviceProfiles();
+    NSArray<NSDictionary *> *allDevices = BDSRandomEligibleProfiles();
     if (!allDevices.count) return @{};
     NSDictionary *device = allDevices[arc4random_uniform((uint32_t)allDevices.count)];
     NSDictionary *system = BDSRandomSystemProfileForDevice(device);
@@ -3976,7 +4045,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.2 9.28-03";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-01";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -4253,8 +4322,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
 
 - (void)randomizeAdvancedProfile {
     NSMutableDictionary *values = [BDSRandomIdentityValues() mutableCopy];
-    values[@"spoofBaiduSDK"] = @YES;
-    values[@"spoofAdvertisingIdentifiers"] = @YES;
+    // 与卍解一键高级语义一致：只更换五项身份值，不动开关。
     values[@"configVersion"] = @187;
     BOOL saved = saveConfigValues(values);
     if (!saved) {
@@ -4912,8 +4980,22 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
             }
             [advanced appendFormat:@"\n  镜像名过滤：隐藏 %u 个可疑镜像", suspicious];
         }
-        [advanced appendFormat:@"\n  C函数检测：stat/access/fopen 已拦截"];
+        uint64_t cHits = bds_diag_load64(&g_diagCFiles.hits);
+        uint64_t cBlocked = bds_diag_load64(&g_diagCFiles.blocked);
+        if (cHits == 0) {
+            [advanced appendFormat:@"\n  C函数检测：尚未命中"];
+        } else if (cBlocked == 0) {
+            [advanced appendFormat:@"\n  C函数检测：已接上，命中 %llu 次、拦截 0 次", (unsigned long long)cHits];
+        } else {
+            [advanced appendFormat:@"\n  C函数检测：已拦截 %llu 次 / 命中 %llu 次", (unsigned long long)cBlocked, (unsigned long long)cHits];
+        }
+        if (g_bdsRebindFailures > 0) {
+            [advanced appendFormat:@"\n  GOT 替换：%d 个镜像未接上（最近错误码 %d）", g_bdsRebindFailures, (int)g_bdsLastRebindFailure];
+        } else {
+            [advanced appendFormat:@"\n  GOT 替换：未发现失败"];
+        }
         NSArray *frameworks = [NSBundle allFrameworks];
+        BDSAppendDiagLine(advanced, @"  ObjC 文件 / URL", &g_diagObjCJailbreak);
         [advanced appendFormat:@"\n  NSBundle过滤：%lu 个 framework", (unsigned long)frameworks.count];
     }
 
@@ -5028,7 +5110,10 @@ static void bds_initialize() {
         BDSInstallUI();
 
         // 默认保持金额统计上报；用户明确开启阻止开关后才安装拦截。
-        if (cfgBool(@"blockStatCashTelemetry", NO)) BDSInstallCashTelemetryBlocking();
+        // 默认保持金额统计上报，不打开开关就不拦。
+        // 装在启动阶段并注册开关提供者：关掉立即放行，打开也不必重启。
+        BDSCashTelemetrySwitchProvider = BDSCashTelemetrySwitchEnabled;
+        BDSInstallCashTelemetryBlocking();
 
         // 1.8.1 起，enabled 只代表“基础功能总开关”。
         // 高级功能仍按各自开关独立加载，不能因基础功能关闭而提前返回。
