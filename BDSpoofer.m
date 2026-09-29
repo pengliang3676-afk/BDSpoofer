@@ -321,7 +321,7 @@ static void loadConfig() {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            // 9.30-11 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
+            // 9.30-12 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
             // （v189 迁移还会兜底强制关一次。）
             @"bypassJailbreakDetect": @NO
         }];
@@ -528,9 +528,9 @@ static void loadConfig() {
     BDSApplyInitialDefaults(merged, loaded);
     // 注意顺序：迁移必须放在 BDSApplyInitialDefaults 之后。
     // 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
-    // 写在它之前会被它设回 @YES（9.30-11 实测就是这个原因导致开关关不掉）。
+    // 写在它之前会被它设回 @YES（9.30-12 实测就是这个原因导致开关关不掉）。
     if (ver < 189) {
-        // 9.30-11：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
+        // 9.30-12：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
         // 老配置里这个键通常已存 @YES，光靠默认值救不了，必须强制写一次 @NO。
         // 用独立的版本号 189 是为了让已经处在 188 的配置也能被这次修正覆盖到，
         // 且只执行一次：之后用户在面板手动打开仍然有效。
@@ -1475,6 +1475,16 @@ static BOOL tg_screen_enabled(void) {
     return cfgBool(@"spoofBaiduTargetedScreen", NO);
 }
 
+// UA 的 CPU 段系统号同理单独判断。
+// 2026-09-30 真机诊断（探针 1.2）实测：spoofBaiduTargetedUA=1 而
+// spoofBaiduTargeted=0 时，tg_feature_enabled 返回假，两个 UA 分支都不执行
+// （诊断原文：rewriteUA=0 rewriteSystem=0），UA 里于是长期留着真机系统号，
+// 与配置值 P2 段互相矛盾。这个开关同样由“一键基础”按抽中机型打开，
+// 属于基础一致性，不该被定向总开关卡住。
+static BOOL tg_ua_enabled(void) {
+    return cfgBool(@"spoofBaiduTargetedUA", NO);
+}
+
 // 仅当字典里已存在该键时才覆盖，避免凭空注入百度不认识的字段
 static void tg_set_if_key(NSMutableDictionary *m, NSString *k, id v) {
     if (m && k && v && m[k] != nil) m[k] = v;
@@ -1569,7 +1579,7 @@ static NSDictionary *tg_rewrite_talos(NSDictionary *orig) {
     if (![orig isKindOfClass:NSDictionary.class]) return orig;
     BOOL rewriteSystem = tg_feature_enabled(@"spoofBaiduTargetedSystem");
     BOOL rewriteModel = tg_feature_enabled(@"spoofBaiduTargetedModel");
-    BOOL rewriteUA = tg_feature_enabled(@"spoofBaiduTargetedUA");
+    BOOL rewriteUA = tg_ua_enabled();
     BOOL rewriteScreen = tg_screen_enabled();
     if (!rewriteSystem && !rewriteModel && !rewriteUA && !rewriteScreen) return orig;
     NSMutableDictionary *m = [orig mutableCopy];
@@ -1850,7 +1860,7 @@ static id tg_dm_sysver(id self, SEL _cmd) {
 // BDPUserAgent -useagent_getDeviceInfo（0 参；字符串整体改，字典只改白名单键）
 static id tg_ua_get(id self, SEL _cmd) {
     id o = tg_o_ua_get ? ((id (*)(id, SEL))tg_o_ua_get)(self, _cmd) : nil;
-    if (!tg_feature_enabled(@"spoofBaiduTargetedUA")) {
+    if (!tg_ua_enabled()) {
         BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStatePassed);
         return o;
     }
@@ -1878,7 +1888,7 @@ static id tg_ua_get(id self, SEL _cmd) {
 // BDPUserAgent -composeUserAgentParameterWithOrigin:shouldEncodeURI:（对象 + BOOL）
 static id tg_ua_compose(id self, SEL _cmd, id origin, BOOL encode) {
     id o = tg_o_ua_compose ? ((id (*)(id, SEL, id, BOOL))tg_o_ua_compose)(self, _cmd, origin, encode) : nil;
-    if (!tg_feature_enabled(@"spoofBaiduTargetedUA")) {
+    if (!tg_ua_enabled()) {
         BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStatePassed);
         return o;
     }
@@ -4241,7 +4251,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-11";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-12";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;

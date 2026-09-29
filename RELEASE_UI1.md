@@ -1,5 +1,24 @@
 # 卐解 1.8.1 UI1.3 9.30-10 / 卍解 1.0.2 UI1.3 9.30-10
 
+## 9.30-12 UA 解耦定向总开关（真因已由诊断确认）
+
+探针 1.2 的插件诊断终于给出了确切答案：
+
+```
+C. 两个 UA 分支都没进
+    rewriteUA=0 rewriteSystem=0
+汇总. 开关
+    spoofBaiduTargeted=0 system=0 model=0 UA=1 screen=1
+```
+
+`spoofBaiduTargetedUA=1`（开着），但 `tg_feature_enabled()` 要求总开关 `spoofBaiduTargeted` 同时为 1，而它是 0，于是判断直接返回假，**两个 UA 分支都不执行**。
+
+这与 9.30-06 修复的屏幕问题是**同一个原因**——当时只给屏幕解耦了，漏了 UA。
+
+现在新增 `tg_ua_enabled()`，UA 也只看 `spoofBaiduTargetedUA`，不再受总开关约束。机型与 Push 依然由总开关控制，未动。
+
+同时确认：9.30-11 的防越狱检测修复已生效（真机报告 `configVersion=189`、`bypassJailbreakDetect=0`）。
+
 ## 9.30-11 修复防越狱检测关不掉（顺序 + 版本号两个真因）
 
 真机反馈：面板里“防越狱检测”依然是开的。定位到两个原因：
