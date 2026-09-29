@@ -334,6 +334,9 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
             @"bootTimeOffsetSeconds": @(86400 + arc4random_uniform(7 * 86400)),
         }];
         [config addEntriesFromDictionary:BDSRandomCarrier()];
+        // WiFi SSID 一起随机，规则与卐解一致：配一个常见名字，
+        // 让 CNCopyCurrentNetworkInfo 钩子返回伪造值而不是 NULL。
+        config[@"wifiSSID"] = BDSRandomCommonSSID();
         NSArray<NSArray<NSDictionary *> *> *groups = BDSSettingGroups();
         for (NSString *key in BDSFirstEnabledKeys(groups[0], 6)) config[key] = @YES;
         for (NSString *key in BDSFirstEnabledKeys(groups[1], 3)) config[key] = @YES;
@@ -605,7 +608,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"卍解 1.0.2 9.30-14";
+    self.title = @"卍解 1.0.2 9.30-15";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];

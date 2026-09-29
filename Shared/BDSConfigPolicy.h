@@ -127,3 +127,30 @@ static void BDSApplyInitialDefaults(NSMutableDictionary *config, NSDictionary *s
     // 导致 ver < 189 之类的迁移每次启动都重复触发（防越狱检测就踩过这个坑）。
     config[@"configVersion"]=@189;
 }
+
+// ---- 随机 WiFi SSID（一键基础时自动配一个）----
+//
+// 为什么需要：插件的 CNCopyCurrentNetworkInfo 钩子只有在 wifiSSID 非空时才返回伪造值，
+// 留空则返回 NULL。虽然 NULL 也不算泄露，但“有 Wi-Fi 权限却读不到任何网络”本身不自然。
+// 所以一键基础顺手配一个常见的、烂大街的名字，让返回结果看起来像普通用户。
+//
+// 取名原则：只用真实世界最常见的默认名（运营商光猫 / 路由器出厂名 / 大众化个人名），
+// 不用随机字符串 —— 生僻或乱码的 SSID 反而比 NULL 更显眼。
+// 全部为 ASCII，长度远小于 32 字节上限。
+static NSArray<NSString *> *BDSCommonSSIDPool(void) {
+    return @[@"ChinaNet-7Fk2", @"ChinaNet-3mQd", @"ChinaNet-8xTp",
+             @"CMCC-5G-Home", @"CMCC-Family", @"CMCC-2.4G",
+             @"ChinaUnicom-5G", @"ChinaUnicom-Home",
+             @"TP-LINK_5F2A", @"TP-LINK_8C10", @"TP-LINK_3E7B",
+             @"MERCURY_2F88", @"MERCURY_5G",
+             @"Tenda_4A6C20", @"Tenda_5G_9F",
+             @"HUAWEI-3F8A", @"HUAWEI-5G-2C",
+             @"Xiaomi_5G", @"Xiaomi_AX6000",
+             @"TP-LINK_2.4G", @"NETGEAR-Home",
+             @"HOME-2.4G", @"HOME-5G", @"HomeWiFi", @"FamilyWiFi",
+             @"WIFI-201", @"WiFi-A1B2"];
+}
+static NSString *BDSRandomCommonSSID(void) {
+    NSArray<NSString *> *pool = BDSCommonSSIDPool();
+    return pool.count ? pool[arc4random_uniform((uint32_t)pool.count)] : @"HOME-2.4G";
+}

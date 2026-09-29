@@ -321,7 +321,7 @@ static void loadConfig() {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            // 9.30-14 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
+            // 9.30-15 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
             // （v189 迁移还会兜底强制关一次。）
             @"bypassJailbreakDetect": @NO
         }];
@@ -528,9 +528,9 @@ static void loadConfig() {
     BDSApplyInitialDefaults(merged, loaded);
     // 注意顺序：迁移必须放在 BDSApplyInitialDefaults 之后。
     // 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
-    // 写在它之前会被它设回 @YES（9.30-14 实测就是这个原因导致开关关不掉）。
+    // 写在它之前会被它设回 @YES（9.30-15 实测就是这个原因导致开关关不掉）。
     if (ver < 189) {
-        // 9.30-14：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
+        // 9.30-15：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
         // 老配置里这个键通常已存 @YES，光靠默认值救不了，必须强制写一次 @NO。
         // 用独立的版本号 189 是为了让已经处在 188 的配置也能被这次修正覆盖到，
         // 且只执行一次：之后用户在面板手动打开仍然有效。
@@ -3987,6 +3987,9 @@ static NSMutableDictionary *BDSRandomBaseValuesForPair(NSDictionary *device,
     [values addEntriesFromDictionary:BDSBaiduScreenSyncValues(device)];
     [values addEntriesFromDictionary:BDSBaiduSystemSyncValues(system)];
     values[@"bootTimeOffsetSeconds"] = @(86400 + arc4random_uniform(7 * 86400));
+    // WiFi SSID 也一起随机：CNCopyCurrentNetworkInfo 钩子只在 wifiSSID 非空时
+    // 返回伪造值，留空则返回 NULL。配一个常见名字，让结果更像普通用户。
+    values[@"wifiSSID"] = BDSRandomCommonSSID();
     [values addEntriesFromDictionary:BDSRandomCarrierValues()];
     return values;
 }
@@ -4278,7 +4281,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-14";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-15";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
