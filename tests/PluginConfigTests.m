@@ -28,7 +28,7 @@ int main(void) {
         NSMutableDictionary *config=[BDSDefaultConfig() mutableCopy];
         BDSApplyInitialDefaults(config,nil);
         assert(BDSRegularKeys().count==20 && BDSRiskKeys().count==6);
-        assert([config[@"configVersion"] integerValue]==188);
+        assert([config[@"configVersion"] integerValue]==189);
         assert(![config[@"blockStatCashTelemetry"] boolValue]);
         for(NSString *key in BDSRegularKeys()) assert([config[key] boolValue]);
         for(NSString *key in BDSRiskKeys()) assert(![config[key] boolValue]);

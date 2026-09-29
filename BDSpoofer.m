@@ -171,7 +171,7 @@ static NSDictionary *BDSDefaultConfig(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @188,
+            @"configVersion": @189,
             @"spoofBaiduTargeted": @NO,
             @"spoofBaiduTargetedSystem": @NO,
             @"spoofBaiduTargetedModel": @NO,
@@ -206,7 +206,7 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"spoofSysctl": @YES,
             @"spoofKeychain": @NO,
             @"spoofUserAgent": @NO,
-            @"bypassJailbreakDetect": @YES,
+            @"bypassJailbreakDetect": @NO,
             @"spoofWiFi": @YES,
             @"spoofLocalIP": @YES,
             @"spoofAppGroup": @NO,
@@ -321,7 +321,9 @@ static void loadConfig() {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            @"bypassJailbreakDetect": @YES
+            // 9.30-11 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
+            // （v189 迁移还会兜底强制关一次。）
+            @"bypassJailbreakDetect": @NO
         }];
     }
     if (ver < 160) {
@@ -523,14 +525,23 @@ static void loadConfig() {
         [merged removeObjectForKey:@"spoofStatCash"];
         [merged writeToFile:p1 atomically:YES];
     }
-    if (ver < 188) {
-        // 9.30-10：防越狱检测改为默认关闭，并且一键基础 / 一键高级都不再打开它。
-        // 老配置里这个键通常已经存着 @YES，光靠默认值救不了，必须强制写一次 @NO。
-        merged[@"configVersion"] = @188;
+    BDSApplyInitialDefaults(merged, loaded);
+    // 注意顺序：迁移必须放在 BDSApplyInitialDefaults 之后。
+    // 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
+    // 写在它之前会被它设回 @YES（9.30-11 实测就是这个原因导致开关关不掉）。
+    if (ver < 189) {
+        // 9.30-11：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
+        // 老配置里这个键通常已存 @YES，光靠默认值救不了，必须强制写一次 @NO。
+        // 用独立的版本号 189 是为了让已经处在 188 的配置也能被这次修正覆盖到，
+        // 且只执行一次：之后用户在面板手动打开仍然有效。
         merged[@"bypassJailbreakDetect"] = @NO;
+        merged[@"configVersion"] = @189;
+        [merged writeToFile:p1 atomically:YES];
+    } else if (![loaded[@"configVersion"] isEqual:@189]) {
+        // 新装（没有已保存配置）：模板已按策略写成 @NO，这里只补版本号，不覆盖用户选择。
+        merged[@"configVersion"] = @189;
         [merged writeToFile:p1 atomically:YES];
     }
-    BDSApplyInitialDefaults(merged, loaded);
     // 没点过一键基础：内存里关掉机型伪装，不把默认 SE 写回文件。
     if (!BDSRandomModeWasRun(merged, @"basic")) {
         for (NSString *key in @[@"enabled", @"spoofProcessHardware", @"spoofStorage",
@@ -1562,6 +1573,18 @@ static NSDictionary *tg_rewrite_talos(NSDictionary *orig) {
     BOOL rewriteScreen = tg_screen_enabled();
     if (!rewriteSystem && !rewriteModel && !rewriteUA && !rewriteScreen) return orig;
     NSMutableDictionary *m = [orig mutableCopy];
+    // 诊断：userAgent 这个键到底在不在、是不是字符串。
+    // 若不在（或被包装成别的类型），两个 UA 分支都会静默跳过 —— 这正是要排除的。
+    {
+        id probeUA = m[@"userAgent"];
+        tg_ua_debug_set(@"0. userAgent 键",
+                        probeUA ? [NSString stringWithFormat:@"%@ (%@)", NSStringFromClass([probeUA class]),
+                                   [probeUA isKindOfClass:NSString.class] ? @"是字符串" : @"不是字符串"]
+                                 : @"(键不存在)");
+        tg_ua_debug_set(@"0. 本次原字典的键",
+                        [[[orig allKeys] sortedArrayUsingSelector:@selector(compare:)]
+                         componentsJoinedByString:@", "]);
+    }
     if (rewriteSystem) {
         tg_set_if_key(m, @"osVersion", tg_ios_version());
     }
@@ -4218,7 +4241,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-10";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-11";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -4372,7 +4395,7 @@ static NSString *BDSConfigSummary(void) {
     if (g_lastBasicSystem) {
         [values addEntriesFromDictionary:BDSBaiduSystemSyncValues(g_lastBasicSystem)];
     }
-    values[@"configVersion"] = @188;
+    values[@"configVersion"] = @189;
     BOOL saved = saveConfigValues(values);
     if (!saved) {
         [self presentMessage:@"配置文件写入失败，基础参数没有更换。" title:@"保存失败"];
@@ -4510,7 +4533,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
 - (void)randomizeAdvancedProfile {
     NSMutableDictionary *values = [BDSRandomIdentityValues() mutableCopy];
     // 与卍解一键高级语义一致：只更换五项身份值，不动开关。
-    values[@"configVersion"] = @188;
+    values[@"configVersion"] = @189;
     BOOL saved = saveConfigValues(values);
     if (!saved) {
         [self presentMessage:@"配置文件写入失败，高级参数没有更换。" title:@"保存失败"];
