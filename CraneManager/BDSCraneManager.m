@@ -312,7 +312,9 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
         NSArray *disks = device[@"disks"];
         if (![disks isKindOfClass:NSArray.class] || !disks.count) return nil;
         NSNumber *disk = disks[arc4random_uniform((uint32_t)disks.count)];
-        NSString *deviceName = [NSString stringWithFormat:@"iPhone-%@", [BDSRandomHex(6, YES) uppercaseString]];
+        // 设备名按真人习惯随机，规则与卐解 BDSRandomDeviceName 一致。
+        // 原来用 "iPhone-" + 6 位十六进制，是明显的程序生成特征。
+        NSString *deviceName = BDSRandomDeviceName();
         [config addEntriesFromDictionary:@{
             @"deviceProfileName": device[@"name"],
             @"deviceModel": @"iPhone",
@@ -337,6 +339,8 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
         // WiFi SSID 一起随机，规则与卐解一致：配一个常见名字，
         // 让 CNCopyCurrentNetworkInfo 钩子返回伪造值而不是 NULL。
         config[@"wifiSSID"] = BDSRandomCommonSSID();
+        // 本地 IP 伪造一个常见内网地址（“查不到本地 IP”比“查到 192.168.x.x”更可疑）
+        config[@"localIP"] = BDSRandomLanIP();
         NSArray<NSArray<NSDictionary *> *> *groups = BDSSettingGroups();
         for (NSString *key in BDSFirstEnabledKeys(groups[0], 6)) config[key] = @YES;
         for (NSString *key in BDSFirstEnabledKeys(groups[1], 3)) config[key] = @YES;
@@ -608,7 +612,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"卍解 1.0.2 9.30-16";
+    self.title = @"卍解 1.0.2 9.30-17";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];

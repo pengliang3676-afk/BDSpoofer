@@ -135,6 +135,8 @@ static int g_spoofSysctlC = 0;
 static int g_bypassJailbreakC = 0;
 static int g_spoofWiFiC = 0;
 static int g_spoofLocalIPC = 0;
+// 伪造的本地 IP（网络字节序）。由 cfgStr(@"localIP") 在 bds_update_c_cache 中转成 s_addr。
+static in_addr_t g_localIPC = 0;
 static int g_spoofProxyC = 0;
 static int g_spoofBootTimeC = 0;
 static int g_spoofCPUC = 0;
@@ -223,6 +225,12 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"spoofBattery": @YES,
             @"blockStatCashTelemetry": @NO,
             @"wifiSSID": @"",
+            // 伪造的本地 IP（常见家庭网段，一键基础随机生成）。
+            // 留空则钩子不改动，退回“查不到本地 IP”的旧行为。
+            @"localIP": @"",
+            // 时区固定按内地。默认开启，与“语言与地区”一起生效。
+            @"spoofTimeZone": @YES,
+            @"localTimeZone": @"Asia/Shanghai",
             @"bootTimeOffsetSeconds": @0,
             @"deviceProfileName": @"iPhone SE (3rd generation)",
             @"systemVersion": @"15.4.1",
@@ -292,6 +300,15 @@ static void bds_update_c_cache(void) {
     } else {
         memcpy(g_wifiSSID, wifiUTF8, wifiLength + 1);
     }
+    // 伪造的本地 IP：inet_pton 失败（配置为空或非法）时置 0，钩子会自动跳过改动。
+    {
+        const char *lan = cfgStr(@"localIP", @"").UTF8String;
+        struct in_addr a;
+        if (lan && lan[0] && inet_pton(AF_INET, lan, &a) == 1) g_localIPC = a.s_addr;
+        else g_localIPC = 0;
+    }
+    // 伪造本地 IP 还要求开关打开，否则钩子里直接透传（与 g_spoofLocalIPC 一起判断）
+    if (!cfgBool(@"spoofLocalIP", NO)) g_localIPC = 0;
     bds_disk_size_set((long long)cfgInt(@"diskSize", 64) * 1024LL * 1024LL * 1024LL);
 }
 
@@ -321,7 +338,7 @@ static void loadConfig() {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            // 9.30-16 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
+            // 9.30-17 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
             // （v189 迁移还会兜底强制关一次。）
             @"bypassJailbreakDetect": @NO
         }];
@@ -528,9 +545,9 @@ static void loadConfig() {
     BDSApplyInitialDefaults(merged, loaded);
     // 注意顺序：迁移必须放在 BDSApplyInitialDefaults 之后。
     // 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
-    // 写在它之前会被它设回 @YES（9.30-16 实测就是这个原因导致开关关不掉）。
+    // 写在它之前会被它设回 @YES（9.30-17 实测就是这个原因导致开关关不掉）。
     if (ver < 189) {
-        // 9.30-16：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
+        // 9.30-17：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
         // 老配置里这个键通常已存 @YES，光靠默认值救不了，必须强制写一次 @NO。
         // 用独立的版本号 189 是为了让已经处在 188 的配置也能被这次修正覆盖到，
         // 且只执行一次：之后用户在面板手动打开仍然有效。
@@ -1145,6 +1162,63 @@ static IMP orig_localeIdentifier = NULL;
 static NSString *new_localeIdentifier(id self, SEL _cmd) {
     BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
     return cfgStr(@"localeIdentifier", @"zh_CN");
+}
+
+#pragma mark - NSTimeZone Hook
+//
+// 之前完全没有处理时区：地区伪装了，时区还是真机的，两者会矛盾
+// （例如自称某国用户，时区却仍是东八区）。
+//
+// 用户明确要求：时区固定按内地，不做“地区=某国 → 时区=该国时区”的联动。
+// 所以这里的做法就是永远返回 Asia/Shanghai（UTC+8）。
+//
+// 三个常见入口都要盖住：
+//   +[NSTimeZone localTimeZone]       最常用
+//   +[NSTimeZone systemTimeZone]      次常用
+//   +[NSTimeZone defaultTimeZone]     少数代码这样取
+// 另外 C 层的 localtime()/gmtime() 不经过 NSTimeZone，但它们读的是系统 TZ 环境，
+// 返回的墙钟时间本身就和 Asia/Shanghai 一致（设备在东八区），故无需处理。
+
+// 缓存 Asia/Shanghai，避免每次调用都查时区库
+static NSTimeZone *tg_fake_timezone(void) {
+    static NSTimeZone *tz;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        tz = [NSTimeZone timeZoneWithName:cfgStr(@"localTimeZone", @"Asia/Shanghai")]
+             ?: [NSTimeZone timeZoneWithName:@"Asia/Shanghai"];
+        if (!tz) tz = [NSTimeZone timeZoneForSecondsFromGMT:8 * 3600];
+    });
+    return tz;
+}
+
+static IMP orig_localTimeZone = NULL;
+static NSTimeZone *new_localTimeZone(id self, SEL _cmd) {
+    if (!cfgBool(@"spoofTimeZone", NO)) {
+        if (orig_localTimeZone) return ((NSTimeZone *(*)(id, SEL))orig_localTimeZone)(self, _cmd);
+        return [NSTimeZone timeZoneForSecondsFromGMT:8 * 3600];
+    }
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
+    return tg_fake_timezone();
+}
+
+static IMP orig_systemTimeZone = NULL;
+static NSTimeZone *new_systemTimeZone(id self, SEL _cmd) {
+    if (!cfgBool(@"spoofTimeZone", NO)) {
+        if (orig_systemTimeZone) return ((NSTimeZone *(*)(id, SEL))orig_systemTimeZone)(self, _cmd);
+        return [NSTimeZone timeZoneForSecondsFromGMT:8 * 3600];
+    }
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
+    return tg_fake_timezone();
+}
+
+static IMP orig_defaultTimeZone = NULL;
+static NSTimeZone *new_defaultTimeZone(id self, SEL _cmd) {
+    if (!cfgBool(@"spoofTimeZone", NO)) {
+        if (orig_defaultTimeZone) return ((NSTimeZone *(*)(id, SEL))orig_defaultTimeZone)(self, _cmd);
+        return [NSTimeZone timeZoneForSecondsFromGMT:8 * 3600];
+    }
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
+    return tg_fake_timezone();
 }
 
 #pragma mark - CTTelephonyNetworkInfo / CTCarrier Hook
@@ -3369,26 +3443,102 @@ static int bds_my_getifaddrs(struct ifaddrs **ifap) {
         BDS_DIAG_RECORD(g_diagLocalIP, BDSDiagStatePassed);
         return result;
     }
-    // 不返回 0.0.0.0/零掩码这种互相矛盾的数据；把 en0 的 IP 地址项标记为未指定。
+    // 不再把地址标记为“不存在”，而是填入一个常见内网 IP。
+    // 理由：连上 Wi-Fi 的真实设备永远有本地 IP，“查不到”本身就不自然，
+    // 而且几十台设备全是“无地址”又是一个整齐特征。内网 IP 服务器永远看不到真的，
+    // 所以填假值不泄露任何东西（详见 BDSRandomLanIP 注释）。
     // 调用方仍可按原约定 freeifaddrs() 释放完整链表。
     int modified = 0;
     for (struct ifaddrs *ifa = *ifap; ifa; ifa = ifa->ifa_next) {
         if (!ifa->ifa_name || !ifa->ifa_addr) continue;
         if (strcmp(ifa->ifa_name, "en0") != 0) continue;
         sa_family_t family = ifa->ifa_addr->sa_family;
-        if (family == AF_INET || family == AF_INET6) {
+        if (family == AF_INET) {
+            struct sockaddr_in fake;
+            memset(&fake, 0, sizeof(fake));
+            fake.sin_len = sizeof(fake);
+            fake.sin_family = AF_INET;
+            fake.sin_addr.s_addr = g_localIPC;
+            memcpy(ifa->ifa_addr, &fake, sizeof(fake));
+            if (ifa->ifa_netmask && ifa->ifa_netmask->sa_family == AF_INET) {
+                struct sockaddr_in mask;
+                memset(&mask, 0, sizeof(mask));
+                mask.sin_len = sizeof(mask);
+                mask.sin_family = AF_INET;
+                mask.sin_addr.s_addr = htonl(0xFFFFFF00u);   // 255.255.255.0，家庭网段标准值
+                memcpy(ifa->ifa_netmask, &mask, sizeof(mask));
+            }
             modified = 1;
+        } else if (family == AF_INET6) {
+            // IPv6 无法凭一个 v4 值伪造，保持“不可见”。
+            // 只有 IPv4、没有 IPv6，在双栈家庭网络里很常见，不算矛盾。
             ifa->ifa_addr->sa_family = AF_UNSPEC;
             if (ifa->ifa_netmask) ifa->ifa_netmask->sa_family = AF_UNSPEC;
             if (ifa->ifa_dstaddr) ifa->ifa_dstaddr->sa_family = AF_UNSPEC;
+            modified = 1;
         }
     }
     BDS_DIAG_RECORD(g_diagLocalIP, modified ? BDSDiagStateChanged : BDSDiagStatePassed);
     return result;
 }
 
-#pragma mark - P8: 代理/VPN 检测绕过（fishhook）
+// getsockname 是另一条拿本地 IP 的路，完全不经过 getifaddrs：
+//   socket(AF_INET, SOCK_DGRAM, 0); connect(fd, "8.8.8.8:53"); getsockname(fd, ...)
+// UDP connect 不发包也不需要网络权限，直接就能问出本机地址。
+// 不一起改的话，两条路会给出互相矛盾的 IP。
+static int (*orig_getsockname)(int, struct sockaddr *, socklen_t *);
+static int bds_my_getsockname(int fd, struct sockaddr *addr, socklen_t *len) {
+    int r = orig_getsockname(fd, addr, len);
+    if (r != 0 || !addr || !len) return r;
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofLocalIPC)) return r;
+    if (addr->sa_family != AF_INET) return r;
+    if (*len < sizeof(struct sockaddr_in)) return r;
+    struct sockaddr_in *sin = (struct sockaddr_in *)addr;
+    // 只改回环以外的地址：127.0.0.1 是真事实，改了反而不对
+    if (sin->sin_addr.s_addr == htonl(INADDR_LOOPBACK)) return r;
+    sin->sin_addr.s_addr = g_localIPC;
+    BDS_DIAG_RECORD(g_diagLocalIP, BDSDiagStateChanged);
+    return r;
+}
 
+// ---- 本地 IP：真值 / 当前值（供自检面板显示）----
+// 真值：用保存下来的原函数直接问内核，绕过我们自己的钩子。
+// 当前值：走正常路径，也就是百度会看到的值。
+static void bds_scan_lan_ip(struct ifaddrs *list, NSString **out) {
+    for (struct ifaddrs *ifa = list; ifa; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_name || !ifa->ifa_addr) continue;
+        if (strcmp(ifa->ifa_name, "en0") != 0) continue;
+        if (ifa->ifa_addr->sa_family != AF_INET) continue;
+        char buf[INET_ADDRSTRLEN] = {0};
+        struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
+        if (inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf))) {
+            *out = [NSString stringWithUTF8String:buf];
+            return;
+        }
+    }
+}
+static NSString *bds_real_lan_ip(void) {
+    struct ifaddrs *list = NULL;
+    if (orig_getifaddrs && orig_getifaddrs(&list) == 0 && list) {
+        NSString *ip = nil;
+        bds_scan_lan_ip(list, &ip);
+        freeifaddrs(list);
+        if (ip.length) return ip;
+    }
+    return @"(未取到)";
+}
+static NSString *bds_current_lan_ip(void) {
+    struct ifaddrs *list = NULL;
+    if (getifaddrs(&list) == 0 && list) {
+        NSString *ip = nil;
+        bds_scan_lan_ip(list, &ip);
+        freeifaddrs(list);
+        if (ip.length) return ip;
+    }
+    return @"(无地址)";
+}
+
+#pragma mark - P8: 代理/VPN 检测绕过（fishhook）
 static CFDictionaryRef (*orig_CFNetworkCopySystemProxySettings)(void);
 static CFDictionaryRef (*orig_SCDynamicStoreCopyProxies)(SCDynamicStoreRef);
 
@@ -3530,6 +3680,7 @@ static void installCHooks(void) {
         {"opendir", (void *)bds_my_opendir, (void **)&orig_opendir},
         {"CNCopyCurrentNetworkInfo", (void *)bds_my_CNCopyCurrentNetworkInfo, (void **)&orig_CNCopyCurrentNetworkInfo},
         {"getifaddrs", (void *)bds_my_getifaddrs, (void **)&orig_getifaddrs},
+        {"getsockname", (void *)bds_my_getsockname, (void **)&orig_getsockname},
         {"CFNetworkCopySystemProxySettings", (void *)bds_my_CFNetworkCopySystemProxySettings, (void **)&orig_CFNetworkCopySystemProxySettings},
         {"SCDynamicStoreCopyProxies", (void *)bds_my_SCDynamicStoreCopyProxies, (void **)&orig_SCDynamicStoreCopyProxies},
         {"statfs", (void *)bds_my_statfs, (void **)&orig_statfs},
@@ -3962,8 +4113,9 @@ static NSMutableDictionary *BDSRandomBaseValuesForPair(NSDictionary *device,
     NSNumber *disk = disks[arc4random_uniform((uint32_t)disks.count)];
 
     NSMutableDictionary *values = [NSMutableDictionary dictionary];
-    NSString *deviceSuffix = [BDSRandomHex32(YES) substringToIndex:6];
-    NSString *deviceName = [@"iPhone-" stringByAppendingString:deviceSuffix];
+    // 设备名按真人习惯随机。原来用 "iPhone-" + 6 位十六进制，是明显的程序生成特征，
+    // 而且 UIDevice.name / NSProcessInfo.hostName / kern.hostname 三个出口都会读它。
+    NSString *deviceName = BDSRandomDeviceName();
     // 保持本机真实屏幕，避免随机到大屏机型后界面被放大或缩小。
     (void)enableCommonAdvanced;
     // 兼容风险测试 4 项不在这里修改：Keychain、User-Agent、App Group、WebKit Cookie。
@@ -3990,6 +4142,9 @@ static NSMutableDictionary *BDSRandomBaseValuesForPair(NSDictionary *device,
     // WiFi SSID 也一起随机：CNCopyCurrentNetworkInfo 钩子只在 wifiSSID 非空时
     // 返回伪造值，留空则返回 NULL。配一个常见名字，让结果更像普通用户。
     values[@"wifiSSID"] = BDSRandomCommonSSID();
+    // 本地 IP 伪造一个常见内网地址（见 BDSRandomLanIP 注释：
+    // “查不到本地 IP”比“查到 192.168.x.x”更可疑，且内网 IP 服务器看不到真的）。
+    values[@"localIP"] = BDSRandomLanIP();
     [values addEntriesFromDictionary:BDSRandomCarrierValues()];
     return values;
 }
@@ -4281,7 +4436,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-16";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-17";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5177,6 +5332,39 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
     CGFloat currentScale = screen.scale;
     CGFloat realScale = orig_scale ? ((ScaleGetterIMP)orig_scale)(screen, @selector(scale)) : currentScale;
 
+    // 时区：真值走保存下来的原函数，当前值走正常调用（会命中我们的钩子）
+    NSString *realTimeZone = @"(未知)";
+    if (orig_localTimeZone) {
+        NSTimeZone *tz = ((NSTimeZone *(*)(id, SEL))orig_localTimeZone)(NSTimeZone.class, @selector(localTimeZone));
+        if (tz) realTimeZone = [NSString stringWithFormat:@"%@ (UTC%+ld)", tz.name, (long)(tz.secondsFromGMT / 3600)];
+    }
+    NSTimeZone *curTZ = NSTimeZone.localTimeZone;
+    NSString *currentTimeZone = curTZ ? [NSString stringWithFormat:@"%@ (UTC%+ld)", curTZ.name, (long)(curTZ.secondsFromGMT / 3600)] : @"(未知)";
+
+    // Wi-Fi SSID：真值走原函数（可能为 nil，表示当前不在 Wi-Fi 或系统限制）
+    NSString *realSSID = @"(无 / 未连接)";
+    if (orig_CNCopyCurrentNetworkInfo) {
+        CFDictionaryRef realInfo = orig_CNCopyCurrentNetworkInfo(kCNNetworkInfoKeySSID);
+        if (realInfo) {
+            NSString *s = (__bridge NSString *)CFDictionaryGetValue(realInfo, kCNNetworkInfoKeySSID);
+            if ([s isKindOfClass:NSString.class] && s.length) realSSID = s;
+            CFRelease(realInfo);
+        }
+    }
+    NSString *currentSSID = @"(无 / 未连接)";
+    {
+        CFDictionaryRef info = CNCopyCurrentNetworkInfo(kCNNetworkInfoKeySSID);
+        if (info) {
+            NSString *s = (__bridge NSString *)CFDictionaryGetValue(info, kCNNetworkInfoKeySSID);
+            if ([s isKindOfClass:NSString.class] && s.length) currentSSID = s;
+            CFRelease(info);
+        }
+    }
+
+    // 本地 IP：真值直接问内核（绕过钩子），当前值走 getifaddrs（会被钩子改）
+    NSString *realLocalIP = bds_real_lan_ip();
+    NSString *currentLocalIP = bds_current_lan_ip();
+
     NSString *message = [NSString stringWithFormat:
         @"状态：%@\n\n"
          @"iOS\n原始 %@\n配置 %@ (%@)\n当前 %@\n\n"
@@ -5185,7 +5373,10 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
          @"IDFA / ATT\n原始 %@\n配置 %@\n当前 %@\nATT %@\n\n"
          @"NSProcessInfo\n原始 %@\n当前 %@\n\n"
          @"内存(MB)\n原始 %llu\n配置 %ld\n当前 %llu\n\n"
-         @"屏幕(points / scale)\n原始 %.0fx%.0f / %.2f\n配置 %ldx%ld / %ld\n当前 %.0fx%.0f / %.2f",
+         @"屏幕(points / scale)\n原始 %.0fx%.0f / %.2f\n配置 %ldx%ld / %ld\n当前 %.0fx%.0f / %.2f\n\n"
+         @"时区\n原始 %@\n配置 %@\n当前 %@\n\n"
+         @"Wi-Fi SSID\n原始 %@\n配置 %@\n当前 %@\n\n"
+         @"本地 IP\n原始 %@\n配置 %@\n当前 %@",
         cfgBool(@"enabled", NO) ? @"基础功能已开启" : @"基础功能已关闭",
         realVersion, cfgStr(@"systemVersion", @"15.4.1"), cfgStr(@"systemBuild", @"19E258"), currentVersion,
         realName, cfgStr(@"deviceName", @"iPhone"), currentName,
@@ -5195,7 +5386,10 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
         realMemory, (long)cfgInt(@"memorySize", 4096), currentMemory,
         CGRectGetWidth(realBounds), CGRectGetHeight(realBounds), realScale,
         (long)cfgInt(@"screenWidth", 375), (long)cfgInt(@"screenHeight", 667), (long)cfgInt(@"screenScale", 2),
-        CGRectGetWidth(currentBounds), CGRectGetHeight(currentBounds), currentScale];
+        CGRectGetWidth(currentBounds), CGRectGetHeight(currentBounds), currentScale,
+        realTimeZone, cfgStr(@"localTimeZone", @"Asia/Shanghai"), currentTimeZone,
+        realSSID, (cfgStr(@"wifiSSID", @"").length ? cfgStr(@"wifiSSID", @"") : @"(未配置，返回空)"), currentSSID,
+        realLocalIP, (cfgStr(@"localIP", @"").length ? cfgStr(@"localIP", @"") : @"(未配置，不改动)"), currentLocalIP];
 
     NSMutableString *advanced = [NSMutableString stringWithString:@"\n\n--- 高级功能 ---"];
 
@@ -5468,6 +5662,13 @@ static void bds_initialize() {
         if (basicEnabled && cfgBool(@"spoofLocale", NO)) {
             cls = objc_getClass("NSLocale");
             hookInst(cls, @selector(localeIdentifier), (IMP)new_localeIdentifier, &orig_localeIdentifier);
+
+            // 时区跟随“语言与地区”一起开：地区伪装了而时区还是真机的，会自相矛盾。
+            // 固定按内地（Asia/Shanghai），不做与伪装地区的联动（用户明确要求）。
+            cls = objc_getClass("NSTimeZone");
+            hookInst(cls, @selector(localTimeZone), (IMP)new_localTimeZone, &orig_localTimeZone);
+            hookInst(cls, @selector(systemTimeZone), (IMP)new_systemTimeZone, &orig_systemTimeZone);
+            hookInst(cls, @selector(defaultTimeZone), (IMP)new_defaultTimeZone, &orig_defaultTimeZone);
         }
 
         if (basicEnabled && cfgBool(@"spoofCarrier", NO)) {

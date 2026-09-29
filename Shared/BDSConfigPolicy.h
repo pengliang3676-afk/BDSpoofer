@@ -197,3 +197,125 @@ static NSString *BDSRandomCommonSSID(void) {
     NSArray *fixed = BDSCommonSSIDPool();
     return fixed[arc4random_uniform((uint32_t)fixed.count)];
 }
+
+// ---- 随机内网 IP（一键基础时自动配一个）----
+//
+// 为什么需要：原来本地 IP 的处理是把 en0 的地址标记成 AF_UNSPEC，也就是“查不到”。
+// 但一台连上 Wi-Fi 的真实设备永远有本地 IP —— “查不到”比“查到 192.168.x.x”更可疑，
+// 而且几十台设备全是“无地址”又是一个整齐特征。
+//
+// 内网 IP 的特点：它只在本机路由器内部有效，服务器永远看不到真的，
+// 所以填一个假的不会泄露任何东西，只是让设备画像更自然。
+//
+// 网段按真实家庭/办公环境的常见占比加权，主机号 2~200 随机（DHCP 分配本来就是乱的）。
+// 注意：绝不使用公网 IP —— App 上报的 IP 若和服务器看到的真实出口 IP 不同，
+// 等于在同一请求里出现两个矛盾的公网 IP，是最硬的“上报假数据”证据。
+static NSString *BDSRandomLanIP(void) {
+    // {网段前缀, 权重}
+    NSArray *segments = @[@[@"192.168.1.", @40], @[@"192.168.0.", @15],
+                          @[@"192.168.31.", @10], @[@"192.168.2.", @8],
+                          @[@"10.0.0.", @8], @[@"192.168.3.", @5],
+                          @[@"192.168.123.", @4], @[@"192.168.50.", @4],
+                          @[@"10.0.1.", @3], @[@"172.20.10.", @3]];
+    NSUInteger total = 0;
+    for (NSArray *s in segments) total += [s[1] unsignedIntegerValue];
+    NSUInteger pick = arc4random_uniform((uint32_t)total);
+    NSString *prefix = segments.lastObject[0];
+    NSUInteger acc = 0;
+    for (NSArray *s in segments) {
+        acc += [s[1] unsignedIntegerValue];
+        if (pick < acc) { prefix = s[0]; break; }
+    }
+    return [prefix stringByAppendingFormat:@"%u", 2 + arc4random_uniform(199)];
+}
+
+// ---- 随机设备名（一键基础时自动配一个）----
+//
+// 为什么需要：原来是 "iPhone-" + 6 位十六进制（如 iPhone-CB1E42）。
+// 这个格式真人不会用 —— 连字符加随机码是明显的程序生成特征；
+// 而且多台设备全用同一模板，“整齐”本身就是关联信号。
+//
+// 三个出口都会读它：UIDevice.name / NSProcessInfo.hostName / kern.hostname，
+// 所以必须像真人命名。按中文 iOS 用户的真实习惯分五类加权：
+//   名字 + 的iPhone（最多）/ 名字 + 的iPhone 型号 / 家庭称呼 / 网名外号 / 英文名 / 纯型号
+// 组合空间约万级，70 台设备偶有重名也正常（真人本来就会重名）。
+// 长度全部远小于 32 字符上限。
+static NSString *BDSRandomDeviceName(void) {
+    static NSArray<NSString *> *surnames;
+    static NSArray<NSString *> *givens;
+    static NSArray<NSString *> *nicknames;
+    static NSArray<NSString *> *family;
+    static NSArray<NSString *> *english;
+    static NSArray<NSString *> *models;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        surnames = @[@"王", @"李", @"张", @"刘", @"陈", @"杨", @"黄", @"赵", @"吴", @"周",
+                     @"徐", @"孙", @"马", @"朱", @"胡", @"郭", @"何", @"林", @"高", @"罗",
+                     @"郑", @"梁", @"谢", @"宋", @"唐", @"许", @"韩", @"冯", @"邓", @"曹",
+                     @"彭", @"曾", @"肖", @"田", @"董", @"袁", @"潘", @"蒋", @"蔡", @"余",
+                     @"杜", @"叶", @"程", @"苏", @"魏", @"吕", @"丁", @"任", @"沈", @"姚",
+                     @"卢", @"姜", @"崔", @"钟", @"谭", @"陆", @"汪", @"范", @"金", @"石",
+                     @"廖", @"贾", @"夏", @"韦", @"方", @"白", @"邹", @"孟", @"熊", @"秦",
+                     @"邱", @"江", @"尹", @"薛", @"段", @"雷", @"侯", @"龙", @"史", @"陶"];
+        givens = @[@"伟", @"芳", @"娜", @"敏", @"静", @"丽", @"强", @"磊", @"军", @"洋",
+                   @"勇", @"艳", @"杰", @"娟", @"涛", @"明", @"超", @"霞", @"平", @"刚",
+                   @"英", @"华", @"玉", @"兰", @"春", @"梅", @"文", @"辉", @"力", @"建",
+                   @"波", @"斌", @"宇", @"浩", @"鑫", @"帆", @"琳", @"佳", @"婷", @"雪",
+                   @"鹏", @"亮", @"飞", @"龙", @"凯", @"峰", @"阳", @"晨", @"曦", @"涵",
+                   @"怡", @"欣", @"悦", @"昊", @"睿", @"哲", @"楠", @"倩", @"颖", @"洁",
+                   @"子涵", @"雨欣", @"梓萱", @"一诺", @"浩然", @"子轩", @"沐辰", @"思远",
+                   @"若曦", @"语嫣", @"俊杰", @"家豪", @"雅静", @"梦琪", @"婉婷", @"志强",
+                   @"建军", @"建华", @"秀英", @"桂英", @"玉梅", @"淑珍", @"秀兰", @"国强",
+                   @"晓明", @"晓东", @"小燕", @"小红", @"丹丹", @"莉莉", @"媛媛", @"涛涛"];
+        nicknames = @[@"团子", @"土豆", @"大熊", @"喵喵", @"果果", @"大宝", @"小可爱",
+                      @"蜜桃", @"布丁", @"崽崽", @"二狗", @"三胖", @"阿杰", @"小胖",
+                      @"奶茶", @"豆豆", @"球球", @"小七", @"元宝", @"汤圆"];
+        family = @[@"老爸", @"老妈", @"老婆", @"老公", @"闺女", @"儿子", @"弟弟", @"妹妹",
+                   @"爷爷", @"奶奶", @"姥姥", @"姥爷", @"姐姐", @"哥哥", @"老爸的",
+                   @"老妈的"];
+        english = @[@"David", @"Amy", @"Kevin", @"Lily", @"Tom", @"Jack", @"Lucy",
+                    @"Sunny", @"Jason", @"Cindy", @"Peter", @"Alice"];
+        models = @[@"iPhone", @"iPhone 13", @"iPhone 14", @"iPhone 15", @"iPhone 16",
+                   @"iPhone 17"];
+    });
+
+    NSUInteger kind = arc4random_uniform(100);
+    // 0-44   姓 + 名 + 的iPhone
+    // 45-59  老X / 小X / 阿X + 的iPhone 型号
+    // 60-74  家庭称呼 + 的iPhone
+    // 75-87  网名 / 外号
+    // 88-95  英文名
+    // 96-99  纯型号
+    if (kind < 45) {
+        NSString *who = [surnames[arc4random_uniform((uint32_t)surnames.count)]
+                         stringByAppendingString:givens[arc4random_uniform((uint32_t)givens.count)]];
+        return [who stringByAppendingString:@"的iPhone"];
+    }
+    if (kind < 60) {
+        // 口语叫法：老张、小李、阿杰
+        NSUInteger r = arc4random_uniform(3);
+        NSString *who;
+        if (r == 0) who = [@"老" stringByAppendingString:surnames[arc4random_uniform((uint32_t)surnames.count)]];
+        else if (r == 1) who = [@"小" stringByAppendingString:surnames[arc4random_uniform((uint32_t)surnames.count)]];
+        else who = [@"阿" stringByAppendingString:givens[arc4random_uniform((uint32_t)givens.count)]];
+        return [who stringByAppendingFormat:@"的%@", models[arc4random_uniform((uint32_t)models.count)]];
+    }
+    // 家庭称呼 + 的iPhone（family 里带“的”的项直接接 iPhone）
+    if (kind < 75) {
+        NSString *f = family[arc4random_uniform((uint32_t)family.count)];
+        return [f hasSuffix:@"的"] ? [f stringByAppendingString:@"iPhone"]
+                                   : [f stringByAppendingString:@"的iPhone"];
+    }
+    // 网名 / 外号
+    if (kind < 88) {
+        NSString *n = nicknames[arc4random_uniform((uint32_t)nicknames.count)];
+        return arc4random_uniform(2) ? [n stringByAppendingString:@"的iPhone"] : n;
+    }
+    // 英文名
+    if (kind < 96) {
+        NSString *e = english[arc4random_uniform((uint32_t)english.count)];
+        return arc4random_uniform(2) ? [e stringByAppendingString:@"的iPhone"] : e;
+    }
+    // 纯型号
+    return models[arc4random_uniform((uint32_t)models.count)];
+}
