@@ -19,7 +19,7 @@
 extern void _dyld_register_func_for_add_image(void (*func)(const struct mach_header *mh, intptr_t vmaddr_slide));
 
 static NSString * const BSPBundleID = @"com.baidu.BaiduMobileInfo";
-static NSString * const BSPVersion  = @"1.0";
+static NSString * const BSPVersion  = @"1.1";
 
 // ---------- 记录区 ----------
 
@@ -192,6 +192,37 @@ static NSString *BSPReport(void) {
     [out appendFormat:@"UIScreen.scale=%.2f\n", UIScreen.mainScreen.scale];
     [out appendFormat:@"UIDevice.systemVersion=%@\n", UIDevice.currentDevice.systemVersion];
     [out appendFormat:@"UIDevice.model=%@\n", UIDevice.currentDevice.model];
+
+    // 直接读配置文件：确认开关到底有没有被写进去。
+    // 之前排查 UA 不生效时只能靠猜“插件有没有接管”，这一步把它变成事实。
+    [out appendString:@"\n--- 配置文件开关（决定插件会不会接管）---\n"];
+    NSString *docsDir = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *cfgPath = [docsDir stringByAppendingPathComponent:@"bdspoofer_config.plist"];
+    [out appendFormat:@"configPath=%@\n", cfgPath];
+    NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:cfgPath];
+    if (![cfg isKindOfClass:NSDictionary.class]) {
+        [out appendString:@"(读不到配置文件)\n"];
+    } else {
+        [out appendFormat:@"configVersion=%@\n", cfg[@"configVersion"] ?: @"(缺)"];
+        NSArray<NSString *> *keys = @[
+            @"enabled",
+            @"spoofBaiduSDK", @"spoofSysctl", @"bypassJailbreakDetect",
+            @"spoofKeychain", @"spoofAppGroup", @"spoofWebKitCookie", @"spoofUserAgent",
+            @"spoofBaiduTargeted",
+            @"spoofBaiduTargetedSystem", @"spoofBaiduTargetedModel",
+            @"spoofBaiduTargetedScreen", @"spoofBaiduTargetedUA", @"spoofBaiduTargetedPush",
+            @"spoofScreen",
+            @"targetedSystemVersion", @"targetedUASystemVersion",
+            @"targetedScreenWidth", @"targetedScreenHeight", @"targetedScreenScale",
+            @"systemVersion", @"hwMachine", @"deviceProfileName",
+        ];
+        for (NSString *k in keys) {
+            id v = cfg[k];
+            [out appendFormat:@"  %-26s = %@\n", k.UTF8String,
+                              v ? [v description] : @"(键不存在)"];
+        }
+        [out appendFormat:@"  配置文件键数 = %lu\n", (unsigned long)cfg.count];
+    }
 
     [out appendString:@"\n--- 钩子安装情况 ---\n"];
     for (NSString *k in [g_installed.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
