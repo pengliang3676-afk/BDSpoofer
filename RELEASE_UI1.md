@@ -1,5 +1,11 @@
 # 卐解 1.8.1 UI1.3 9.30-02 / 卍解 1.0.2 UI1.3 9.30-02
 
+## 9.30-05 修正 9.30-04 屏幕同步的写入顺序
+
+9.30-04 把屏幕同步写在了开关组循环**之前**。`spoofBaiduTargetedScreen` 在 `groups[1]` 里的索引是 6，落在 `i>=3` 那个写 `@NO` 的循环里——所以刚打开的开关紧接着就被重新写成了关闭，手机侧实测确认屏幕值没有被替换。
+
+现在两边都改为在**所有开关组循环之后**写入：巴解在 `BDSCreateConfigForDevice` 的循环之后，區解在 `randomizeBasicProfile` 的循环之后（抽中机型记在 `g_lastBasicDevice`）。校验脚本新增了这一项位置回归检查，以后不会再犯。
+
 ## 9.30-04 屏幕参数同步到百度侧出口
 
 一键基础现在把抽中机型的屏幕几何同步写入定向屏幕键（`targetedScreenWidth/Height/Scale`、`targetedNativeScreenWidth/Height`），并只打开 `spoofBaiduTargetedScreen` 这一个子开关。其余开关与定向项目一律不动。

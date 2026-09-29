@@ -314,15 +314,17 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
             @"bootTimeOffsetSeconds": @(86400 + arc4random_uniform(7 * 86400)),
         }];
         [config addEntriesFromDictionary:BDSRandomCarrier()];
-        // 屏幕参数同步到百度侧出口（只改 B 层，UIScreen 保持真机，界面不会错版）。
-        // 与卐解 BDSBaiduScreenSyncValues 同一规则；只打开定向屏幕这一个子开关。
-        [config addEntriesFromDictionary:BDSBaiduScreenSyncValues(device)];
         NSArray<NSArray<NSDictionary *> *> *groups = BDSSettingGroups();
         for (NSDictionary *item in groups[0]) config[item[@"key"]] = @YES;
         for (NSUInteger i = 0; i < 3 && i < groups[1].count; i++) config[groups[1][i][@"key"]] = @YES;
         for (NSUInteger i = 3; i < groups[1].count; i++) config[groups[1][i][@"key"]] = @NO;
         for (NSUInteger i = 0; i < 12 && i < groups[2].count; i++) config[groups[2][i][@"key"]] = @YES;
         for (NSUInteger i = 12; i < groups[2].count; i++) config[groups[2][i][@"key"]] = @NO;
+        // 屏幕参数同步到百度侧出口（只改 B 层，UIScreen 保持真机，界面不会错版）。
+        // 必须放在上面开关组循环之后：spoofBaiduTargetedScreen 落在 groups[1] 的
+        // i>=3 档，写在循环之前会被那个 @NO 循环覆盖掉。
+        // 规则与卐解 BDSBaiduScreenSyncValues 完全一致，只打开定向屏幕这一个子开关。
+        [config addEntriesFromDictionary:BDSBaiduScreenSyncValues(device)];
     } else {
 
         BDSMarkRandomModeRun(config, @"targeted");
@@ -575,7 +577,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"卍解 1.0.2 9.30-04";
+    self.title = @"卍解 1.0.2 9.30-05";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];

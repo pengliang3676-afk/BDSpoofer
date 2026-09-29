@@ -37,7 +37,7 @@ assert 'closeApp' not in manager and 'NSSelectorFromString(@"suspend")' not in m
 assert 'config[@"deviceProfileName"] ?: config[@"hwMachine"]' in manager
 assert 'config[@"targetedDeviceProfileName"] ?: config[@"targetedHwMachine"]' in manager
 assert 'NSString *currentSuffix = @"（当前）"' in manager and 'UIColor.systemRedColor' in manager
-assert 'page.title=@"卐解 1.8.1 UI1.3 9.30-04"' in plugin
+assert 'page.title=@"卐解 1.8.1 UI1.3 9.30-05"' in plugin
 assert 'didRandomize%@%@' in policy
 for text in ['BDSMarkRandomModeRun','BDSRandomModeWasRun','BDSConfigForPersistentStorage']:
     assert text in plugin+manager+policy,text
@@ -57,12 +57,12 @@ for text in ['h2tcbox.baidu.com','/ztbox','zpblog','10290','y_mission_index','c_
 assert 'BDSInstallCashTelemetryBlocking();' in plugin
 assert plugin.count('loadConfig();') >= 3
 assert '0.50' not in release and '触发风控' not in release
-assert 'BDSpoofer_1.8.1_UI1.3_9.30-04.dylib' in build and 'UI1.1.dylib' not in build
-assert 'BDSpooferCraneManager_1.0.2-ui1_9.30-04_RootHide.deb' in build
+assert 'BDSpoofer_1.8.1_UI1.3_9.30-05.dylib' in build and 'UI1.1.dylib' not in build
+assert 'BDSpooferCraneManager_1.0.2-ui1_9.30-05_RootHide.deb' in build
 assert 'BDSLoginDeviceDict' in plugin and 'ssologin' in plugin
 assert 'BDSPassEncryptedDi' in plugin and 'deviceInfoForLogin' in plugin
 assert 'BDSPassEnsureDVIF' in plugin and 'bds_my_uname' in plugin and '{"uname"' in plugin
-assert 'self.title = @"卍解 1.0.2 9.30-04"' in manager
+assert 'self.title = @"卍解 1.0.2 9.30-05"' in manager
 assert '[verified isEqualToDictionary:config]' in manager
 assert 'targetedScreenHwMachine' in plugin and 'targetedScreenHwMachine' in manager
 def function(text,name):
@@ -116,7 +116,7 @@ plugin_systems=re.findall(r'BDSSystem\(@"([^"]+)",\s*@"([^"]+)"\)',function(plug
 manager_systems=re.findall(r'BDSSystem\(@"([^"]+)",\s*@"([^"]+)"\)',function(manager,'BDSSystemProfiles'))
 assert plugin_systems==manager_systems and len(plugin_systems)>50
 base=subprocess.check_output(['git','show','b65d42ab33948455ef84e57d109d0dbede2a1b72:BDSpoofer.m'],cwd=root).decode('utf-8')
-# 9.30-04 起这些是“故意改动”的函数，因此不再做整函数基线比对：
+# 9.30-05 起这些是“故意改动”的函数，因此不再做整函数基线比对：
 #   bds_is_suspicious_dlopen_path（分量边界匹配 + /private/var/jb）
 #   bds_my_dlopen / bds_my_dlopen_preflight（去掉固定哨兵路径、orig 判空）
 #   bds_perform_rebinding_with_section（页对齐、orig 只捕获一次、symtab 边界）
@@ -131,20 +131,20 @@ for name in ['bds_my_stat','bds_my_lstat','bds_my_access','bds_my_fopen','bds_my
     assert strip_guards(plugin,name)==strip_guards(base,name),name
 for path in ['bdspoofer_config.plist','CraneManager/Info.plist','CraneManager/BDSCraneManager.entitlements','CraneManager/BDSCraneManager.libSandy.plist']:plistlib.loads((root/path).read_bytes())
 manager_info=plistlib.loads((root/'CraneManager/Info.plist').read_bytes())
-assert manager_info['CFBundleVersion']=='9.30.04' and manager_info['CFBundleShortVersionString']=='1.0.2-9.30.04'
+assert manager_info['CFBundleVersion']=='9.30.05' and manager_info['CFBundleShortVersionString']=='1.0.2-9.30.05'
 assert 'CPU iPhone OS ' in plugin and 'setCustomUserAgent:' in plugin
 assert 'if (hw.length && f.count > 3) f[3] = hw;' in plugin
 assert 'if (sv.length && f.count > 4) f[4] = sv;' in plugin
 assert 'if (f.count > 27)' in plugin and 'cfgStr(@"deviceModel", @"iPhone")' in plugin
 assert 'f[3].length' not in plugin and 'f[4].length' not in plugin
 assert 'UIApplicationExitsOnSuspend' not in manager_info
-# ---- 9.30-04：开关生效、X/M 语义一致、随机池、健壮性 ----
+# ---- 9.30-05：开关生效、X/M 语义一致、随机池、健壮性 ----
 # 金额阻断必须每次请求都读开关，否则“关掉开关仍在拦”。
 assert 'static BOOL (*BDSCashTelemetrySwitchProvider)(void)' in blocker
 assert 'if (!BDSCashTelemetrySwitchIsOn()) return NO;' in blocker
 assert 'static BOOL BDSCashTelemetrySwitchEnabled(void)' in plugin
 assert 'BDSCashTelemetrySwitchProvider = BDSCashTelemetrySwitchEnabled;' in plugin
-# 金额拦截只在开关打开时安装（9.30-04 起如此，与 9.28-03 一致）；
+# 金额拦截只在开关打开时安装（9.30-05 起如此，与 9.28-03 一致）；
 # 但判定入口必须每次请求读开关，否则“关掉开关仍在拦”。
 assert 'if (!BDSCashTelemetrySwitchIsOn()) return NO;' in blocker
 assert 'BDSCashTelemetrySwitchProvider = BDSCashTelemetrySwitchEnabled;' in plugin
@@ -179,11 +179,23 @@ assert 'if (!orig_dlopen) { errno = ENOENT; return NULL; }' in plugin
 assert 'orig_dlopen("/.bds_blocked_nonexistent"' not in plugin
 assert '[NSThread isMainThread]' in function(plugin,'bds_dyld_add_image_cb')
 assert 'g_bdsRebindFailures++' in plugin
-# ---- 9.30-04：屏幕参数同步到百度侧出口（只改 B 层，UIScreen 保持真机）----
+# ---- 9.30-05：屏幕参数同步到百度侧出口（只改 B 层，UIScreen 保持真机）----
 assert 'static NSDictionary *BDSBaiduScreenSyncValues(NSDictionary *device)' in plugin
 assert 'static NSDictionary *BDSBaiduScreenSyncValues(NSDictionary *device)' in manager
 # 插件侧：基础参数生成时同步
 assert 'BDSBaiduScreenSyncValues(device)' in function(plugin,'BDSRandomBaseValuesForPair')
+assert 'BDSBaiduScreenSyncValues(g_lastBasicDevice)' in function(plugin,'randomizeBasicProfile')
+# 关键回归：屏幕同步必须写在开关组循环之后。
+# spoofBaiduTargetedScreen 落在 groups[1] 的 i>=3 档，会被那个 @NO 循环覆盖，
+# 所以同步位置必须晚于最后一处 groups[1]/groups[2] 循环（9.30-05 首版就栽在这里）。
+def assert_screen_sync_after_switch_loops(text,name):
+    body=function(text,name)
+    stripped=re.sub(r'//[^\n]*|/\*[\s\S]*?\*/',lambda m:' '*len(m.group(0)),body)
+    last_loop=max(stripped.rfind('groups[1]'),stripped.rfind('groups[2]'))
+    sync=body.rfind('BDSBaiduScreenSyncValues')
+    assert last_loop>=0 and sync>last_loop, (name,last_loop,sync)
+assert_screen_sync_after_switch_loops(plugin,'randomizeBasicProfile')
+assert_screen_sync_after_switch_loops(manager,'BDSCreateConfigForDevice')
 # 卍解侧：一键基础时同步
 assert 'BDSBaiduScreenSyncValues(device)' in manager
 # 同步的必须是这几个键 + 只打开定向屏幕这一个子开关
@@ -199,4 +211,4 @@ sync=function(plugin,'BDSBaiduScreenSyncValues')
 for bad in ['spoofBaiduTargetedModel','spoofBaiduTargetedSystem','spoofBaiduTargetedUA',
             'spoofBaiduTargetedPush','spoofBaiduTargeted"']:
     assert bad not in sync, bad
-print('PASS UI1.3 9.30-04: v187, 21 on / 5 off, runtime switch honored by the cash blocker, X/M advanced-random parity, SE2 out of the random pool, boundary-matched dlopen paths, measured C-hook self-check, 9 baseline jailbreak functions unchanged')
+print('PASS UI1.3 9.30-05: v187, 21 on / 5 off, runtime switch honored by the cash blocker, X/M advanced-random parity, SE2 out of the random pool, boundary-matched dlopen paths, measured C-hook self-check, 9 baseline jailbreak functions unchanged')

@@ -3803,12 +3803,17 @@ static NSMutableDictionary *BDSRandomBaseValuesForPair(NSDictionary *device,
     return values;
 }
 
+// 最近一次一键基础抽中的机型。randomizeBasicProfile 在开关组循环之后
+// 需要它来补写屏幕参数（屏幕开关会被循环覆盖，只能放到最后写）。
+static NSDictionary *g_lastBasicDevice = nil;
+
 static NSDictionary *BDSRandomBasicProfileValues(void) {
     NSMutableArray<NSDictionary *> *allDevices = [BDSRandomEligibleProfiles() mutableCopy];
     NSString *current = cfgStr(@"hwMachine", @"");
     [allDevices filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *d, NSDictionary *bindings) { (void)bindings; return ![d[@"machine"] isEqual:current]; }]];
     if (!allDevices.count) return @{};
     NSDictionary *device = allDevices[arc4random_uniform((uint32_t)allDevices.count)];
+    g_lastBasicDevice = device;
     NSDictionary *system = BDSRandomSystemProfileForDevice(device);
     NSMutableDictionary *values = BDSRandomBaseValuesForPair(device, system, YES);
     if (!values.count) return @{};
@@ -4083,7 +4088,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-04";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-05";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -4223,6 +4228,11 @@ static NSString *BDSConfigSummary(void) {
     for (NSUInteger i = 3; i < groups[1].count; i++) values[groups[1][i][@"key"]] = @NO;
     for (NSUInteger i = 0; i < 12 && i < groups[2].count; i++) values[groups[2][i][@"key"]] = @YES;
     for (NSUInteger i = 12; i < groups[2].count; i++) values[groups[2][i][@"key"]] = @NO;
+    // 屏幕同步必须放在上面这些开关循环之后：spoofBaiduTargetedScreen 落在
+    // groups[1] 的 i>=3 档，写在循环之前会被那个 @NO 循环覆盖掉。
+    if (g_lastBasicDevice) {
+        [values addEntriesFromDictionary:BDSBaiduScreenSyncValues(g_lastBasicDevice)];
+    }
     values[@"configVersion"] = @187;
     BOOL saved = saveConfigValues(values);
     if (!saved) {
