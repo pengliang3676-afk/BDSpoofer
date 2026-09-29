@@ -1,0 +1,37 @@
+name: Build Screen Probe
+
+on:
+  push:
+    branches: ["diag/screen-probe"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build probe dylib
+        run: |
+          set -euo pipefail
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p out
+          for ARCH in arm64 arm64e; do
+            xcrun --sdk iphoneos clang -arch "$ARCH" -isysroot "$SDK" \
+              -miphoneos-version-min=15.0 -fobjc-arc -fblocks \
+              -Werror=return-type -Werror=implicit-function-declaration \
+              -dynamiclib -install_name @rpath/BDSScreenProbe.dylib \
+              -framework Foundation -framework UIKit \
+              BDSScreenProbe.m -o "out/BDSScreenProbe_$ARCH.dylib"
+          done
+          lipo -create out/BDSScreenProbe_arm64.dylib out/BDSScreenProbe_arm64e.dylib \
+            -output out/BDSScreenProbe.dylib
+          codesign --force --sign - --timestamp=none out/BDSScreenProbe.dylib
+          lipo -info out/BDSScreenProbe.dylib
+          codesign --verify --strict out/BDSScreenProbe.dylib
+          shasum -a 256 out/BDSScreenProbe.dylib | tee out/SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BDSScreenProbe-1.0
+          path: |
+            out/BDSScreenProbe.dylib
+            out/SHA256.txt
