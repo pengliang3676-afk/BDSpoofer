@@ -761,7 +761,6 @@ static void bds_perform_rebinding_with_section(struct bds_rebindings_entry *rebi
     uint32_t *indirect_symbol_indices = indirect_symtab + section->reserved1;
     void **indirect_symbol_bindings = (void **)((uintptr_t)slide + section->addr);
     uint32_t pointer_count = (uint32_t)(section->size / sizeof(void *));
-    uint8_t sect_type = section->flags & SECTION_TYPE;
 
     // 越界保护：reserved1 + 指针数不能超过间接符号表大小
     if (section->reserved1 >= nindirectsyms ||
@@ -802,9 +801,14 @@ static void bds_perform_rebinding_with_section(struct bds_rebindings_entry *rebi
                         }
                         protected_region = 1;
                     }
-                    // 只接受一次真正的原函数地址，且只从非惰性槽位取。
+                    // 记录原函数地址：与官方 fishhook 一致，不挑节类型
+                    // （惰性槽位里的值同样可用）。只加两条保险：
+                    // 槽位里不能已经是替换目标，且已经记到过就不再覆写。
+                    // 注意：这里不能加 “只从 S_NON_LAZY 槽位取” 的限制，
+                    // 否则惰性槽位永远记不到原函数，orig_* 保持 NULL，
+                    // 替换函数会一律返回失败（stat/access 报错、dlopen 返回 NULL），
+                    // 表现为 App 一启动就闪退。
                     if (cur->rebindings[j].replaced != NULL &&
-                        sect_type == S_NON_LAZY_SYMBOL_POINTERS &&
                         *(cur->rebindings[j].replaced) == NULL &&
                         indirect_symbol_bindings[i] != cur->rebindings[j].replacement) {
                         *(cur->rebindings[j].replaced) = indirect_symbol_bindings[i];
@@ -4045,7 +4049,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-02";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-03";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
