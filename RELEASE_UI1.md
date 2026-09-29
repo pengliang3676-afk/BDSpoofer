@@ -1,4 +1,20 @@
-# 卐解 1.8.1 UI1.3 9.30-08 / 卍解 1.0.2 UI1.3 9.30-08
+# 卐解 1.8.1 UI1.3 9.30-09 / 卍解 1.0.2 UI1.3 9.30-09
+
+## 9.30-09 UA 系统号不生效的真因：定向系统版本从未被写入
+
+探针 1.1 在 App 内直接读了配置文件，终于看到真相：
+
+```
+targetedUASystemVersion = 15.4.1   ← tg_rewrite_ua 读的就是它（模板默认值）
+systemVersion           = 26.5     ← 真正的配置值
+spoofBaiduTargetedUA    = 1        ← 开关是开的，所以不是“没运行”
+```
+
+`tg_rewrite_ua` 一直在运行，但它拿到的是**模板默认值 15.4.1**，与配置的 systemVersion 毫无关系，反而在 UA 里制造出一个不相干的系统号。根因：`targetedSystemVersion` 等四个键，一键基础从来没写过。
+
+现在新增 `BDSBaiduSystemSyncValues(system)`：一键基础把抽中机型的 `targetedSystemVersion` / `targetedUASystemVersion` / `targetedSystemBuild` / `targetedUASystemBuild` 一并写入（只写值，不打开任何定向开关）。
+
+同时修正：一键基础 / 一键高级现在写 `configVersion = 188`（原来写 187），否则 v188 迁移会在每次重启时重复执行。
 
 ## 9.30-08 UA 系统号改走已验证通路
 
@@ -21,7 +37,7 @@
 
 开关总数变为 **20 开 / 6 关**（原 21/5）。
 
-### UA 里的系统号跟随配置（首版未生效，见 9.30-08）
+### UA 里的系统号跟随配置（首版未生效，见 9.30-09）
 
 之前只改 `osVersion` / `phoneModel` 而不管 UA，同一段 UA 里会同时出现 `CPU iPhone OS 15_1`（真机）和 `(Baidu; P2 18.7.2)`（配置）两个系统号，等于自证被改过。本版新增 `tg_rewrite_ua_cpu_only()` 尝试修正（实测未生效）。
 ## 9.30-06 屏幕参数与定向总开关解耦

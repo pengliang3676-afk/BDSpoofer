@@ -22,7 +22,7 @@ int main(int argc,char **argv) {
         assert([basicFresh[@"hwMachine"] isEqual:@"iPhone10,1"]);
         NSMutableDictionary *config=BDSMergedConfig(defaults);
         BDSSeedIdentityIfNeeded(config,YES);
-        assert([config[@"configVersion"] integerValue]==187);
+        assert([config[@"configVersion"] integerValue]==188);
         assert(![config[@"blockStatCashTelemetry"] boolValue]);
         assert(![config[@"bypassJailbreakDetect"] boolValue]);  // 9.30-07 默认关闭
         for(NSString *key in BDSRegularKeys()) assert([config[key] boolValue]);

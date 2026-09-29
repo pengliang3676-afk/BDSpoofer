@@ -243,6 +243,24 @@ static NSMutableDictionary *BDSMergedConfig(NSDictionary *existing) {
     return config;
 }
 
+// 系统版本同步到定向侧。规则必须与卐解 BDSBaiduSystemSyncValues 完全一致：
+// UA 的 CPU 段由 tg_rewrite_ua 改写、读的是 targetedUASystemVersion，
+// 这个键以前从没被写过，停在模板默认值 15.4.1，导致 UA 里出现与配置无关的系统号。
+// 只写值，不打开任何定向开关。
+static NSDictionary *BDSBaiduSystemSyncValues(NSDictionary *system) {
+    if (![system isKindOfClass:NSDictionary.class]) return @{};
+    NSString *ver = system[@"version"], *build = system[@"build"];
+    if (![ver isKindOfClass:NSString.class] || !ver.length) return @{};
+    NSMutableDictionary *values = [NSMutableDictionary dictionary];
+    values[@"targetedSystemVersion"] = ver;
+    values[@"targetedUASystemVersion"] = ver;
+    if ([build isKindOfClass:NSString.class] && build.length) {
+        values[@"targetedSystemBuild"] = build;
+        values[@"targetedUASystemBuild"] = build;
+    }
+    return values;
+}
+
 // 屏幕参数同步到百度侧出口（只改 B 层，UIScreen 保持真机，界面不会错版）。
 // 规则必须与卐解 BDSBaiduScreenSyncValues 完全一致：
 // 写入定向屏幕键、打开 spoofBaiduTargetedScreen，并同时打开 spoofBaiduTargetedUA
@@ -282,7 +300,7 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
     NSDictionary *system = BDSRandomSystemForDevice(device);
 
     NSMutableDictionary *stamp = [@{
-        @"configVersion": @187,
+        @"configVersion": @188,
         @"managerGeneratedAt": @([[NSDate date] timeIntervalSince1970]),
         @"managerProfileVersion": @103,
         @"managerRandomMode": mode == BDSRandomModeTargeted ? @"targeted" : @"basic",
@@ -331,6 +349,10 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
         // i>=3 档，写在循环之前会被那个 @NO 循环覆盖掉。
         // 规则与卐解 BDSBaiduScreenSyncValues 完全一致，只打开定向屏幕这一个子开关。
         [config addEntriesFromDictionary:BDSBaiduScreenSyncValues(device)];
+        // 系统版本同步到定向侧：UA 的 CPU 段由 tg_rewrite_ua 改写、读的是
+        // targetedUASystemVersion，而这个键以前从没被写过，停在模板默认值 15.4.1，
+        // 导致 UA 里出现 15_1 与配置值不一致。规则与卐解 BDSBaiduSystemSyncValues 一致。
+        [config addEntriesFromDictionary:BDSBaiduSystemSyncValues(system)];
     } else {
 
         BDSMarkRandomModeRun(config, @"targeted");
@@ -583,7 +605,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"卍解 1.0.2 9.30-08";
+    self.title = @"卍解 1.0.2 9.30-09";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];

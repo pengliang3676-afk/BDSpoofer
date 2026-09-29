@@ -171,7 +171,7 @@ static NSDictionary *BDSDefaultConfig(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @187,
+            @"configVersion": @188,
             @"spoofBaiduTargeted": @NO,
             @"spoofBaiduTargetedSystem": @NO,
             @"spoofBaiduTargetedModel": @NO,
@@ -524,7 +524,7 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 188) {
-        // 9.30-08：防越狱检测改为默认关闭，并且一键基础 / 一键高级都不再打开它。
+        // 9.30-09：防越狱检测改为默认关闭，并且一键基础 / 一键高级都不再打开它。
         // 老配置里这个键通常已经存着 @YES，光靠默认值救不了，必须强制写一次 @NO。
         merged[@"configVersion"] = @188;
         merged[@"bypassJailbreakDetect"] = @NO;
@@ -3786,6 +3786,28 @@ static NSDictionary *BDSRandomCarrierValues(void) {
 //   - UIScreen 不装钩子，界面绝不会错版
 //   - statusBarHeight / 安全区由 tg_status_bar() 按同一机型推算，保持自洽
 //   - 其余开关与定向项目一律不动
+// 系统版本同步到定向侧。
+//
+// 百度侧 UA 的 CPU 段由 tg_rewrite_ua 改写，而它读的是 targetedUASystemVersion；
+// 这个键（以及 targetedSystemVersion/Build、targetedUASystemBuild）一键基础从来没写过，
+// 一直停在模板默认值 15.4.1 —— 于是 UA 里被写成 15_1，和配置的 systemVersion 毫无关系，
+// 反而制造出“同一段 UA 两个系统号”。这里把抽中机型的版本/build 一并写入。
+//
+// 只写值，不打开任何定向开关（定向系统 / 机型 / Push 的开关一律不动）。
+static NSDictionary *BDSBaiduSystemSyncValues(NSDictionary *system) {
+    if (![system isKindOfClass:NSDictionary.class]) return @{};
+    NSString *ver = system[@"version"], *build = system[@"build"];
+    if (![ver isKindOfClass:NSString.class] || !ver.length) return @{};
+    NSMutableDictionary *values = [NSMutableDictionary dictionary];
+    values[@"targetedSystemVersion"] = ver;
+    values[@"targetedUASystemVersion"] = ver;
+    if ([build isKindOfClass:NSString.class] && build.length) {
+        values[@"targetedSystemBuild"] = build;
+        values[@"targetedUASystemBuild"] = build;
+    }
+    return values;
+}
+
 static NSDictionary *BDSBaiduScreenSyncValues(NSDictionary *device) {
     if (![device isKindOfClass:NSDictionary.class]) return @{};
     NSNumber *w = device[@"width"], *h = device[@"height"], *scale = device[@"scale"];
@@ -3846,14 +3868,16 @@ static NSMutableDictionary *BDSRandomBaseValuesForPair(NSDictionary *device,
     values[@"nativeScreenWidth"] = device[@"nativeWidth"];
     values[@"nativeScreenHeight"] = device[@"nativeHeight"];
     [values addEntriesFromDictionary:BDSBaiduScreenSyncValues(device)];
+    [values addEntriesFromDictionary:BDSBaiduSystemSyncValues(system)];
     values[@"bootTimeOffsetSeconds"] = @(86400 + arc4random_uniform(7 * 86400));
     [values addEntriesFromDictionary:BDSRandomCarrierValues()];
     return values;
 }
 
-// 最近一次一键基础抽中的机型。randomizeBasicProfile 在开关组循环之后
-// 需要它来补写屏幕参数（屏幕开关会被循环覆盖，只能放到最后写）。
+// 最近一次一键基础抽中的机型与 iOS 资料。randomizeBasicProfile 在开关组循环之后
+// 需要它们来补写屏幕与系统参数（相关开关会被循环覆盖，只能放到最后写）。
 static NSDictionary *g_lastBasicDevice = nil;
+static NSDictionary *g_lastBasicSystem = nil;
 
 static NSDictionary *BDSRandomBasicProfileValues(void) {
     NSMutableArray<NSDictionary *> *allDevices = [BDSRandomEligibleProfiles() mutableCopy];
@@ -3861,8 +3885,9 @@ static NSDictionary *BDSRandomBasicProfileValues(void) {
     [allDevices filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *d, NSDictionary *bindings) { (void)bindings; return ![d[@"machine"] isEqual:current]; }]];
     if (!allDevices.count) return @{};
     NSDictionary *device = allDevices[arc4random_uniform((uint32_t)allDevices.count)];
-    g_lastBasicDevice = device;
     NSDictionary *system = BDSRandomSystemProfileForDevice(device);
+    g_lastBasicDevice = device;
+    g_lastBasicSystem = system;
     NSMutableDictionary *values = BDSRandomBaseValuesForPair(device, system, YES);
     if (!values.count) return @{};
     BDSMarkRandomModeRun(values, @"basic");
@@ -4136,7 +4161,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-08";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-09";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -4280,12 +4305,17 @@ static NSString *BDSConfigSummary(void) {
     for (NSDictionary *item in groups[2]) {
         if (![item[@"off"] boolValue] && !values[item[@"key"]]) values[item[@"key"]] = @NO;
     }
-    // 屏幕同步必须放在上面这些开关循环之后：spoofBaiduTargetedScreen 落在
-    // groups[1] 的 i>=3 档，写在循环之前会被那个 @NO 循环覆盖掉。
+    // 屏幕与系统同步必须放在上面这些开关循环之后：spoofBaiduTargetedScreen /
+    // spoofBaiduTargetedUA 落在 groups[1] 的 i>=3 档，写在循环之前会被 @NO 循环覆盖。
     if (g_lastBasicDevice) {
         [values addEntriesFromDictionary:BDSBaiduScreenSyncValues(g_lastBasicDevice)];
     }
-    values[@"configVersion"] = @187;
+    // 定向系统版本键（UA 的 CPU 段读的就是它）也一并同步，否则会一直停在
+    // 模板默认值 15.4.1，UA 里就会出现与配置无关的系统号。
+    if (g_lastBasicSystem) {
+        [values addEntriesFromDictionary:BDSBaiduSystemSyncValues(g_lastBasicSystem)];
+    }
+    values[@"configVersion"] = @188;
     BOOL saved = saveConfigValues(values);
     if (!saved) {
         [self presentMessage:@"配置文件写入失败，基础参数没有更换。" title:@"保存失败"];
@@ -4423,7 +4453,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
 - (void)randomizeAdvancedProfile {
     NSMutableDictionary *values = [BDSRandomIdentityValues() mutableCopy];
     // 与卍解一键高级语义一致：只更换五项身份值，不动开关。
-    values[@"configVersion"] = @187;
+    values[@"configVersion"] = @188;
     BOOL saved = saveConfigValues(values);
     if (!saved) {
         [self presentMessage:@"配置文件写入失败，高级参数没有更换。" title:@"保存失败"];
