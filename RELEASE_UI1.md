@@ -1,5 +1,15 @@
 # 卐解 1.8.1 UI1.3 9.30-02 / 卍解 1.0.2 UI1.3 9.30-02
 
+## 9.30-04 屏幕参数同步到百度侧出口
+
+一键基础现在把抽中机型的屏幕几何同步写入定向屏幕键（`targetedScreenWidth/Height/Scale`、`targetedNativeScreenWidth/Height`），并只打开 `spoofBaiduTargetedScreen` 这一个子开关。其余开关与定向项目一律不动。
+
+**为什么这么做**：2026-09-30 用只读探针在 iPhone12,8 / iOS 15.1 上实测确认，百度读屏幕尺寸只走这几个出口：`BaiduMobStatDeviceInfo +getScreenResolution`、`UIDevice +bp_resolution`、`BDPTalosBaseInfo +platformInfo / +getBasicPlatformInfo`（windowInfo / screenInfo）、`BBASMPlugin +getConstantSystemInfoDictionary`（pixelRatio）、`BBASMPlugin +getSystemInfoWithAppID:cardID:`（screenWidth/Height）。改这些出口就能让服务器看到“机型 + 屏幕”自洽。
+
+**为什么不动 UIScreen**：`UIScreen` 钩子会让 App 按假机型布局，在小屏真机上可能错版。保持真机尺寸，界面零风险；而 `UIScreen` 是本地 API，服务器看不到它。
+
+**已知边界**：探针记录的是当次运行中被调用过的出口。若百度在某条未走到的路径里直接读 `UIScreen`，那一处仍为真机值。本次不改 `UIScreen` 是刻意取舍。
+
 ## 9.30-03 修复引入的原函数捕获限制（闪退真因）
 
 9.30-01 为了避免把 dyld 懒性绑定桩记成“原函数”，给原函数捕获加了“只从 S_NON_LAZY_SYMBOL_POINTERS 槽位取”的限制。实际上如果符号落在惰性槽位，orig_stat / orig_lstat / orig_dlopen 就永远是 NULL，而新加的判空会让它们一律返回失败（stat/access 报 ENOENT、dlopen 返回 NULL），表现为 App 一启动就闪退。

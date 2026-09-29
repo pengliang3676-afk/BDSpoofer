@@ -3729,6 +3729,39 @@ static NSDictionary *BDSRandomCarrierValues(void) {
     return carriers[arc4random_uniform((uint32_t)carriers.count)];
 }
 
+// 屏幕参数同步到百度侧出口（只改 B 层，UIScreen 保持真机）。
+//
+// 百度读屏幕尺寸只走这几个出口（2026-09-30 用只读探针在真机实测确认）：
+//   BaiduMobStatDeviceInfo +getScreenResolution   -> 物理像素
+//   UIDevice +bp_resolution                       -> "高_宽"
+//   BDPTalosBaseInfo +platformInfo / +getBasicPlatformInfo
+//                                                 -> windowInfo / screenInfo
+//   BBASMPlugin +getConstantSystemInfoDictionary  -> pixelRatio / devicePixelRatio
+//   BBASMPlugin +getSystemInfoWithAppID:cardID:   -> screenWidth/Height/windowWidth
+// 这些出口的改写由定向屏幕开关驱动，所以一键基础把抽中机型的屏幕几何
+// 同步进定向屏幕键，并只打开这一个子开关：
+//   - UIScreen 不装钩子，界面绝不会错版
+//   - statusBarHeight / 安全区由 tg_status_bar() 按同一机型推算，保持自洽
+//   - 其余开关与定向项目一律不动
+static NSDictionary *BDSBaiduScreenSyncValues(NSDictionary *device) {
+    if (![device isKindOfClass:NSDictionary.class]) return @{};
+    NSNumber *w = device[@"width"], *h = device[@"height"], *scale = device[@"scale"];
+    if (![w isKindOfClass:NSNumber.class] || ![h isKindOfClass:NSNumber.class] ||
+        ![scale isKindOfClass:NSNumber.class]) return @{};
+    NSNumber *nw = [device[@"nativeWidth"] isKindOfClass:NSNumber.class]
+        ? device[@"nativeWidth"] : @(w.integerValue * scale.integerValue);
+    NSNumber *nh = [device[@"nativeHeight"] isKindOfClass:NSNumber.class]
+        ? device[@"nativeHeight"] : @(h.integerValue * scale.integerValue);
+    return @{
+        @"targetedScreenWidth": w,
+        @"targetedScreenHeight": h,
+        @"targetedScreenScale": scale,
+        @"targetedNativeScreenWidth": nw,
+        @"targetedNativeScreenHeight": nh,
+        @"spoofBaiduTargetedScreen": @YES,
+    };
+}
+
 // 为已经选定的机型/iOS 组合生成一套基础参数。
 // 这里只生成基础参数。开关初始化由 BDSApplyInitialDefaults 单独处理。
 static NSMutableDictionary *BDSRandomBaseValuesForPair(NSDictionary *device,
@@ -3764,6 +3797,7 @@ static NSMutableDictionary *BDSRandomBaseValuesForPair(NSDictionary *device,
     values[@"screenScale"] = device[@"scale"];
     values[@"nativeScreenWidth"] = device[@"nativeWidth"];
     values[@"nativeScreenHeight"] = device[@"nativeHeight"];
+    [values addEntriesFromDictionary:BDSBaiduScreenSyncValues(device)];
     values[@"bootTimeOffsetSeconds"] = @(86400 + arc4random_uniform(7 * 86400));
     [values addEntriesFromDictionary:BDSRandomCarrierValues()];
     return values;
@@ -4049,7 +4083,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-03";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-04";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;

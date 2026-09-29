@@ -243,6 +243,29 @@ static NSMutableDictionary *BDSMergedConfig(NSDictionary *existing) {
     return config;
 }
 
+// 屏幕参数同步到百度侧出口（只改 B 层，UIScreen 保持真机，界面不会错版）。
+// 规则必须与卐解 BDSBaiduScreenSyncValues 完全一致：
+// 只写入定向屏幕键并打开 spoofBaiduTargetedScreen 这一个子开关，
+// 其余定向项目与开关一律不动。
+static NSDictionary *BDSBaiduScreenSyncValues(NSDictionary *device) {
+    if (![device isKindOfClass:NSDictionary.class]) return @{};
+    NSNumber *w = device[@"width"], *h = device[@"height"], *scale = device[@"scale"];
+    if (![w isKindOfClass:NSNumber.class] || ![h isKindOfClass:NSNumber.class] ||
+        ![scale isKindOfClass:NSNumber.class]) return @{};
+    NSNumber *nw = [device[@"nativeWidth"] isKindOfClass:NSNumber.class]
+        ? device[@"nativeWidth"] : @(w.integerValue * scale.integerValue);
+    NSNumber *nh = [device[@"nativeHeight"] isKindOfClass:NSNumber.class]
+        ? device[@"nativeHeight"] : @(h.integerValue * scale.integerValue);
+    return @{
+        @"targetedScreenWidth": w,
+        @"targetedScreenHeight": h,
+        @"targetedScreenScale": scale,
+        @"targetedNativeScreenWidth": nw,
+        @"targetedNativeScreenHeight": nh,
+        @"spoofBaiduTargetedScreen": @YES,
+    };
+}
+
 static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
                                                        NSDictionary *device,
                                                        BDSRandomMode mode,
@@ -291,6 +314,9 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
             @"bootTimeOffsetSeconds": @(86400 + arc4random_uniform(7 * 86400)),
         }];
         [config addEntriesFromDictionary:BDSRandomCarrier()];
+        // 屏幕参数同步到百度侧出口（只改 B 层，UIScreen 保持真机，界面不会错版）。
+        // 与卐解 BDSBaiduScreenSyncValues 同一规则；只打开定向屏幕这一个子开关。
+        [config addEntriesFromDictionary:BDSBaiduScreenSyncValues(device)];
         NSArray<NSArray<NSDictionary *> *> *groups = BDSSettingGroups();
         for (NSDictionary *item in groups[0]) config[item[@"key"]] = @YES;
         for (NSUInteger i = 0; i < 3 && i < groups[1].count; i++) config[groups[1][i][@"key"]] = @YES;
@@ -549,7 +575,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"卍解 1.0.2 9.30-03";
+    self.title = @"卍解 1.0.2 9.30-04";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];
