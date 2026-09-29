@@ -14,12 +14,13 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <mach-o/dyld.h>
+#import <dlfcn.h>
 
 // iOS SDK 头文件没有声明这个符号，手动声明（否则 -Werror=implicit-function-declaration 会失败）
 extern void _dyld_register_func_for_add_image(void (*func)(const struct mach_header *mh, intptr_t vmaddr_slide));
 
 static NSString * const BSPBundleID = @"com.baidu.BaiduMobileInfo";
-static NSString * const BSPVersion  = @"1.1";
+static NSString * const BSPVersion  = @"1.2";
 
 // ---------- 记录区 ----------
 
@@ -222,6 +223,24 @@ static NSString *BSPReport(void) {
                               v ? [v description] : @"(键不存在)"];
         }
         [out appendFormat:@"  配置文件键数 = %lu\n", (unsigned long)cfg.count];
+    }
+
+    // 插件内部的 UA 改写诊断：通过 dlsym 读只读快照（插件未注入时找不到符号）。
+    // 这一步把“代码看起来该生效、真机上却没变”变成可核对的事实。
+    [out appendString:@"\n--- 插件 UA 改写诊断（来自卐解内部）---\n"];
+    void *uaSym = dlsym(RTLD_DEFAULT, "BDSpooferUADebugSnapshot");
+    if (!uaSym) {
+        [out appendString:@"(找不到插件符号：插件未注入，或版本太旧)\n"];
+    } else {
+        NSDictionary *(*uaSnap)(void) = (NSDictionary *(*)(void))uaSym;
+        NSDictionary *d = uaSnap();
+        if (![d isKindOfClass:NSDictionary.class] || !d.count) {
+            [out appendString:@"(插件还没走过 UA 改写路径)\n"];
+        } else {
+            for (NSString *k in [d.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+                [out appendFormat:@"  %@\n      %@\n", k, d[k]];
+            }
+        }
     }
 
     [out appendString:@"\n--- 钩子安装情况 ---\n"];
