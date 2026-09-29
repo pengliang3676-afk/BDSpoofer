@@ -1450,6 +1450,13 @@ static BOOL tg_feature_enabled(NSString *childKey) {
            cfgBool(childKey, NO);
 }
 
+// 屏幕参数单独判断：它的值由“一键基础”按抽中机型写入（与机型配套），
+// 不再受“定向指纹”总开关约束。否则用户没开定向时，屏幕会停留在真机值，
+// 出现“机型是 iPhone 13、屏幕却是 SE2”的不一致。
+static BOOL tg_screen_enabled(void) {
+    return cfgBool(@"spoofBaiduTargetedScreen", NO);
+}
+
 // 仅当字典里已存在该键时才覆盖，避免凭空注入百度不认识的字段
 static void tg_set_if_key(NSMutableDictionary *m, NSString *k, id v) {
     if (m && k && v && m[k] != nil) m[k] = v;
@@ -1499,7 +1506,7 @@ static NSDictionary *tg_rewrite_talos(NSDictionary *orig) {
     BOOL rewriteSystem = tg_feature_enabled(@"spoofBaiduTargetedSystem");
     BOOL rewriteModel = tg_feature_enabled(@"spoofBaiduTargetedModel");
     BOOL rewriteUA = tg_feature_enabled(@"spoofBaiduTargetedUA");
-    BOOL rewriteScreen = tg_feature_enabled(@"spoofBaiduTargetedScreen");
+    BOOL rewriteScreen = tg_screen_enabled();
     if (!rewriteSystem && !rewriteModel && !rewriteUA && !rewriteScreen) return orig;
     NSMutableDictionary *m = [orig mutableCopy];
     if (rewriteSystem) {
@@ -1543,7 +1550,7 @@ static NSDictionary *tg_rewrite_bbasm(NSDictionary *orig) {
     if (![orig isKindOfClass:NSDictionary.class]) return orig;
     BOOL rewriteSystem = tg_feature_enabled(@"spoofBaiduTargetedSystem");
     BOOL rewriteModel = tg_feature_enabled(@"spoofBaiduTargetedModel");
-    BOOL rewriteScreen = tg_feature_enabled(@"spoofBaiduTargetedScreen");
+    BOOL rewriteScreen = tg_screen_enabled();
     if (!rewriteSystem && !rewriteModel && !rewriteScreen) return orig;
     NSMutableDictionary *m = [orig mutableCopy];
     if (rewriteSystem) {
@@ -1635,7 +1642,7 @@ static volatile int g_tgBlocked = 0;
 static CGSize tg_getScreenResolution(id self, SEL _cmd) {
     CGSize r = tg_o_getScreenResolution
         ? ((CGSize (*)(id, SEL))tg_o_getScreenResolution)(self, _cmd) : CGSizeZero;
-    if (!tg_feature_enabled(@"spoofBaiduTargetedScreen")) {
+    if (!tg_screen_enabled()) {
         BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStatePassed);
         return r;
     }
@@ -1646,7 +1653,7 @@ static CGSize tg_getScreenResolution(id self, SEL _cmd) {
 // UIDevice +bp_resolution -> NSString 像素 "高_宽"
 static NSString *tg_bp_resolution(id self, SEL _cmd) {
     NSString *orig = tg_o_bp_resolution ? ((id (*)(id, SEL))tg_o_bp_resolution)(self, _cmd) : nil;
-    if (!tg_feature_enabled(@"spoofBaiduTargetedScreen")) {
+    if (!tg_screen_enabled()) {
         BDS_DIAG_RECORD(g_diagBaiduTargeted, BDSDiagStatePassed);
         return orig;
     }
@@ -4088,7 +4095,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-05";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-06";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
