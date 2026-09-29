@@ -4045,7 +4045,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-01";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-02";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5110,10 +5110,13 @@ static void bds_initialize() {
         BDSInstallUI();
 
         // 默认保持金额统计上报；用户明确开启阻止开关后才安装拦截。
-        // 默认保持金额统计上报，不打开开关就不拦。
-        // 装在启动阶段并注册开关提供者：关掉立即放行，打开也不必重启。
-        BDSCashTelemetrySwitchProvider = BDSCashTelemetrySwitchEnabled;
-        BDSInstallCashTelemetryBlocking();
+        // 默认保持金额统计上报：开关关闭时完全不安装拦截（与 9.28-03 相同）。
+        // 开关打开才安装；安装后判定入口每次请求都读开关，所以关掉立即放行、
+        // 不必重启也能停下拦截。
+        if (cfgBool(@"blockStatCashTelemetry", NO)) {
+            BDSCashTelemetrySwitchProvider = BDSCashTelemetrySwitchEnabled;
+            BDSInstallCashTelemetryBlocking();
+        }
 
         // 1.8.1 起，enabled 只代表“基础功能总开关”。
         // 高级功能仍按各自开关独立加载，不能因基础功能关闭而提前返回。

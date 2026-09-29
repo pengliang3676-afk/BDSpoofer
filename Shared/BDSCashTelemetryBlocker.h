@@ -135,11 +135,10 @@ static void BDSEnsureCashTelemetryBlockScript(WKUserContentController *controlle
 
 static IMP g_bdsCashOriginalWKInit = NULL;
 static WKWebView *BDSCashWKInit(id self, SEL command, CGRect frame, WKWebViewConfiguration *configuration) {
-    // 无论开关当前是开是关都补一份脚本：关闭时补 =false，网页侧才会真的放行。
-    // 关掉开关后新建的 WebView 立即恢复原上报行为；已经加载完的旧页面要等下次
-    // 重新加载才生效，原生请求那条路不受影响（判定入口每次请求都读开关）。
-    BDSEnsureCashTelemetryBlockScript(configuration.userContentController,
-                                      BDSCashTelemetrySwitchIsOn());
+    // 只在这个钩子确实装上时才会走到这里，也就是开关在启动时是打开的。
+    // 新建的 WebView 补一份 =true 的脚本；关掉开关后不新建的页面不受影响，
+    // 原生请求那条路由判定入口每次读开关负责，关掉立即放行。
+    BDSEnsureCashTelemetryBlockScript(configuration.userContentController, YES);
     WKWebView *(*original)(id, SEL, CGRect, WKWebViewConfiguration *) = (void *)g_bdsCashOriginalWKInit;
     return original(self, command, frame, configuration);
 }
@@ -147,7 +146,7 @@ static WKWebView *BDSCashWKInit(id self, SEL command, CGRect frame, WKWebViewCon
 static IMP g_bdsCashOriginalSessionWithDelegate = NULL;
 static IMP g_bdsCashOriginalSession = NULL;
 static void BDSInjectCashTelemetryProtocol(NSURLSessionConfiguration *configuration) {
-    if (!configuration) return;
+    if (!configuration || !BDSCashTelemetryBlockProtocol.class) return;
     NSArray *classes = configuration.protocolClasses ?: @[];
     if ([classes containsObject:BDSCashTelemetryBlockProtocol.class]) return;
     // 追加在系统与 App 自带协议之后，不抢占它们的优先级。
@@ -166,8 +165,8 @@ static NSURLSession *BDSCashSession(Class receiver, SEL command, NSURLSessionCon
     return original(receiver, command, configuration);
 }
 
-// 可以重复调用：先以关闭状态装上（脚本里 =false），运行期打开开关时再调一次补 =true。
-// 类替换只做一次，用 dispatch_once 保证幂等。
+// 只在启动时开关为“开”的情况下才会被调用（与 9.28-03 一致：
+// 开关关闭时完全不安装任何拦截）。类替换用 dispatch_once 保证幂等。
 static void BDSInstallCashTelemetryBlocking(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
