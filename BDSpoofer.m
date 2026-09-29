@@ -321,7 +321,7 @@ static void loadConfig() {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            // 9.30-13 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
+            // 9.30-14 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
             // （v189 迁移还会兜底强制关一次。）
             @"bypassJailbreakDetect": @NO
         }];
@@ -528,9 +528,9 @@ static void loadConfig() {
     BDSApplyInitialDefaults(merged, loaded);
     // 注意顺序：迁移必须放在 BDSApplyInitialDefaults 之后。
     // 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
-    // 写在它之前会被它设回 @YES（9.30-13 实测就是这个原因导致开关关不掉）。
+    // 写在它之前会被它设回 @YES（9.30-14 实测就是这个原因导致开关关不掉）。
     if (ver < 189) {
-        // 9.30-13：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
+        // 9.30-14：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
         // 老配置里这个键通常已存 @YES，光靠默认值救不了，必须强制写一次 @NO。
         // 用独立的版本号 189 是为了让已经处在 188 的配置也能被这次修正覆盖到，
         // 且只执行一次：之后用户在面板手动打开仍然有效。
@@ -4278,7 +4278,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-13";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-14";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5066,6 +5066,28 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
     BDSAppendDiagLine(message, @"屏幕 / 磁盘", &g_diagScreenStorage);
     BDSAppendDiagLine(message, @"百度 SDK 标识", &g_diagBaiduSDK);
     BDSAppendDiagLine(message, @"百度定向指纹", &g_diagBaiduTargeted);
+    // 屏幕/UA 改写的实际取值，直接显示在这里，不再依赖外部探针。
+    // 外部探针自己也要挂钩子，会和插件抢同一个方法的实现顺序，
+    // 导致“探针看到的”未必等于“百度和插件实际交换的值”，反而误导判断。
+    {
+        NSDictionary *uaDbg = BDSpooferUADebugSnapshot();
+        if (uaDbg.count) {
+            [message appendString:@"\n\n--- 屏幕 / UA 改写实际值（插件内部记录）---"];
+            for (NSString *tag in @[@"汇总. 开关", @"汇总. 取到的值",
+                                    @"屏幕. screenInfo 写入", @"屏幕. windowInfo 写入",
+                                    @"出口. platformInfo", @"出口. platformInfo 改后",
+                                    @"出口. getBasicPlatformInfo", @"出口. getBasicPlatformInfo 改后",
+                                    @"A. 走到 tg_rewrite_ua（整段，含 P2）",
+                                    @"A. 输入 userAgent", @"A. 输出 userAgent",
+                                    @"C. 两个 UA 分支都没进"]) {
+                NSString *v = uaDbg[tag];
+                if (!v.length) continue;
+                [message appendFormat:@"\n%@：%@", tag, v];
+            }
+        } else {
+            [message appendString:@"\n\n--- 屏幕 / UA 改写实际值 ---\n(本次启动还没走到改写路径)"];
+        }
+    }
     BDSAppendDiagLine(message, @"sysctlbyname", &g_diagSysctl);
     BDSAppendDiagLine(message, @"Keychain", &g_diagKeychain);
     BDSAppendDiagLine(message, @"User-Agent", &g_diagUserAgent);
