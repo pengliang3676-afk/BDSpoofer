@@ -141,7 +141,7 @@ static NSDictionary *g_config = nil;
 static int g_enabledC = 0;
 static int g_spoofSysctlC = 0;
 static int g_bypassJailbreakC = 0;
-// 9.30-23：隐藏注入独立于防越狱检测。防的是“发现你在改我”，与伪装越狱状态无关。
+// 9.30-24：隐藏注入独立于防越狱检测。防的是“发现你在改我”，与伪装越狱状态无关。
 static int g_hideInjectionC = 0;
 static int g_spoofWiFiC = 0;
 static int g_spoofLocalIPC = 0;
@@ -354,7 +354,7 @@ static void loadConfig() {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            // 9.30-23 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
+            // 9.30-24 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
             // （v189 迁移还会兜底强制关一次。）
             @"bypassJailbreakDetect": @NO
         }];
@@ -561,9 +561,9 @@ static void loadConfig() {
     BDSApplyInitialDefaults(merged, loaded);
     // 注意顺序：迁移必须放在 BDSApplyInitialDefaults 之后。
     // 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
-    // 写在它之前会被它设回 @YES（9.30-23 实测就是这个原因导致开关关不掉）。
+    // 写在它之前会被它设回 @YES（9.30-24 实测就是这个原因导致开关关不掉）。
     if (ver < 189) {
-        // 9.30-23：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
+        // 9.30-24：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
         // 老配置里这个键通常已存 @YES，光靠默认值救不了，必须强制写一次 @NO。
         // 用独立的版本号 189 是为了让已经处在 188 的配置也能被这次修正覆盖到，
         // 且只执行一次：之后用户在面板手动打开仍然有效。
@@ -3095,7 +3095,7 @@ static const char *bds_my_dyld_get_image_name(uint32_t image_index) {
         BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
         return name;
     }
-    // 反注入独立开关（9.30-23）：隐藏注入与防越狱检测拆开
+    // 反注入独立开关（9.30-24）：隐藏注入与防越狱检测拆开
     if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_hideInjectionC)) {
         BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
         return name;
@@ -4931,7 +4931,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-23";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-24";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
