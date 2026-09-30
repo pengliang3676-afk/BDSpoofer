@@ -135,6 +135,7 @@ typedef CFDictionaryRef (*IOPSDescFn)(CFTypeRef, CFTypeRef);
 
 // ---- 时间偏移：前向声明（定义在后面的"时间偏移"小节）----
 // 必须放在这里：配置合并阶段（install 之前）就要用它算偏移量。
+static int  g_timeOffsetSec;          // 本次启动实际使用的偏移量（定义见后）
 static int  bds_time_offset(void);
 static int  bds_compute_time_offset(void);
 static id   new_NSDate_date(id self, SEL _cmd);
