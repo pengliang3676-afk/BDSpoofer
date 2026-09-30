@@ -296,38 +296,6 @@ static BOOL bds_pick_iface_by_ipv4(char *out, size_t outLen) {
     return YES;
 }
 
-// ---- 诊断：把所有网卡与实际地址打出来 ----
-// 用于确认"到底哪张网卡持有 IPv4"，避免继续靠推断。
-static NSString *bds_dump_all_ifaces(void) {
-    NSMutableString *s = [NSMutableString string];
-    struct ifaddrs *list = NULL;
-    if (getifaddrs(&list) != 0 || !list) return @"(getifaddrs 失败)";
-    for (struct ifaddrs *ifa = list; ifa; ifa = ifa->ifa_next) {
-        if (!ifa->ifa_name) continue;
-        NSString *addrStr = @"-";
-        if (ifa->ifa_addr) {
-            sa_family_t fam = ifa->ifa_addr->sa_family;
-            if (fam == AF_INET) {
-                char b[INET_ADDRSTRLEN] = {0};
-                struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
-                if (inet_ntop(AF_INET, &sin->sin_addr, b, sizeof(b))) {
-                    addrStr = [NSString stringWithUTF8String:b];
-                }
-            } else if (fam == AF_INET6) {
-                addrStr = @"v6";
-            } else {
-                addrStr = [NSString stringWithFormat:@"fam%d", (int)fam];
-            }
-        }
-        NSString *flags = @"";
-        if (ifa->ifa_flags & 0x1) flags = [flags stringByAppendingString:@"U"];   // UP
-        if (ifa->ifa_flags & 0x8) flags = [flags stringByAppendingString:@"L"];   // LOOPBACK
-        [s appendFormat:@"
-  %s %@ (%@)", ifa->ifa_name, addrStr, flags];
-    }
-    freeifaddrs(list);
-    return s.length ? s : @"(空)";
-}
 
 static int g_spoofProxyC = 0;
 static int g_spoofBootTimeC = 0;
@@ -4647,6 +4615,38 @@ static NSString *BDSConfigSummary(void) {
 
 // The system alert title reserves a large bottom inset.  Use a compact custom
 // header so all five lines remain unchanged while the first action moves up.
+// ---- 诊断：把所有网卡与实际地址打出来 ----
+// 用于确认"到底哪张网卡持有 IPv4"，避免继续靠推断。
+static NSString *bds_dump_all_ifaces(void) {
+    NSMutableString *s = [NSMutableString string];
+    struct ifaddrs *list = NULL;
+    if (getifaddrs(&list) != 0 || !list) return @"(getifaddrs 失败)";
+    for (struct ifaddrs *ifa = list; ifa; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_name) continue;
+        NSString *addrStr = @"-";
+        if (ifa->ifa_addr) {
+            sa_family_t fam = ifa->ifa_addr->sa_family;
+            if (fam == AF_INET) {
+                char b[INET_ADDRSTRLEN] = {0};
+                struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
+                if (inet_ntop(AF_INET, &sin->sin_addr, b, sizeof(b))) {
+                    addrStr = [NSString stringWithUTF8String:b];
+                }
+            } else if (fam == AF_INET6) {
+                addrStr = @"v6";
+            } else {
+                addrStr = [NSString stringWithFormat:@"fam%d", (int)fam];
+            }
+        }
+        NSString *flags = @"";
+        if (ifa->ifa_flags & 0x1) flags = [flags stringByAppendingString:@"U"];   // UP
+        if (ifa->ifa_flags & 0x8) flags = [flags stringByAppendingString:@"L"];   // LOOPBACK
+        [s appendFormat:@"\n  %s %@ (%@)", ifa->ifa_name, addrStr, flags];
+    }
+    freeifaddrs(list);
+    return s.length ? s : @"(空)";
+}
+
 @implementation BDSUIController
 
 + (instancetype)shared {
