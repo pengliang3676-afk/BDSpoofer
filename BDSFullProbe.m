@@ -53,7 +53,7 @@
 #import <CoreTelephony/CTTelephonyNetworkInfo.h>
 #import <CoreTelephony/CTCarrier.h>
 
-static NSString * const BFPVersion = @"1.4";
+static NSString * const BFPVersion = @"1.5";
 
 #pragma mark - 记录器（线程安全，只读）
 
@@ -608,114 +608,229 @@ static struct bfp_rebinding *g_reb_head = NULL;
 static size_t g_reb_count = 0;
 static int g_reb_inited = 0;
 
-// ---- fishhook（与主插件同源的精简实现，用于替换 C 函数）----
-// 关键点：必须按间接符号表（indirect symbol table）逐项改写，
-// 而不是遍历 __LINKEDIT，否则在 chained fixups 的二进制上完全不生效。
+// ============================================================
+// fishhook —— 直接复用主插件里已验证的实现
+//
+// 【为什么重写这一节】探针 1.2/1.3 的启动闪退就崩在这里：
+//   我原先自己写了一份，有三处错误（插件版早已修好并写了注释）：
+//     1. 遍历了所有段 —— 插件版明确只扫 __DATA / __DATA_CONST。
+//        arm64e 上 __AUTH/__AUTH_CONST 的 GOT 指针带 PAC 签名，
+//        写入未签名指针会在调用时认证失败崩溃。
+//     2. linkedit 基址算错：正确是 slide + vmaddr - fileoff。
+//     3. 缺间接符号表越界检查（reserved1/nindirectsyms）。
+//   教训：这段代码不该自己重写，应当直接复用验证过的版本。
+// ============================================================
+
+// ---- fishhook 类型与常量（与插件同源，arm64 上走 64 位分支）----
+#ifdef __LP64__
+typedef struct mach_header_64 bfp_mach_header_t;
+typedef struct segment_command_64 bfp_segment_command_t;
+typedef struct section_64 bfp_section_t;
+typedef struct nlist_64 bfp_nlist_t;
+#define BFP_LC_SEGMENT LC_SEGMENT_64
+#else
+typedef struct mach_header bfp_mach_header_t;
+typedef struct segment_command bfp_segment_command_t;
+typedef struct section bfp_section_t;
+typedef struct nlist bfp_nlist_t;
+#define BFP_LC_SEGMENT LC_SEGMENT
+#endif
+
+#ifndef SEG_DATA_CONST
+#define SEG_DATA_CONST "__DATA_CONST"
+#endif
+
+// 本探针不复用主插件里的 bds_* 符号，统一用 bfp_* 前缀避免冲突
+struct bfp_rebinding {
+    const char *name;
+    void *replacement;
+    void **replaced;
+};
 
 struct bfp_rebindings_entry {
     struct bfp_rebinding *rebindings;
-    size_t nel;
+    size_t rebindings_nel;
     struct bfp_rebindings_entry *next;
 };
-static struct bfp_rebindings_entry *g_head = NULL;
 
-static void bfp_rebind_image(struct bfp_rebinding *rebindings, size_t nel,
-                             const struct mach_header *header, intptr_t slide) {
-    if (!rebindings || !nel) return;
-    if (header->magic != MH_MAGIC_64) return;
-    const struct mach_header_64 *mh = (const struct mach_header_64 *)header;
+static struct bfp_rebindings_entry *g_bfpRebindingsHead = NULL;
+static int g_bfpRebindFailures = 0;
 
-    // 先找到 __LINKEDIT 里的 symtab / strtab / indirect symtab
-    struct symtab_command *symtab = NULL;
-    struct dysymtab_command *dysym = NULL;
-    const struct segment_command_64 *linkedit = NULL;
-    intptr_t cur = (intptr_t)mh + sizeof(struct mach_header_64);
-    for (uint32_t i = 0; i < mh->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)cur;
-        if (lc->cmd == LC_SYMTAB) symtab = (struct symtab_command *)lc;
-        else if (lc->cmd == LC_DYSYMTAB) dysym = (struct dysymtab_command *)lc;
-        else if (lc->cmd == LC_SEGMENT_64) {
-            struct segment_command_64 *sg = (struct segment_command_64 *)lc;
-            if (strcmp(sg->segname, "__LINKEDIT") == 0) linkedit = sg;
-        }
-        cur += lc->cmdsize;
+static vm_address_t bfp_page_mask(void) {
+    vm_size_t page = vm_page_size;
+    if (page == 0) {
+        long sysPage = sysconf(_SC_PAGESIZE);
+        page = sysPage > 0 ? (vm_size_t)sysPage : 16384;
     }
-    if (!symtab || !dysym || !linkedit) return;
+    return (vm_address_t)(page - 1);
+}
 
-    intptr_t slide_bias = slide - (intptr_t)linkedit->vmaddr;
-    struct nlist_64 *syms = (struct nlist_64 *)(symtab->symoff + slide_bias);
-    char *strs = (char *)(symtab->stroff + slide_bias);
-    uint32_t *indirect = (uint32_t *)(dysym->indirectsymoff + slide_bias);
+static int bfp_prepend_rebindings(struct bfp_rebindings_entry **head,
+                                  struct bfp_rebinding rebindings[],
+                                  size_t nel) {
+    struct bfp_rebindings_entry *new_entry =
+        (struct bfp_rebindings_entry *)malloc(sizeof(struct bfp_rebindings_entry));
+    if (!new_entry) return -1;
+    new_entry->rebindings = rebindings;
+    new_entry->rebindings_nel = nel;
+    new_entry->next = *head;
+    *head = new_entry;
+    return 0;
+}
 
-    // 遍历所有段的所有节，找间接符号指针节
-    cur = (intptr_t)mh + sizeof(struct mach_header_64);
-    for (uint32_t i = 0; i < mh->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)cur;
-        if (lc->cmd == LC_SEGMENT_64) {
-            struct segment_command_64 *sg = (struct segment_command_64 *)lc;
-            struct section_64 *sec = (struct section_64 *)((intptr_t)sg + sizeof(struct segment_command_64));
-            for (uint32_t j = 0; j < sg->nsects; j++, sec++) {
-                uint32_t type = sec->flags & SECTION_TYPE;
-                if (type != S_NON_LAZY_SYMBOL_POINTERS &&
-                    type != S_LAZY_SYMBOL_POINTERS &&
-                    type != S_SYMBOL_STUBS) continue;
-                if (!(sec->offset && sec->size)) continue;
-                uint32_t stride = (type == S_SYMBOL_STUBS) ? sec->reserved2 : sizeof(void *);
-                if (stride == 0) continue;
-                uint32_t count = (uint32_t)(sec->size / stride);
-                intptr_t sec_base = (intptr_t)(sec->offset + slide_bias);
-                for (uint32_t k = 0; k < count; k++) {
-                    uint32_t symidx = indirect[sec->reserved1 + k];
-                    if (symidx == INDIRECT_SYMBOL_LOCAL || symidx == INDIRECT_SYMBOL_ABS) continue;
-                    if (symidx >= symtab->nsyms) continue;
-                    char *name = strs + syms[symidx].n_un.n_strx;
-                    if (!name || name[0] != '_') continue;
-                    for (size_t r = 0; r < nel; r++) {
-                        const char *target = rebindings[r].name;
-                        if (!target || strcmp(name + 1, target) != 0) continue;
-                        void **slot = (void **)(sec_base + k * stride);
-                        // 保存原实现
-                        if (*slot && *(rebindings[r].replaced) == NULL) {
-                            *(rebindings[r].replaced) = *slot;
+static void bfp_perform_rebinding_with_section(struct bfp_rebindings_entry *rebindings,
+                                               bfp_section_t *section,
+                                               intptr_t slide,
+                                               bfp_nlist_t *symtab,
+                                               uint32_t nsyms,
+                                               char *strtab,
+                                               uint32_t *indirect_symtab,
+                                               uint32_t nindirectsyms) {
+    uint32_t *indirect_symbol_indices = indirect_symtab + section->reserved1;
+    void **indirect_symbol_bindings = (void **)((uintptr_t)slide + section->addr);
+    uint32_t pointer_count = (uint32_t)(section->size / sizeof(void *));
+
+    // 越界保护：reserved1 + 指针数不能超过间接符号表大小
+    if (section->reserved1 >= nindirectsyms ||
+        pointer_count > nindirectsyms - section->reserved1) {
+        return;
+    }
+
+    int protected_region = 0;  // 延迟 vm_protect：找到匹配符号后才解除写保护
+
+    for (uint i = 0; i < pointer_count; i++) {
+        uint32_t symtab_index = indirect_symbol_indices[i];
+        if (symtab_index == INDIRECT_SYMBOL_ABS || symtab_index == INDIRECT_SYMBOL_LOCAL ||
+            symtab_index == (INDIRECT_SYMBOL_LOCAL | INDIRECT_SYMBOL_ABS)) {
+            continue;
+        }
+        if (symtab_index >= nsyms) continue;  // 符号表越界，跳过
+        uint32_t strtab_offset = symtab[symtab_index].n_un.n_strx;
+        char *symbol_name = strtab + strtab_offset;
+        if (!symbol_name[0] || !symbol_name[1]) continue;
+        struct bfp_rebindings_entry *cur = rebindings;
+        while (cur) {
+            for (uint j = 0; j < cur->rebindings_nel; j++) {
+                if (strcmp(&symbol_name[1], cur->rebindings[j].name) == 0) {
+                    // 延迟到真正需要写入时才解除该 GOT 区域的写保护
+                    // 地址与长度按页对齐，否则 vm_protect 可能整体失败。
+                    if (!protected_region) {
+                        vm_address_t page_mask = bfp_page_mask();
+                        vm_address_t page_start = (vm_address_t)indirect_symbol_bindings & ~page_mask;
+                        vm_address_t page_end = ((vm_address_t)indirect_symbol_bindings
+                            + (vm_size_t)section->size + page_mask) & ~page_mask;
+                        kern_return_t vr = vm_protect(mach_task_self(), page_start,
+                            (vm_size_t)(page_end - page_start), NO,
+                            VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+                        if (vr != KERN_SUCCESS) {
+                            return;
                         }
-                        // 已替换过就不再重复（避免与自己比较）
-                        if (*slot == rebindings[r].replacement) continue;
-                        // 改页权限后写入
-                        vm_address_t page = (vm_address_t)slot & ~(vm_page_size - 1);
-                        vm_protect(mach_task_self(), page, vm_page_size, false,
-                                   VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
-                        *slot = rebindings[r].replacement;
-                        vm_protect(mach_task_self(), page, vm_page_size, false,
-                                   VM_PROT_READ | VM_PROT_EXECUTE);
+                        protected_region = 1;
                     }
+                    // 记录原函数地址：与官方 fishhook 一致，不挑节类型
+                    // （惰性槽位里的值同样可用）。只加两条保险：
+                    // 槽位里不能已经是替换目标，且已经记到过就不再覆写。
+                    // 注意：这里不能加 “只从 S_NON_LAZY 槽位取” 的限制，
+                    // 否则惰性槽位永远记不到原函数，orig_* 保持 NULL，
+                    // 替换函数会一律返回失败（stat/access 报错、dlopen 返回 NULL），
+                    // 表现为 App 一启动就闪退。
+                    if (cur->rebindings[j].replaced != NULL &&
+                        *(cur->rebindings[j].replaced) == NULL &&
+                        indirect_symbol_bindings[i] != cur->rebindings[j].replacement) {
+                        *(cur->rebindings[j].replaced) = indirect_symbol_bindings[i];
+                    }
+                    indirect_symbol_bindings[i] = cur->rebindings[j].replacement;
+                    goto bds_symbol_loop;
+                }
+            }
+            cur = cur->next;
+        }
+    bds_symbol_loop:;
+    }
+}
+
+static void bfp_rebind_symbols_for_image(struct bfp_rebindings_entry *rebindings,
+                                         const struct mach_header *header,
+                                         intptr_t slide) {
+    if (header->magic != MH_MAGIC_64 && header->magic != MH_MAGIC) return;
+
+    bfp_segment_command_t *cur_seg_cmd;
+    bfp_segment_command_t *linkedit_segment = NULL;
+    struct symtab_command *symtab_cmd = NULL;
+    struct dysymtab_command *dysymtab_cmd = NULL;
+
+    uintptr_t cur = (uintptr_t)header + sizeof(bfp_mach_header_t);
+    for (uint i = 0; i < header->ncmds; i++, cur += cur_seg_cmd->cmdsize) {
+        cur_seg_cmd = (bfp_segment_command_t *)cur;
+        if (cur_seg_cmd->cmd == BFP_LC_SEGMENT) {
+            if (strcmp(cur_seg_cmd->segname, SEG_LINKEDIT) == 0) {
+                linkedit_segment = cur_seg_cmd;
+            }
+        } else if (cur_seg_cmd->cmd == LC_SYMTAB) {
+            symtab_cmd = (struct symtab_command *)cur_seg_cmd;
+        } else if (cur_seg_cmd->cmd == LC_DYSYMTAB) {
+            dysymtab_cmd = (struct dysymtab_command *)cur_seg_cmd;
+        }
+    }
+
+    if (!symtab_cmd || !dysymtab_cmd || !linkedit_segment) return;
+    // chained fixups 镜像的间接符号表为空：以前静默跳过，现在记一笔。
+    if (dysymtab_cmd->nindirectsyms == 0) { return; }
+
+    uintptr_t linkedit_base =
+        (uintptr_t)slide + linkedit_segment->vmaddr - linkedit_segment->fileoff;
+    bfp_nlist_t *symtab = (bfp_nlist_t *)(linkedit_base + symtab_cmd->symoff);
+    char *strtab = (char *)(linkedit_base + symtab_cmd->stroff);
+    uint32_t *indirect_symtab =
+        (uint32_t *)(linkedit_base + dysymtab_cmd->indirectsymoff);
+
+    cur = (uintptr_t)header + sizeof(bfp_mach_header_t);
+    for (uint i = 0; i < header->ncmds; i++, cur += cur_seg_cmd->cmdsize) {
+        cur_seg_cmd = (bfp_segment_command_t *)cur;
+        if (cur_seg_cmd->cmd == BFP_LC_SEGMENT) {
+            // 只扫描 __DATA 和 __DATA_CONST（官方 fishhook 同样如此）。
+            // 不扫描 __AUTH/__AUTH_CONST：arm64e 上这些段的 GOT 指针带 PAC 签名，
+            // 直接写入未签名指针会在调用时触发认证失败崩溃。
+            if (strcmp(cur_seg_cmd->segname, SEG_DATA) != 0 &&
+                strcmp(cur_seg_cmd->segname, SEG_DATA_CONST) != 0) {
+                continue;
+            }
+            for (uint j = 0; j < cur_seg_cmd->nsects; j++) {
+                bfp_section_t *sect =
+                    (bfp_section_t *)(cur + sizeof(bfp_segment_command_t)) + j;
+                uint8_t sect_type = sect->flags & SECTION_TYPE;
+                if (sect_type == S_LAZY_SYMBOL_POINTERS ||
+                    sect_type == S_NON_LAZY_SYMBOL_POINTERS) {
+                    bfp_perform_rebinding_with_section(rebindings, sect, slide,
+                                                       symtab, symtab_cmd->nsyms,
+                                                       strtab, indirect_symtab,
+                                                       dysymtab_cmd->nindirectsyms);
                 }
             }
         }
-        cur += lc->cmdsize;
     }
 }
 
 static void bfp_rebind_cb(const struct mach_header *mh, intptr_t slide) {
-    for (struct bfp_rebindings_entry *e = g_head; e; e = e->next) {
-        bfp_rebind_image(e->rebindings, e->nel, mh, slide);
+    for (struct bfp_rebindings_entry *e = g_bfpRebindingsHead; e; e = e->next) {
+        bfp_rebind_symbols_for_image(e, mh, slide);
     }
 }
 
 static int bfp_rebind_symbols(struct bfp_rebinding rebindings[], size_t nel) {
-    struct bfp_rebindings_entry *e = malloc(sizeof(struct bfp_rebindings_entry));
-    if (!e) return -1;
-    e->rebindings = rebindings;
-    e->nel = nel;
-    e->next = g_head;
-    g_head = e;
-    if (!g_reb_inited) {
-        g_reb_inited = 1;
+    struct bfp_rebindings_entry *head = NULL;
+    if (bfp_prepend_rebindings(&head, rebindings, nel) < 0) return -1;
+    g_bfpRebindingsHead = head;
+
+    static int inited = 0;
+    if (!inited) {
+        inited = 1;
         _dyld_register_func_for_add_image(bfp_rebind_cb);
     } else {
         uint32_t c = _dyld_image_count();
         for (uint32_t i = 0; i < c; i++) {
-            bfp_rebind_image(rebindings, nel, _dyld_get_image_header(i),
-                             _dyld_get_image_vmaddr_slide(i));
+            bfp_rebind_symbols_for_image(head, _dyld_get_image_header(i),
+                                         _dyld_get_image_vmaddr_slide(i));
         }
     }
     return 0;
