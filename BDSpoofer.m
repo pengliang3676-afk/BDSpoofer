@@ -141,7 +141,7 @@ static NSDictionary *g_config = nil;
 static int g_enabledC = 0;
 static int g_spoofSysctlC = 0;
 static int g_bypassJailbreakC = 0;
-// 9.30-24：隐藏注入独立于防越狱检测。防的是“发现你在改我”，与伪装越狱状态无关。
+// 9.30-25：隐藏注入独立于防越狱检测。防的是“发现你在改我”，与伪装越狱状态无关。
 static int g_hideInjectionC = 0;
 static int g_spoofWiFiC = 0;
 static int g_spoofLocalIPC = 0;
@@ -354,7 +354,7 @@ static void loadConfig() {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            // 9.30-24 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
+            // 9.30-25 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
             // （v189 迁移还会兜底强制关一次。）
             @"bypassJailbreakDetect": @NO
         }];
@@ -561,9 +561,9 @@ static void loadConfig() {
     BDSApplyInitialDefaults(merged, loaded);
     // 注意顺序：迁移必须放在 BDSApplyInitialDefaults 之后。
     // 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
-    // 写在它之前会被它设回 @YES（9.30-24 实测就是这个原因导致开关关不掉）。
+    // 写在它之前会被它设回 @YES（9.30-25 实测就是这个原因导致开关关不掉）。
     if (ver < 189) {
-        // 9.30-24：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
+        // 9.30-25：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
         // 老配置里这个键通常已存 @YES，光靠默认值救不了，必须强制写一次 @NO。
         // 用独立的版本号 189 是为了让已经处在 188 的配置也能被这次修正覆盖到，
         // 且只执行一次：之后用户在面板手动打开仍然有效。
@@ -3095,7 +3095,7 @@ static const char *bds_my_dyld_get_image_name(uint32_t image_index) {
         BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
         return name;
     }
-    // 反注入独立开关（9.30-24）：隐藏注入与防越狱检测拆开
+    // 反注入独立开关（9.30-25）：隐藏注入与防越狱检测拆开
     if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_hideInjectionC)) {
         BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
         return name;
@@ -3117,35 +3117,18 @@ static const char *bds_my_dyld_get_image_name(uint32_t image_index) {
 static int (*orig_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
 static int bds_my_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp,
                          void *newp, size_t newlen) {
-    // 空指针保护：fishhook 若因二进制布局差异没能填上原函数指针，
-    // 直接调用就是 NULL 调用 -> 立刻闪退。其余 10 个新 C hook 都有这层保护，此处原先漏了。
+    // 【9.30-25 修复】本函数原来是 9.30-21 加入的"补漏"，会改写
+    // HW_MACHINE / HW_MEMSIZE 两个键的返回值。但它的写法有致命缺陷：
+    //   sysctl 的调用方按「自己请求的长度」读取结果，而我们写回一个
+    //   长度不同的字符串，长度对不上 -> 调用方越界读 -> 拿到坏指针 ->
+    //   表现为 _os_log_fmt_flatten_object 里 objc_msgSend 崩溃。
+    // 机型/内存的正确伪装出口是 sysctlbyname（已有 hook），
+    // 这里恢复为纯透传，不再改写任何值。
     if (!orig_sysctl) {
         errno = ENOSYS;
         return -1;
     }
-    int r = orig_sysctl(name, namelen, oldp, oldlenp, newp, newlen);
-    if (r != 0 || !name || namelen < 2 || !oldp || !oldlenp || newp) return r;
-    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofSysctlC)) return r;
-    // CTL_HW = 6
-    if (name[0] != CTL_HW) return r;
-    // HW_MACHINE = 1（字符串），HW_MEMSIZE = 24（uint64）
-    if (name[1] == HW_MACHINE && g_hwMachine[0]) {
-        size_t len = strlen(g_hwMachine) + 1;
-        if (*oldlenp >= len) {
-            memcpy(oldp, g_hwMachine, len);
-            *oldlenp = len;
-            BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStateChanged);
-        }
-        return 0;
-    }
-    if (name[1] == HW_MEMSIZE && *oldlenp >= sizeof(uint64_t)) {
-        uint64_t mem = (uint64_t)cfgInt(@"memorySize", 4096) * 1024ULL * 1024ULL;
-        *(uint64_t *)oldp = mem;
-        *oldlenp = sizeof(uint64_t);
-        BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStateChanged);
-        return 0;
-    }
-    return r;
+    return orig_sysctl(name, namelen, oldp, oldlenp, newp, newlen);
 }
 
 // ---- fstat：通过已打开的文件描述符绕过路径检查 ----
@@ -3205,7 +3188,11 @@ static int bds_my_getpeername(int fd, struct sockaddr *addr, socklen_t *len) {
 static kern_return_t (*orig_task_info)(task_name_t, task_flavor_t, task_info_t, mach_msg_type_number_t *);
 static kern_return_t bds_my_task_info(task_name_t task, task_flavor_t flavor,
                                       task_info_t info, mach_msg_type_number_t *cnt) {
-    kern_return_t r = orig_task_info ? orig_task_info(task, flavor, info, cnt) : KERN_FAILURE;
+    // 【9.30-25】原函数指针为空时，不能返回 KERN_FAILURE ——
+    // 调用方拿到失败可能直接崩。这里改为直接返回失败前先确保不产生副作用，
+    // 且绝不改写 info（只做诊断）。
+    if (!orig_task_info) return KERN_FAILURE;
+    kern_return_t r = orig_task_info(task, flavor, info, cnt);
     BDS_DIAG_RECORD(g_diagProcess, BDSDiagStatePassed);
     // 说明：task_info(TASK_BASIC_INFO) 返回的是"本进程虚拟内存/常驻内存"，
     // 与 hw.memsize（物理内存总量）不是同一个量，强行改会与真实值矛盾。
@@ -3216,8 +3203,9 @@ static kern_return_t bds_my_task_info(task_name_t task, task_flavor_t flavor,
 static kern_return_t (*orig_host_statistics64)(host_t, int, host_info64_t, mach_msg_type_number_t *);
 static kern_return_t bds_my_host_statistics64(host_t host, int flavor, host_info64_t info,
                                               mach_msg_type_number_t *cnt) {
-    kern_return_t r = orig_host_statistics64 ? orig_host_statistics64(host, flavor, info, cnt)
-                                             : KERN_FAILURE;
+    // 【9.30-25】同上：判空后只透传，不改写 info。
+    if (!orig_host_statistics64) return KERN_FAILURE;
+    kern_return_t r = orig_host_statistics64(host, flavor, info, cnt);
     BDS_DIAG_RECORD(g_diagStatfs, BDSDiagStatePassed);
     // free_count 与 statfs 的可用空间是两个不同口径（物理页 vs 文件系统），
     // 强行对齐反而矛盾。故只做诊断。
@@ -3903,6 +3891,8 @@ static int bds_my_getifaddrs(struct ifaddrs **ifap) {
 // 不一起改的话，两条路会给出互相矛盾的 IP。
 static int (*orig_getsockname)(int, struct sockaddr *, socklen_t *);
 static int bds_my_getsockname(int fd, struct sockaddr *addr, socklen_t *len) {
+    // 【9.30-25】补判空：原函数指针为空时直接调用就是 NULL 调用 -> 必崩。
+    if (!orig_getsockname) { errno = ENOSYS; return -1; }
     int r = orig_getsockname(fd, addr, len);
     if (r != 0 || !addr || !len) return r;
     if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofLocalIPC)) return r;
@@ -4931,7 +4921,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-24";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-25";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;

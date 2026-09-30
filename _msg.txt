@@ -1,27 +1,38 @@
-Ship 9.30-24: 内网 IP 池按探针实测调整 + sysctl 判空修复
+Ship 9.30-25: 修复 bds_my_sysctl 导致的启动闪退（回退 9.30-21 的补漏）
 
-【依据】探针 5.3 实测数据（不是推测）：
-  这台测试机 en0 = 10.88.12.1 —— 10.x 私网段在真实家庭/办公网络里
-  占比远比原池体现的高。而原池：
-    - 10.x 只有 10.0.0. / 10.0.1. 两段，合计权重 11%
-    - 192.168.1. 独占 40%，分布过度集中
+【用户实证】9.30-14 正常，9.30-24「一键基础 + 一键高级」后每次打开极速都闪退。
 
-【改动】重排权重并补入常见网段（总权重仍为 100）：
-  10.x 权重        11%  ->  18%
-  192.168.1. 权重  40%  ->  28%
-  段数             10   ->  17
-  新增 10.88.12.(实测段) / 10.1.1. / 10.0.10. /
-       192.168.10. / 192.168.100. / 192.168.8. / 192.168.11.
+【已排除】
+  - 配置值本身：逐项核对机型/屏幕/内存/磁盘/电量/开机偏移，全部在档且自洽
+  - 机型与系统版本：改回 iPhone 8 / 15.6 仍崩；改 iOS 17 仍崩
+  - hideInjection：关掉仍崩
+  - 全部伪装逻辑：didRandomizeBasic / didRandomizeAdvanced 置 False（完全透传）仍崩
+  - 崩溃栈里没有插件：usedImages 18 个镜像，不含 BDSpoofer
+  - 崩溃地址落在 GPU Carveout 保留区（全未分配）
 
-【同时并入】bds_my_sysctl 空指针保护
-  排查闪退时发现：新增的 11 个 C hook 里 10 个都做了 orig_ 判空，
-  只有 bds_my_sysctl 直接调用 orig_sysctl(...)。若 fishhook 未填上该指针
-  就是 NULL 调用 -> 立刻闪退。这是一个有明确证据的真缺陷修复。
+【定位】对比 9.30-14 与 9.30-24 新增的 hook，9.30-21 加入的 bds_my_sysctl
+有致命缺陷：
 
-【明确排除】没有并入时间偏移
-  时间偏移此前基于静态符号（BDPanServerTimeHelper 类存在）推测实现，
-  但探针实测 L5 时间层「本次未被调用」—— time()/gettimeofday/
-  CFAbsoluteTimeGetCurrent 一次都没被调用，说明方向错了。
-  该实现留在 fix/c330271-pool-current 分支历史中，不进入本次发布。
+    if (name[1] == HW_MACHINE && g_hwMachine[0]) {
+        size_t len = strlen(g_hwMachine) + 1;
+        if (*oldlenp >= len) {
+            memcpy(oldp, g_hwMachine, len);
+            *oldlenp = len;
+        }
+        return 0;
+    }
 
-校验脚本新增：IP 池必须含实测段、10.x 占比与 192.168.1. 权重的范围检查。
+  sysctl 的调用方按「自己请求的长度」读取结果，而我们写回长度不同的字符串，
+  长度对不上 -> 调用方越界读 -> 拿到坏指针 ->
+  表现为 _os_log_fmt_flatten_object 内 objc_msgSend 崩溃。
+
+  机型/内存的正确伪装出口是 sysctlbyname（早已有 hook），
+  sysctl 本体这条补漏是多余的，且引入崩溃。
+
+【本版改动】
+  1. bds_my_sysctl 恢复为纯透传，不再改写任何值
+  2. bds_my_task_info / bds_my_host_statistics64：原函数指针为空时不再
+     直接返回 KERN_FAILURE（调用方拿到失败可能崩），改为判空后只透传
+  3. bds_my_getsockname 补判空（唯一一个漏判空的 C hook）
+
+校验脚本同步抬到 9.30-25。
