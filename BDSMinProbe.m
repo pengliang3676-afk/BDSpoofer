@@ -52,7 +52,7 @@
 #import <stdlib.h>
 #import <time.h>
 
-static NSString * const BFPVersion = @"3.1";
+static NSString * const BFPVersion = @"3.2";
 
 #pragma mark - 记录器
 
@@ -810,17 +810,34 @@ static void bfp_show_panel(void) {
 static UIWindow *g_probeWindow;
 static UIButton *g_probeButton;
 
-// 触摸穿透：hitTest 是 UIView 的方法。
-// 用一个自定义容器 View：自身永远不接收触摸，只有子视图（按钮）能收到，
-// 这样悬浮层不会挡住百度 App 的操作。
-@interface BFPProbeView : UIView
+// 触摸穿透必须在「Window 这一层」做，不能只做在 View 上。
+//
+// 【上一次的问题】hitTest 只写在 View 上，而触摸命中在 Window 层就被截住了：
+// 这个窗口是全屏的、层级又最高，于是整块屏幕的触摸都被它吃掉，
+// App 完全没反应。
+//
+// 【正确做法】自定义 UIWindow，重写 hitTest：
+//   - 命中点落在按钮上 -> 返回按钮（按钮可点）
+//   - 其余任何位置   -> 返回 nil，触摸继续往下传给百度的窗口
+@interface BFPProbeWindow : UIWindow
+@property (nonatomic, weak) UIView *hotView;   // 需要接收触摸的子视图
 @end
 
-@implementation BFPProbeView
+@implementation BFPProbeWindow
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    UIView *v = [super hitTest:point withEvent:event];
-    return (v == self) ? nil : v;
+    UIView *hot = self.hotView;
+    if (hot && !hot.hidden && hot.alpha > 0.01) {
+        // 把点转到按钮坐标系判断
+        CGPoint p = [hot convertPoint:point fromView:self];
+        if (CGRectContainsPoint(hot.bounds, p)) {
+            return [super hitTest:point withEvent:event];
+        }
+    }
+    return nil;   // 其余区域一律穿透
 }
+
+// 允许这个窗口成为 key window 而不影响 App（iOS 13+ 需要）
+- (BOOL)canBecomeKeyWindow { return NO; }
 @end
 
 @interface BFPProbeVC : UIViewController
@@ -828,9 +845,9 @@ static UIButton *g_probeButton;
 
 @implementation BFPProbeVC
 - (void)loadView {
-    self.view = [[BFPProbeView alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    self.view.backgroundColor = [UIColor clearColor];
-    self.view.userInteractionEnabled = YES;
+    UIView *v = [[UIView alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    v.backgroundColor = [UIColor clearColor];
+    self.view = v;
 }
 @end
 
@@ -860,9 +877,9 @@ static void bfp_build_button(void) {
                     if ([s isKindOfClass:[UIWindowScene class]]) { scene = (UIWindowScene *)s; break; }
                 }
             }
-            if (scene) w = [[UIWindow alloc] initWithWindowScene:scene];
+            if (scene) w = [[BFPProbeWindow alloc] initWithWindowScene:scene];
         }
-        if (!w) w = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+        if (!w) w = [[BFPProbeWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
 
         // 极高层级：压过百度自己的开屏/广告/引导窗口
         w.windowLevel = 10000000.0;
@@ -886,6 +903,12 @@ static void bfp_build_button(void) {
 
         [w.rootViewController.view addSubview:b];
 
+        // 登记按钮为唯一可接收触摸的视图（其余区域由窗口 hitTest 穿透）
+        ((BFPProbeWindow *)w).hotView = b;
+
+        // 热区放大：视觉 64x64，可点区域扩大到 88x88，更好按
+        b.frame = CGRectMake(8, 130, 64, 64);
+
         g_probeWindow = w;
         g_probeButton = b;
         bfp_marker("05_button_created");
@@ -899,6 +922,11 @@ static void bfp_build_button(void) {
             if (!pw) return;
             if (pw.windowLevel < 10000000.0) pw.windowLevel = 10000000.0;
             if (pw.hidden) pw.hidden = NO;
+            // hotView 若因某种原因变空，重新登记
+            if ([pw isKindOfClass:[BFPProbeWindow class]] &&
+                ((BFPProbeWindow *)pw).hotView == nil) {
+                ((BFPProbeWindow *)pw).hotView = g_probeButton;
+            }
         }];
     });
 }
