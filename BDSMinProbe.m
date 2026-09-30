@@ -810,19 +810,27 @@ static void bfp_show_panel(void) {
 static UIWindow *g_probeWindow;
 static UIButton *g_probeButton;
 
+// 触摸穿透：hitTest 是 UIView 的方法。
+// 用一个自定义容器 View：自身永远不接收触摸，只有子视图（按钮）能收到，
+// 这样悬浮层不会挡住百度 App 的操作。
+@interface BFPProbeView : UIView
+@end
+
+@implementation BFPProbeView
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *v = [super hitTest:point withEvent:event];
+    return (v == self) ? nil : v;
+}
+@end
+
 @interface BFPProbeVC : UIViewController
 @end
 
 @implementation BFPProbeVC
-- (void)viewDidLoad {
-    [super viewDidLoad];
+- (void)loadView {
+    self.view = [[BFPProbeView alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.view.backgroundColor = [UIColor clearColor];
     self.view.userInteractionEnabled = YES;
-}
-// 只让按钮接收触摸，其余区域穿透到下面的 App
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    UIView *v = [super hitTest:point withEvent:event];
-    return (v == self.view) ? nil : v;
 }
 @end
 
