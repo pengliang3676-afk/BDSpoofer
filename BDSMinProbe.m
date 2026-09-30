@@ -53,7 +53,7 @@
 #import <stdlib.h>
 #import <time.h>
 
-static NSString * const BFPVersion = @"5.1";
+static NSString * const BFPVersion = @"5.2";
 
 #pragma mark - 记录器
 
@@ -122,6 +122,44 @@ static void bfp_marker(const char *stage) {
         [[NSString stringWithFormat:@"stage=%s", stage]
             writeToFile:f atomically:YES encoding:NSUTF8StringEncoding error:NULL];
     }
+}
+
+
+#pragma mark - hook 装载诊断（回答"没装上"还是"没被调用"）
+
+// 之前的探针只有 rebind 失败计数，分不清两种情况：
+//   A. fishhook 根本没装上这个符号 -> 我的替换函数从未被调用
+//   B. 装上了，但 App 确实没调用
+// 这两种要采取的行动完全不同，所以必须记录每个符号的真实状态。
+
+#define BFP_MAX_HOOKS 24
+
+typedef struct {
+    const char *name;
+    int hooked;        // fishhook 是否改写了 GOT
+    int origFilled;    // 原函数指针是否被填上
+    int called;        // 替换函数是否被调用过
+} bfp_hook_stat;
+
+static bfp_hook_stat g_hookStats[BFP_MAX_HOOKS];
+static int g_hookStatCount = 0;
+
+static bfp_hook_stat *bfp_stat_for(const char *name) {
+    for (int i = 0; i < g_hookStatCount; i++) {
+        if (strcmp(g_hookStats[i].name, name) == 0) return &g_hookStats[i];
+    }
+    if (g_hookStatCount >= BFP_MAX_HOOKS) return NULL;
+    bfp_hook_stat *s = &g_hookStats[g_hookStatCount++];
+    s->name = name;
+    s->hooked = 0;
+    s->origFilled = 0;
+    s->called = 0;
+    return s;
+}
+
+static void bfp_mark_called(const char *name) {
+    bfp_hook_stat *s = bfp_stat_for(name);
+    if (s) s->called = 1;
 }
 
 #pragma mark - fishhook（复用主插件验证过的实现）
@@ -227,6 +265,15 @@ static void bfp_perform_rebinding_with_section(struct bfp_rebindings_entry *rebi
                         *(cur->rebindings[j].replaced) = indirect_symbol_bindings[i];
                     }
                     indirect_symbol_bindings[i] = cur->rebindings[j].replacement;
+                    {
+                        bfp_hook_stat *st = bfp_stat_for(cur->rebindings[j].name);
+                        if (st) {
+                            st->hooked = 1;
+                            if (cur->rebindings[j].replaced && *(cur->rebindings[j].replaced)) {
+                                st->origFilled = 1;
+                            }
+                        }
+                    }
                     goto next_symbol;
                 }
             }
@@ -315,6 +362,7 @@ static int bfp_rebind_symbols(struct bfp_rebinding rb[], size_t nel) {
 static int (*o_sysctlbyname)(const char *, void *, size_t *, void *, size_t);
 static int m_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
                           void *newp, size_t newlen) {
+    bfp_mark_called("sysctlbyname");
     if (!o_sysctlbyname) { errno = ENOSYS; return -1; }
     int r = o_sysctlbyname(name, oldp, oldlenp, newp, newlen);
     if (r == 0 && name && oldp && oldlenp && !newp) {
@@ -331,8 +379,35 @@ static int m_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
     return r;
 }
 
+
+// sysctl 本体：与 sysctlbyname 是两个独立符号。
+// 静态分析确认百度两个都导入了；上一版探针只钩了 sysctlbyname，漏了这条。
+static int (*o_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
+static int m_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp,
+                    void *newp, size_t newlen) {
+    bfp_mark_called("sysctl");
+    if (!o_sysctl) { errno = ENOSYS; return -1; }
+    int r = o_sysctl(name, namelen, oldp, oldlenp, newp, newlen);
+    if (r == 0 && name && namelen >= 2 && oldp && oldlenp && !newp) {
+        // CTL_HW = 6
+        if (name[0] == 6) {
+            NSString *key = [NSString stringWithFormat:@"L1 sysctl mib=[6,%d]", name[1]];
+            size_t len = *oldlenp;
+            if (len == 4)      bfp_rec_int(key, *(int *)oldp);
+            else if (len == 8) bfp_rec_int(key, *(long long *)oldp);
+            else if (len > 0 && len < 256) {
+                char buf[257] = {0};
+                memcpy(buf, oldp, len < 256 ? len : 256);
+                bfp_rec_str(key, buf);
+            }
+        }
+    }
+    return r;
+}
+
 static int (*o_uname)(struct utsname *);
 static int m_uname(struct utsname *b) {
+    bfp_mark_called("uname");
     if (!o_uname) { errno = ENOSYS; return -1; }
     int r = o_uname(b);
     if (r == 0 && b) {
@@ -375,26 +450,31 @@ static void bfp_note_path(const char *p) {
 
 static int (*o_stat)(const char *, struct stat *);
 static int m_stat(const char *p, struct stat *b) {
+    bfp_mark_called("stat");
     if (!o_stat) { errno = ENOSYS; return -1; }
     bfp_note_path(p); return o_stat(p, b);
 }
 static int (*o_lstat)(const char *, struct stat *);
 static int m_lstat(const char *p, struct stat *b) {
+    bfp_mark_called("lstat");
     if (!o_lstat) { errno = ENOSYS; return -1; }
     bfp_note_path(p); return o_lstat(p, b);
 }
 static int (*o_access)(const char *, int);
 static int m_access(const char *p, int md) {
+    bfp_mark_called("access");
     if (!o_access) { errno = ENOSYS; return -1; }
     bfp_note_path(p); return o_access(p, md);
 }
 static FILE *(*o_fopen)(const char *, const char *);
 static FILE *m_fopen(const char *p, const char *md) {
+    bfp_mark_called("fopen");
     if (!o_fopen) { errno = ENOSYS; return NULL; }
     bfp_note_path(p); return o_fopen(p, md);
 }
 static DIR *(*o_opendir)(const char *);
 static DIR *m_opendir(const char *p) {
+    bfp_mark_called("opendir");
     if (!o_opendir) { errno = ENOSYS; return NULL; }
     bfp_note_path(p); return o_opendir(p);
 }
@@ -403,6 +483,7 @@ static DIR *m_opendir(const char *p) {
 
 static int (*o_getifaddrs)(struct ifaddrs **);
 static int m_getifaddrs(struct ifaddrs **out) {
+    bfp_mark_called("getifaddrs");
     if (!o_getifaddrs) { errno = ENOSYS; return -1; }
     int r = o_getifaddrs(out);
     if (r == 0 && out && *out) {
@@ -435,6 +516,7 @@ static int m_getifaddrs(struct ifaddrs **out) {
 
 static uint32_t (*o_dyld_count)(void);
 static uint32_t m_dyld_count(void) {
+    bfp_mark_called("_dyld_image_count");
     if (!o_dyld_count) return 0;
     uint32_t c = o_dyld_count();
     bfp_rec_int(@"L4 _dyld_image_count", c);
@@ -443,6 +525,7 @@ static uint32_t m_dyld_count(void) {
 
 static const char *(*o_dyld_name)(uint32_t);
 static const char *m_dyld_name(uint32_t idx) {
+    bfp_mark_called("_dyld_get_image_name");
     if (!o_dyld_name) return NULL;
     const char *n = o_dyld_name(idx);
     if (n) bfp_rec_str(@"L4 _dyld_get_image_name", n);
@@ -453,6 +536,7 @@ static const char *m_dyld_name(uint32_t idx) {
 
 static CFAbsoluteTime (*o_cfabs)(void);
 static CFAbsoluteTime m_cfabs(void) {
+    bfp_mark_called("CFAbsoluteTimeGetCurrent");
     if (!o_cfabs) return 0;
     CFAbsoluteTime v = o_cfabs();
     g_depth++;
@@ -463,6 +547,7 @@ static CFAbsoluteTime m_cfabs(void) {
 
 static time_t (*o_time)(time_t *);
 static time_t m_time(time_t *tp) {
+    bfp_mark_called("time");
     if (!o_time) return 0;
     time_t r = o_time(tp);
     bfp_rec_int(@"L5 time()", (long long)r);
@@ -471,6 +556,7 @@ static time_t m_time(time_t *tp) {
 
 static int (*o_gettimeofday)(struct timeval *, void *);
 static int m_gettimeofday(struct timeval *tv, void *tz) {
+    bfp_mark_called("gettimeofday");
     if (!o_gettimeofday) { errno = ENOSYS; return -1; }
     int r = o_gettimeofday(tv, tz);
     if (r == 0 && tv) bfp_rec_int(@"L5 gettimeofday", (long long)tv->tv_sec);
@@ -480,6 +566,7 @@ static int m_gettimeofday(struct timeval *tv, void *tz) {
 static void bfp_install_c_hooks(void) {
     struct bfp_rebinding rb[] = {
         {"sysctlbyname", (void *)m_sysctlbyname, (void **)&o_sysctlbyname},
+        {"sysctl", (void *)m_sysctl, (void **)&o_sysctl},
         {"uname", (void *)m_uname, (void **)&o_uname},
         {"stat", (void *)m_stat, (void **)&o_stat},
         {"lstat", (void *)m_lstat, (void **)&o_lstat},
@@ -857,6 +944,18 @@ static NSString *bfp_report(void) {
     [o appendFormat:@"\u8fdb\u7a0b      : %@\n", NSProcessInfo.processInfo.processName ?: @"?"];
     [o appendFormat:@"\u8bb0\u5f55\u6761\u6570  : %lu\n", (unsigned long)g_totalRecords];
     [o appendFormat:@"rebind\u5931\u8d25: %d\n", g_bfpRebindFailures];
+    [o appendString:@"\n--- hook \u88c5\u8f7d\u72b6\u6001\uff08\u88c5\u4e0a vs \u88ab\u8c03\u7528\uff09---\n"];
+    [o appendString:@"  \u7b26\u53f7                     \u88c5\u4e0a  \u539f\u6307\u9488  \u88ab\u8c03\u7528\n"];
+    for (int i = 0; i < g_hookStatCount; i++) {
+        bfp_hook_stat *s = &g_hookStats[i];
+        [o appendFormat:@"  %-22s  %-4s  %-6s  %s\n",
+            s->name,
+            s->hooked ? "YES" : "NO",
+            s->origFilled ? "YES" : "NO",
+            s->called ? "YES" : "NO"];
+    }
+    [o appendString:@"\n  \uff08\u88c5\u4e0a=NO \u610f\u5473\u7740 fishhook \u6ca1\u6539\u5230 GOT\uff1b"
+                @"\u88ab\u8c03\u7528=NO \u610f\u5473\u7740 App \u786e\u5b9e\u6ca1\u8c03\uff09\n"];
 
     [g_lock lock];
     NSDictionary *snap = [g_rec copy];
