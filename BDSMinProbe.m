@@ -52,7 +52,7 @@
 #import <stdlib.h>
 #import <time.h>
 
-static NSString * const BFPVersion = @"2.2";
+static NSString * const BFPVersion = @"3.0";
 
 #pragma mark - 记录器
 
@@ -168,24 +168,6 @@ static vm_address_t bfp_page_mask(void) {
 }
 
 
-// 校验一个地址范围确实落在可读内存里。
-// 用途：strtab 位于 __LINKEDIT 内，n_strx 是未经校验的 32 位偏移，
-// 越界时 strcmp 会直接读到未映射内存并崩溃（实测崩在 _platform_strcmp）。
-static BOOL bfp_range_readable(const void *p, size_t len) {
-    if (!p || len == 0) return NO;
-    vm_address_t addr = (vm_address_t)p;
-    vm_size_t size = 0;
-    vm_region_basic_info_data_64_t info;
-    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
-    mach_port_t object = MACH_PORT_NULL;
-    kern_return_t kr = vm_region_64(mach_task_self(), &addr, &size,
-                                    VM_REGION_BASIC_INFO_64,
-                                    (vm_region_info_t)&info, &count, &object);
-    if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
-    if (kr != KERN_SUCCESS) return NO;
-    if (!(info.protection & VM_PROT_READ)) return NO;
-    return ((vm_address_t)p >= addr) && ((vm_address_t)p + len <= addr + size);
-}
 
 static void bfp_perform_rebinding_with_section(struct bfp_rebindings_entry *rebindings,
                                                bfp_section_t *section,
@@ -195,7 +177,9 @@ static void bfp_perform_rebinding_with_section(struct bfp_rebindings_entry *rebi
                                                char *strtab,
                                                uint32_t strsize,
                                                uint32_t *indirect_symtab,
-                                               uint32_t nindirectsyms) {
+                                               uint32_t nindirectsyms,
+                                               uintptr_t linkedit_fileoff,
+                                               uintptr_t linkedit_vmsize) {
     uint32_t *indirect_symbol_indices = indirect_symtab + section->reserved1;
     void **indirect_symbol_bindings = (void **)((uintptr_t)slide + section->addr);
     uint32_t pointer_count = (uint32_t)(section->size / sizeof(void *));
@@ -222,6 +206,12 @@ static void bfp_perform_rebinding_with_section(struct bfp_rebindings_entry *rebi
         if (strtab_offset >= strsize) continue;
         if (strsize - strtab_offset < 2) continue;
         char *symbol_name = strtab + strtab_offset;
+        // 再确认这个地址确实落在本镜像的 __LINKEDIT 段区间内（纯算术，无系统调用）。
+        // 这是挡住坏指针的最后一道，且不引入任何 syscall。
+        uintptr_t sn = (uintptr_t)symbol_name;
+        uintptr_t le_start = (uintptr_t)linkedit_base + linkedit_fileoff;
+        uintptr_t le_end = le_start + (uintptr_t)linkedit_vmsize;
+        if (sn < le_start || sn + 2 > le_end) continue;
         if (!symbol_name[0] || !symbol_name[1]) continue;
         for (struct bfp_rebindings_entry *cur = rebindings; cur; cur = cur->next) {
             for (size_t j = 0; j < cur->rebindings_nel; j++) {
@@ -281,11 +271,8 @@ static void bfp_rebind_symbols_for_image(struct bfp_rebindings_entry *rebindings
     char *strtab = (char *)(linkedit_base + symtab_cmd->stroff);
     uint32_t *indirect_symtab = (uint32_t *)(linkedit_base + dysymtab_cmd->indirectsymoff);
 
-    // 整表范围先校验一次：任何一张表整体不可读，这个镜像直接跳过。
-    if (!bfp_range_readable(symtab, (size_t)symtab_cmd->nsyms * sizeof(bfp_nlist_t))) return;
-    if (!bfp_range_readable(strtab, symtab_cmd->strsize)) return;
-    if (!bfp_range_readable(indirect_symtab,
-                            (size_t)dysymtab_cmd->nindirectsyms * sizeof(uint32_t))) return;
+    // 注意：这里不做任何系统调用（vm_region 等）。
+    // 本函数会在 dlopen 过程中、dyld 持锁时被回调，做系统调用会崩。
 
     cur = (uintptr_t)header + sizeof(bfp_mach_header_t);
     for (uint32_t i = 0; i < header->ncmds; i++, cur += cur_seg_cmd->cmdsize) {
@@ -303,7 +290,9 @@ static void bfp_rebind_symbols_for_image(struct bfp_rebindings_entry *rebindings
                 bfp_perform_rebinding_with_section(rebindings, sect, slide, symtab,
                                                    symtab_cmd->nsyms, strtab,
                                                    symtab_cmd->strsize,
-                                                   indirect_symtab, dysymtab_cmd->nindirectsyms);
+                                                   indirect_symtab, dysymtab_cmd->nindirectsyms,
+                                                   (uintptr_t)linkedit_segment->fileoff,
+                                                   (uintptr_t)linkedit_segment->vmsize);
             }
         }
     }
@@ -311,11 +300,6 @@ static void bfp_rebind_symbols_for_image(struct bfp_rebindings_entry *rebindings
 
 static struct bfp_rebindings_entry *g_head = NULL;
 
-static void bfp_rebind_cb(const struct mach_header *mh, intptr_t slide) {
-    for (struct bfp_rebindings_entry *e = g_head; e; e = e->next) {
-        bfp_rebind_symbols_for_image(e, mh, slide);
-    }
-}
 
 static int bfp_rebind_symbols(struct bfp_rebinding rb[], size_t nel) {
     struct bfp_rebindings_entry *e = malloc(sizeof(struct bfp_rebindings_entry));
@@ -325,16 +309,20 @@ static int bfp_rebind_symbols(struct bfp_rebinding rb[], size_t nel) {
     e->next = g_head;
     g_head = e;
 
-    static int inited = 0;
-    if (!inited) {
-        inited = 1;
-        _dyld_register_func_for_add_image(bfp_rebind_cb);
-    } else {
-        uint32_t c = _dyld_image_count();
-        for (uint32_t i = 0; i < c; i++) {
-            bfp_rebind_symbols_for_image(e, _dyld_get_image_header(i),
-                                         _dyld_get_image_vmaddr_slide(i));
-        }
+    // 【关键】不注册 _dyld_register_func_for_add_image 回调。
+    //
+    // 原因：该回调在 dlopen 执行过程中、dyld 持锁时被调用。此时：
+    //   1. 不能做系统调用（实测加了 vm_region 校验后仍在同一处崩）
+    //   2. 新镜像可能尚未初始化完成
+    // 而我们要 hook 的 libsystem/system 函数在 App 启动时全部已加载，
+    // 只需在构造阶段对「已加载镜像」扫一遍即可，无需回调。
+    //
+    // 代价：App 启动后通过 dlopen 加载的新库不会被 hook。
+    //       对本次分析目标（百度读系统信息的路径）无影响。
+    uint32_t c = _dyld_image_count();
+    for (uint32_t i = 0; i < c; i++) {
+        bfp_rebind_symbols_for_image(e, _dyld_get_image_header(i),
+                                     _dyld_get_image_vmaddr_slide(i));
     }
     return 0;
 }
