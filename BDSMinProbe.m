@@ -51,7 +51,7 @@
 #import <stdlib.h>
 #import <time.h>
 
-static NSString * const BFPVersion = @"4.0";
+static NSString * const BFPVersion = @"4.1";
 
 #pragma mark - 记录器
 
@@ -625,14 +625,39 @@ static void bfp_install_getters(void) {
 
 #pragma mark - 报告
 
-static void bfp_write_file(NSString *txt) {
+// 写报告到多个位置，哪个成功算哪个。
+//
+// 【为什么写多份】App 沙盒 Documents 需要 Filza 才能取；
+// 而 /var/mobile/Media/ 是 AFC 可访问区（pymobiledevice3 afc pull 直接能拉），
+// 越狱设备上 App 通常有权限写那里。多写几处，取到一份即可。
+static NSArray<NSString *> *bfp_write_file(NSString *txt) {
+    NSMutableArray *written = [NSMutableArray array];
+    NSString *name = [NSString stringWithFormat:@"minprobe_%.0f.txt",
+                      [[NSDate date] timeIntervalSince1970]];
+
+    NSMutableArray *dirs = [NSMutableArray array];
     NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
                                                          NSUserDomainMask, YES).firstObject;
-    if (!docs) return;
-    NSString *p = [docs stringByAppendingPathComponent:
-                   [NSString stringWithFormat:@"minprobe_%.0f.txt",
-                    [[NSDate date] timeIntervalSince1970]]];
-    [txt writeToFile:p atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+    if (docs) [dirs addObject:docs];
+    // AFC 可读区（AFC 根就是 /var/mobile/Media）
+    [dirs addObject:@"/var/mobile/Media/DCIM"];
+    [dirs addObject:@"/var/mobile/Media/Books"];
+    [dirs addObject:@"/var/mobile/Media"];
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *d in dirs) {
+        if (!d.length) continue;
+        if (![fm fileExistsAtPath:d]) {
+            [fm createDirectoryAtPath:d withIntermediateDirectories:YES
+                           attributes:nil error:NULL];
+        }
+        NSString *p = [d stringByAppendingPathComponent:name];
+        NSError *err = nil;
+        if ([txt writeToFile:p atomically:YES encoding:NSUTF8StringEncoding error:&err]) {
+            [written addObject:p];
+        }
+    }
+    return written;
 }
 
 static NSString *bfp_report(void) {
@@ -819,10 +844,13 @@ static void bfp_show_panel(void) {
     [a addAction:[UIAlertAction actionWithTitle:@"\u5199\u6587\u4ef6" style:UIAlertActionStyleDefault
                                        handler:^(UIAlertAction *x) {
         (void)x;
-        bfp_write_file(txt);
+        NSArray *paths = bfp_write_file(txt);
+        NSString *msg = paths.count
+            ? [paths componentsJoinedByString:@"\n"]
+            : @"\u5199\u5165\u5931\u8d25\uff08\u6ca1\u6709\u53ef\u5199\u76ee\u5f55\uff09";
         UIAlertController *b2 = [UIAlertController
-            alertControllerWithTitle:@"\u5df2\u5199\u5165 Documents"
-                             message:@"minprobe_*.txt"
+            alertControllerWithTitle:[NSString stringWithFormat:@"\u5df2\u5199\u5165 %lu \u5904", (unsigned long)paths.count]
+                             message:msg
                       preferredStyle:UIAlertControllerStyleAlert];
         [b2 addAction:[UIAlertAction actionWithTitle:@"\u597d"
                                               style:UIAlertActionStyleCancel handler:nil]];
