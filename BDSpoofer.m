@@ -117,6 +117,8 @@ typedef CFArrayRef (*IOPSListFn)(CFTypeRef);
 typedef CFDictionaryRef (*IOPSDescFn)(CFTypeRef, CFTypeRef);
 #import <CoreLocation/CoreLocation.h>
 #import <ifaddrs.h>
+#import <net/route.h>
+#import <net/if.h>
 #import <net/if_dl.h>
 #import <arpa/inet.h>
 #import <sys/mount.h>
@@ -145,6 +147,71 @@ static int g_spoofWiFiC = 0;
 static int g_spoofLocalIPC = 0;
 // 伪造的本地 IP（网络字节序）。由 cfgStr(@"localIP") 在 bds_update_c_cache 中转成 s_addr。
 static in_addr_t g_localIPC = 0;
+
+// ---- 主网卡探测 ----
+//
+// 为什么需要：本地 IP 的伪造原先写死只改 en0（Wi-Fi）。
+// 但开着代理 / VPN 时，iOS 的默认路由被隧道网卡（utun*）接管，
+// en0 往往不再持有 IPv4 —— 结果是钩子改了 en0 却什么也没改到，
+// 面板上「当前」显示 (无地址)，App 走隧道那条路照样能读到自己想要的地址。
+//
+// 正确做法：问内核「默认路由走哪张网卡」，改那张。
+// 查法：sysctl(NET_RT_DUMP) 拿路由表，找 rt_flags 带 RTF_GATEWAY 的默认项
+// （目的地址为 0/0），取它的接口名。找不到就退回 en0。
+static char g_primaryIfName[IFNAMSIZ] = "en0";
+
+static BOOL bds_route_lookup_default_ifname(char *out, size_t outLen) {
+    if (!out || outLen < 2) return NO;
+    int mib[6] = {CTL_NET, PF_ROUTE, 0, 0, NET_RT_DUMP, 0};
+    size_t need = 0;
+    if (sysctl(mib, 6, NULL, &need, NULL, 0) != 0 || need == 0 || need > (1 << 22)) return NO;
+    char *buf = (char *)malloc(need);
+    if (!buf) return NO;
+    if (sysctl(mib, 6, buf, &need, NULL, 0) != 0) { free(buf); return NO; }
+
+    BOOL found = NO;
+    for (char *p = buf; p < buf + need; ) {
+        struct rt_msghdr *rtm = (struct rt_msghdr *)p;
+        if (rtm->rtm_msglen <= 0) break;
+        // 默认路由：带网关标志，且不是本机/广播/组播
+        if ((rtm->rtm_flags & RTF_GATEWAY) &&
+            !(rtm->rtm_flags & (RTF_HOST | RTF_BROADCAST | RTF_MULTICAST | RTF_LLINFO))) {
+            // rtm_index 只有 16 位，iOS 上字节序不一定如文档；
+            // 两种解释都试，都不成才退回扫描报文尾部里的接口名。
+            char nm[IFNAMSIZ] = {0};
+            BOOL got = NO;
+            if (if_indextoname((unsigned)rtm->rtm_index, nm)) got = YES;
+            if (!got && if_indextoname((unsigned)ntohs((u_short)rtm->rtm_index), nm)) got = YES;
+            if (!got) {
+                // 兜底：rt_msghdr 之后紧跟接口名（sockaddr_dl 布局），
+                // 按已知前缀直接找，避免依赖 IFNAMSIZ 对齐。
+                const char *tail = p + sizeof(struct rt_msghdr);
+                const char *end = p + rtm->rtm_msglen;
+                for (const char *q = tail; q + 3 < end; q++) {
+                    if (strncmp(q, "utun", 4) == 0 || strncmp(q, "en", 2) == 0 ||
+                        strncmp(q, "pdp_ip", 6) == 0 || strncmp(q, "ipsec", 5) == 0) {
+                        size_t n = strnlen(q, (size_t)(end - q));
+                        if (n >= 2 && n < IFNAMSIZ) {
+                            memcpy(nm, q, n);
+                            nm[n] = 0;
+                            got = (if_nametoindex(nm) != 0);
+                            break;
+                        }
+                    }
+                }
+            }
+            if (got && nm[0] && strcmp(nm, "lo0") != 0) {
+                snprintf(out, outLen, "%s", nm);
+                found = YES;
+                break;
+            }
+        }
+        p += rtm->rtm_msglen;
+    }
+    free(buf);
+    return found;
+}
+
 static int g_spoofProxyC = 0;
 static int g_spoofBootTimeC = 0;
 static int g_spoofCPUC = 0;
@@ -323,6 +390,16 @@ static void bds_update_c_cache(void) {
     }
     // 伪造本地 IP 还要求开关打开，否则钩子里直接透传（与 g_spoofLocalIPC 一起判断）
     if (!cfgBool(@"spoofLocalIP", NO)) g_localIPC = 0;
+    // 刷新主网卡：开代理/VPN 时默认路由在 utun*，此时 en0 没有 IPv4，
+    // 只改 en0 等于没改。这里问内核要真实的出接口。
+    {
+        char nm[IFNAMSIZ] = {0};
+        if (bds_route_lookup_default_ifname(nm, sizeof(nm))) {
+            snprintf(g_primaryIfName, sizeof(g_primaryIfName), "%s", nm);
+        } else {
+            snprintf(g_primaryIfName, sizeof(g_primaryIfName), "en0");
+        }
+    }
     bds_disk_size_set((long long)cfgInt(@"diskSize", 64) * 1024LL * 1024LL * 1024LL);
 }
 
@@ -352,7 +429,7 @@ static void loadConfig() {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            // 9.30-27 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
+            // 9.30-28 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
             // （v189 迁移还会兜底强制关一次。）
             @"bypassJailbreakDetect": @NO
         }];
@@ -559,9 +636,9 @@ static void loadConfig() {
     BDSApplyInitialDefaults(merged, loaded);
     // 注意顺序：迁移必须放在 BDSApplyInitialDefaults 之后。
     // 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
-    // 写在它之前会被它设回 @YES（9.30-27 实测就是这个原因导致开关关不掉）。
+    // 写在它之前会被它设回 @YES（9.30-28 实测就是这个原因导致开关关不掉）。
     if (ver < 189) {
-        // 9.30-27：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
+        // 9.30-28：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
         // 老配置里这个键通常已存 @YES，光靠默认值救不了，必须强制写一次 @NO。
         // 用独立的版本号 189 是为了让已经处在 188 的配置也能被这次修正覆盖到，
         // 且只执行一次：之后用户在面板手动打开仍然有效。
@@ -3535,7 +3612,10 @@ static int bds_my_getifaddrs(struct ifaddrs **ifap) {
     int modified = 0;
     for (struct ifaddrs *ifa = *ifap; ifa; ifa = ifa->ifa_next) {
         if (!ifa->ifa_name || !ifa->ifa_addr) continue;
-        if (strcmp(ifa->ifa_name, "en0") != 0) continue;
+        // 【9.30-28】改主网卡，不再写死 en0。
+        // 开代理/VPN 时默认路由在 utun*，en0 没有 IPv4，写死 en0 等于没改。
+        const char *target = g_primaryIfName[0] ? g_primaryIfName : "en0";
+        if (strcmp(ifa->ifa_name, target) != 0) continue;
         sa_family_t family = ifa->ifa_addr->sa_family;
         if (family == AF_INET) {
             struct sockaddr_in fake;
@@ -3591,7 +3671,9 @@ static int bds_my_getsockname(int fd, struct sockaddr *addr, socklen_t *len) {
 static void bds_scan_lan_ip(struct ifaddrs *list, NSString **out) {
     for (struct ifaddrs *ifa = list; ifa; ifa = ifa->ifa_next) {
         if (!ifa->ifa_name || !ifa->ifa_addr) continue;
-        if (strcmp(ifa->ifa_name, "en0") != 0) continue;
+        // 【9.30-28】与钩子保持同一张网卡，否则面板显示的「当前」与 App 看到的不一致
+        const char *want = g_primaryIfName[0] ? g_primaryIfName : "en0";
+        if (strcmp(ifa->ifa_name, want) != 0) continue;
         if (ifa->ifa_addr->sa_family != AF_INET) continue;
         char buf[INET_ADDRSTRLEN] = {0};
         struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
@@ -4579,7 +4661,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-27";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-28";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5507,6 +5589,11 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
     // 本地 IP：真值直接问内核（绕过钩子），当前值走 getifaddrs（会被钩子改）
     NSString *realLocalIP = bds_real_lan_ip();
     NSString *currentLocalIP = bds_current_lan_ip();
+    // 顺便标出当前认定的主网卡，便于判断钩子改的是哪张
+    if (g_primaryIfName[0]) {
+        currentLocalIP = [NSString stringWithFormat:@"%@  [网卡 %s]",
+                          currentLocalIP, g_primaryIfName];
+    }
 
     NSString *message = [NSString stringWithFormat:
         @"状态：%@\n\n"

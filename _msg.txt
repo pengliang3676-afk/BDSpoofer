@@ -1,26 +1,34 @@
-Ship 9.30-27: 回到 9.30-19 基线，只加内网 IP 段
+Ship 9.30-28: 本地 IP 改为主网卡（修复开代理/VPN 时 IP 不生效）
 
-【用户要求】9.30-19 + IP 段，其他一律不要。
+【用户实测反馈】9.30-27 上「本地 IP」显示：
+    原始 192.168.31.108
+    配置 192.168.0.171
+    当前 (无地址)          <-- 没生效
 
-【背景】9.30-20 引入了导致「每次打开极速都闪退」的缺陷。
-用户用 11 个逐版构建实测确认：
-    9.30-19  不崩（最后一次好的）
-    9.30-20  崩
-9.30-20 到 9.30-26 之间的修复尝试（sysctl 透传、剪贴板竞态）均未解决。
+【排查结论】不是开关问题：配置里 spoofLocalIP=True、localIP=192.168.0.171、
+enabled=True，getifaddrs 与 getsockname 两个钩子都已注册。
+真因是钩子选错了网卡——原实现写死只改 en0：
 
-【本版做法】直接从 9.30-19（5d87cbb）拉分支，只做一处改动：
-  Shared/BDSConfigPolicy.h 的 BDSRandomLanIP() 网段池
-    - 段数 10 -> 17，总权重仍为 100
-    - 10.x 占比 11% -> 18%
-    - 192.168.1. 权重 40 -> 28（原分布过度集中）
-    - 新增 10.88.12.（探针实测段）/ 10.1.1. / 10.0.10. /
-           192.168.10. / 192.168.100. / 192.168.8. / 192.168.11.
+    if (strcmp(ifa->ifa_name, "en0") != 0) continue;
 
-【明确不含】
-  - hideInjection 开关（9.30-23）
-  - 9.30-20 的 currentLocale / preferredLanguages / attributesOfItemAtPath:error:
-  - 9.30-21 的 sysctl / task_info / host_statistics64 / fstat / getenv / getppid / getpeername
-  - 9.30-22 的 currentRadioAccessTechnology
-  - 时间偏移、剪贴板抑制窗口等一切非需求项
+而用户这台机器「连着 Wi-Fi 同时开着代理/VPN」。代理/VPN 工作模式下默认路由
+被隧道网卡（utun*）接管，en0 往往不再持有 IPv4，于是钩子遍历整张接口链表
+都找不到 en0 的 AF_INET 项，等于什么也没改；诊断扫描同样只看 en0，
+于是「当前」显示 (无地址)。
 
-configVersion 保持 189（与 9.30-19 一致），不会触发任何配置迁移。
+【本版改动】
+  1. 新增 bds_route_lookup_default_ifname()：
+     sysctl(NET_RT_DUMP) 取路由表，找 rt_flags 带 RTF_GATEWAY 的默认项，
+     取其接口名作为主网卡。解析顺序：
+       a) if_indextoname(rtm_index)
+       b) if_indextoname(ntohs(rtm_index))   // 兜底字节序
+       c) 扫描 rt_msghdr 之后的接口名字符串 + if_nametoindex 校验
+     全部失败则回退 "en0"（原有行为）。
+  2. getifaddrs 钩子与诊断扫描都改为使用 g_primaryIfName，
+     不再写死 en0。这样无论是否开代理，假 IP 都落在实际承载流量的网卡上。
+  3. 诊断面板「当前」一行追加显示当前认定的网卡名，便于以后一眼判断。
+  4. 补 #import <net/route.h> / <net/if.h>。
+
+  其余一切不变：仍是 9.30-19 基线 + 内网 IP 段，不含 9.30-20 及之后的任何改动。
+
+【说明】此修复直接由用户报告的现象驱动，不是推测性改动。
