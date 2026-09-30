@@ -198,36 +198,6 @@ static NSString *BDSRandomCommonSSID(void) {
     return fixed[arc4random_uniform((uint32_t)fixed.count)];
 }
 
-// ---- 随机内网 IP（一键基础时自动配一个）----
-//
-// 为什么需要：原来本地 IP 的处理是把 en0 的地址标记成 AF_UNSPEC，也就是“查不到”。
-// 但一台连上 Wi-Fi 的真实设备永远有本地 IP —— “查不到”比“查到 192.168.x.x”更可疑，
-// 而且几十台设备全是“无地址”又是一个整齐特征。
-//
-// 内网 IP 的特点：它只在本机路由器内部有效，服务器永远看不到真的，
-// 所以填一个假的不会泄露任何东西，只是让设备画像更自然。
-//
-// 网段按真实家庭/办公环境的常见占比加权，主机号 2~200 随机（DHCP 分配本来就是乱的）。
-// 注意：绝不使用公网 IP —— App 上报的 IP 若和服务器看到的真实出口 IP 不同，
-// 等于在同一请求里出现两个矛盾的公网 IP，是最硬的“上报假数据”证据。
-static NSString *BDSRandomLanIP(void) {
-    // {网段前缀, 权重}
-    NSArray *segments = @[@[@"192.168.1.", @40], @[@"192.168.0.", @15],
-                          @[@"192.168.31.", @10], @[@"192.168.2.", @8],
-                          @[@"10.0.0.", @8], @[@"192.168.3.", @5],
-                          @[@"192.168.123.", @4], @[@"192.168.50.", @4],
-                          @[@"10.0.1.", @3], @[@"172.20.10.", @3]];
-    NSUInteger total = 0;
-    for (NSArray *s in segments) total += [s[1] unsignedIntegerValue];
-    NSUInteger pick = arc4random_uniform((uint32_t)total);
-    NSString *prefix = segments.lastObject[0];
-    NSUInteger acc = 0;
-    for (NSArray *s in segments) {
-        acc += [s[1] unsignedIntegerValue];
-        if (pick < acc) { prefix = s[0]; break; }
-    }
-    return [prefix stringByAppendingFormat:@"%u", 2 + arc4random_uniform(199)];
-}
 
 // ---- 随机设备名（一键基础时自动配一个）----
 //

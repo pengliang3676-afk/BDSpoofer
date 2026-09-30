@@ -143,8 +143,6 @@ static int g_spoofSysctlC = 0;
 static int g_bypassJailbreakC = 0;
 static int g_spoofWiFiC = 0;
 static int g_spoofLocalIPC = 0;
-// 伪造的本地 IP（网络字节序）。由 cfgStr(@"localIP") 在 bds_update_c_cache 中转成 s_addr。
-static in_addr_t g_localIPC = 0;
 static int g_spoofProxyC = 0;
 static int g_spoofBootTimeC = 0;
 static int g_spoofCPUC = 0;
@@ -235,7 +233,6 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"wifiSSID": @"",
             // 伪造的本地 IP（常见家庭网段，一键基础随机生成）。
             // 留空则钩子不改动，退回“查不到本地 IP”的旧行为。
-            @"localIP": @"",
             // 时区固定按内地。默认开启，与“语言与地区”一起生效。
             @"spoofTimeZone": @YES,
             @"localTimeZone": @"Asia/Shanghai",
@@ -314,15 +311,6 @@ static void bds_update_c_cache(void) {
     } else {
         memcpy(g_wifiSSID, wifiUTF8, wifiLength + 1);
     }
-    // 伪造的本地 IP：inet_pton 失败（配置为空或非法）时置 0，钩子会自动跳过改动。
-    {
-        const char *lan = cfgStr(@"localIP", @"").UTF8String;
-        struct in_addr a;
-        if (lan && lan[0] && inet_pton(AF_INET, lan, &a) == 1) g_localIPC = a.s_addr;
-        else g_localIPC = 0;
-    }
-    // 伪造本地 IP 还要求开关打开，否则钩子里直接透传（与 g_spoofLocalIPC 一起判断）
-    if (!cfgBool(@"spoofLocalIP", NO)) g_localIPC = 0;
     bds_disk_size_set((long long)cfgInt(@"diskSize", 64) * 1024LL * 1024LL * 1024LL);
 }
 
@@ -352,7 +340,7 @@ static void loadConfig() {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            // 9.30-19 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
+            // 9.30-29 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
             // （v189 迁移还会兜底强制关一次。）
             @"bypassJailbreakDetect": @NO
         }];
@@ -559,9 +547,9 @@ static void loadConfig() {
     BDSApplyInitialDefaults(merged, loaded);
     // 注意顺序：迁移必须放在 BDSApplyInitialDefaults 之后。
     // 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
-    // 写在它之前会被它设回 @YES（9.30-19 实测就是这个原因导致开关关不掉）。
+    // 写在它之前会被它设回 @YES（9.30-29 实测就是这个原因导致开关关不掉）。
     if (ver < 189) {
-        // 9.30-19：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
+        // 9.30-29：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
         // 老配置里这个键通常已存 @YES，光靠默认值救不了，必须强制写一次 @NO。
         // 用独立的版本号 189 是为了让已经处在 188 的配置也能被这次修正覆盖到，
         // 且只执行一次：之后用户在面板手动打开仍然有效。
@@ -3527,63 +3515,26 @@ static int bds_my_getifaddrs(struct ifaddrs **ifap) {
         BDS_DIAG_RECORD(g_diagLocalIP, BDSDiagStatePassed);
         return result;
     }
-    // 不再把地址标记为“不存在”，而是填入一个常见内网 IP。
-    // 理由：连上 Wi-Fi 的真实设备永远有本地 IP，“查不到”本身就不自然，
-    // 而且几十台设备全是“无地址”又是一个整齐特征。内网 IP 服务器永远看不到真的，
-    // 所以填假值不泄露任何东西（详见 BDSRandomLanIP 注释）。
+    // 纯拦截：不生成任何假 IP，只把 en0 的地址项标记为未指定（查不到）。
+    // 这是最初（9.30-14~9.30-16）的做法：不返回 0.0.0.0/零掩码这种自相矛盾的数据，
+    // 而是让"本机本地 IP"这条读取路径拿不到值。
     // 调用方仍可按原约定 freeifaddrs() 释放完整链表。
     int modified = 0;
     for (struct ifaddrs *ifa = *ifap; ifa; ifa = ifa->ifa_next) {
         if (!ifa->ifa_name || !ifa->ifa_addr) continue;
         if (strcmp(ifa->ifa_name, "en0") != 0) continue;
         sa_family_t family = ifa->ifa_addr->sa_family;
-        if (family == AF_INET) {
-            struct sockaddr_in fake;
-            memset(&fake, 0, sizeof(fake));
-            fake.sin_len = sizeof(fake);
-            fake.sin_family = AF_INET;
-            fake.sin_addr.s_addr = g_localIPC;
-            memcpy(ifa->ifa_addr, &fake, sizeof(fake));
-            if (ifa->ifa_netmask && ifa->ifa_netmask->sa_family == AF_INET) {
-                struct sockaddr_in mask;
-                memset(&mask, 0, sizeof(mask));
-                mask.sin_len = sizeof(mask);
-                mask.sin_family = AF_INET;
-                mask.sin_addr.s_addr = htonl(0xFFFFFF00u);   // 255.255.255.0，家庭网段标准值
-                memcpy(ifa->ifa_netmask, &mask, sizeof(mask));
-            }
+        if (family == AF_INET || family == AF_INET6) {
             modified = 1;
-        } else if (family == AF_INET6) {
-            // IPv6 无法凭一个 v4 值伪造，保持“不可见”。
-            // 只有 IPv4、没有 IPv6，在双栈家庭网络里很常见，不算矛盾。
             ifa->ifa_addr->sa_family = AF_UNSPEC;
             if (ifa->ifa_netmask) ifa->ifa_netmask->sa_family = AF_UNSPEC;
             if (ifa->ifa_dstaddr) ifa->ifa_dstaddr->sa_family = AF_UNSPEC;
-            modified = 1;
         }
     }
     BDS_DIAG_RECORD(g_diagLocalIP, modified ? BDSDiagStateChanged : BDSDiagStatePassed);
     return result;
 }
 
-// getsockname 是另一条拿本地 IP 的路，完全不经过 getifaddrs：
-//   socket(AF_INET, SOCK_DGRAM, 0); connect(fd, "8.8.8.8:53"); getsockname(fd, ...)
-// UDP connect 不发包也不需要网络权限，直接就能问出本机地址。
-// 不一起改的话，两条路会给出互相矛盾的 IP。
-static int (*orig_getsockname)(int, struct sockaddr *, socklen_t *);
-static int bds_my_getsockname(int fd, struct sockaddr *addr, socklen_t *len) {
-    int r = orig_getsockname(fd, addr, len);
-    if (r != 0 || !addr || !len) return r;
-    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofLocalIPC)) return r;
-    if (addr->sa_family != AF_INET) return r;
-    if (*len < sizeof(struct sockaddr_in)) return r;
-    struct sockaddr_in *sin = (struct sockaddr_in *)addr;
-    // 只改回环以外的地址：127.0.0.1 是真事实，改了反而不对
-    if (sin->sin_addr.s_addr == htonl(INADDR_LOOPBACK)) return r;
-    sin->sin_addr.s_addr = g_localIPC;
-    BDS_DIAG_RECORD(g_diagLocalIP, BDSDiagStateChanged);
-    return r;
-}
 
 // ---- 本地 IP：真值 / 当前值（供自检面板显示）----
 // 真值：用保存下来的原函数直接问内核，绕过我们自己的钩子。
@@ -3810,7 +3761,6 @@ static void installCHooks(void) {
         {"opendir", (void *)bds_my_opendir, (void **)&orig_opendir},
         {"CNCopyCurrentNetworkInfo", (void *)bds_my_CNCopyCurrentNetworkInfo, (void **)&orig_CNCopyCurrentNetworkInfo},
         {"getifaddrs", (void *)bds_my_getifaddrs, (void **)&orig_getifaddrs},
-        {"getsockname", (void *)bds_my_getsockname, (void **)&orig_getsockname},
         {"IOPSGetPowerSourceDescription", (void *)bds_my_IOPSGetPowerSourceDescription, (void **)&orig_IOPSGetPowerSourceDescription},
         {"CFNetworkCopySystemProxySettings", (void *)bds_my_CFNetworkCopySystemProxySettings, (void **)&orig_CFNetworkCopySystemProxySettings},
         {"SCDynamicStoreCopyProxies", (void *)bds_my_SCDynamicStoreCopyProxies, (void **)&orig_SCDynamicStoreCopyProxies},
@@ -4273,9 +4223,6 @@ static NSMutableDictionary *BDSRandomBaseValuesForPair(NSDictionary *device,
     // WiFi SSID 也一起随机：CNCopyCurrentNetworkInfo 钩子只在 wifiSSID 非空时
     // 返回伪造值，留空则返回 NULL。配一个常见名字，让结果更像普通用户。
     values[@"wifiSSID"] = BDSRandomCommonSSID();
-    // 本地 IP 伪造一个常见内网地址（见 BDSRandomLanIP 注释：
-    // “查不到本地 IP”比“查到 192.168.x.x”更可疑，且内网 IP 服务器看不到真的）。
-    values[@"localIP"] = BDSRandomLanIP();
     [values addEntriesFromDictionary:BDSRandomCarrierValues()];
     // 电池：只有一键基础才换新参数（用户要求重开 App 不跳变）。
     // 起始 40~95%、下限在起始值下方 15~45 个点（不低于 8%）、每 1% 需 100~280 秒，
@@ -4579,7 +4526,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-19";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-29";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5504,7 +5451,8 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
         }
     }
 
-    // 本地 IP：真值直接问内核（绕过钩子），当前值走 getifaddrs（会被钩子改）
+    // 本地 IP：真值直接问内核（绕过钩子）；当前值走 getifaddrs。
+    // 现在的策略是纯拦截（把 en0 标记为未指定），所以"当前"正常就应该是(无地址)。
     NSString *realLocalIP = bds_real_lan_ip();
     NSString *currentLocalIP = bds_current_lan_ip();
 
@@ -5532,7 +5480,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
         CGRectGetWidth(currentBounds), CGRectGetHeight(currentBounds), currentScale,
         realTimeZone, cfgStr(@"localTimeZone", @"Asia/Shanghai"), currentTimeZone,
         realSSID, (cfgStr(@"wifiSSID", @"").length ? cfgStr(@"wifiSSID", @"") : @"(未配置，返回空)"), currentSSID,
-        realLocalIP, (cfgStr(@"localIP", @"").length ? cfgStr(@"localIP", @"") : @"(未配置，不改动)"), currentLocalIP];
+        realLocalIP, (cfgBool(@"spoofLocalIP", NO) ? @"已拦截" : @"未拦截"), currentLocalIP];
 
     NSMutableString *advanced = [NSMutableString stringWithString:@"\n\n--- 高级功能 ---"];
 

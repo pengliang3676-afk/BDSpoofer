@@ -1,0 +1,17 @@
+Ship 9.30-29: 本地 IP 改回纯拦截（不生成假 IP），移除 IP 池
+
+用户要求：回到最开始那种直接拦截的做法，连 IP 段池一起去掉。
+
+【改动】基线 9.30-19：
+  1. bds_my_getifaddrs 恢复为 9.30-14~9.30-16 的纯拦截实现：
+     把 en0 的 ifa_addr / ifa_netmask / ifa_dstaddr 的 sa_family 置为
+     AF_UNSPEC，即读不到本地 IP，而不是填一个假地址。
+  2. 删除 getsockname 钩子及其注册（它只为写假 IP 而存在）。
+  3. 删除 g_localIPC 变量与 bds_update_c_cache 里的赋值。
+  4. 一键基础不再生成 localIP。
+  5. Shared/BDSConfigPolicy.h 删除 BDSRandomLanIP() 及其网段池。
+  6. 诊断面板「配置」行改为显示「已拦截 / 未拦截」。
+  7. 校验脚本同步：本地 IP 段改为断言纯拦截且无假 IP 生成。
+
+不含 9.30-20 及之后的任何改动（无 hideInjection、无 currentLocale /
+preferredLanguages / attributesOfItemAtPath、无 sysctl / task_info 等 C 钩子）。
