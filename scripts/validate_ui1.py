@@ -14,7 +14,7 @@ regular=[key for key,off in items if not off];risk=[key for key,off in items if 
 assert len(regular)==20 and len(risk)==6
 assert all(config[k] is True for k in regular)
 assert all(config[k] is False for k in risk)
-assert config['bypassJailbreakDetect'] is False  # 9.30-24 起默认关闭
+assert config['bypassJailbreakDetect'] is False  # 9.30-26 起默认关闭
 assert config['spoofScreen'] is False and config['configVersion']==189
 assert config['blockStatCashTelemetry'] is False
 assert 'blockStatCashTelemetry' in policy and 'blockStatCashTelemetry' in plugin
@@ -38,7 +38,7 @@ assert 'closeApp' not in manager and 'NSSelectorFromString(@"suspend")' not in m
 assert 'config[@"deviceProfileName"] ?: config[@"hwMachine"]' in manager
 assert 'config[@"targetedDeviceProfileName"] ?: config[@"targetedHwMachine"]' in manager
 assert 'NSString *currentSuffix = @"（当前）"' in manager and 'UIColor.systemRedColor' in manager
-assert 'page.title=@"卐解 1.8.1 UI1.3 9.30-24"' in plugin
+assert 'page.title=@"卐解 1.8.1 UI1.3 9.30-26"' in plugin
 assert 'didRandomize%@%@' in policy
 for text in ['BDSMarkRandomModeRun','BDSRandomModeWasRun','BDSConfigForPersistentStorage']:
     assert text in plugin+manager+policy,text
@@ -58,12 +58,12 @@ for text in ['h2tcbox.baidu.com','/ztbox','zpblog','10290','y_mission_index','c_
 assert 'BDSInstallCashTelemetryBlocking();' in plugin
 assert plugin.count('loadConfig();') >= 3
 assert '0.50' not in release and '触发风控' not in release
-assert 'BDSpoofer_1.8.1_UI1.3_9.30-24.dylib' in build and 'UI1.1.dylib' not in build
-assert 'BDSpooferCraneManager_1.0.2-ui1_9.30-24_RootHide.deb' in build
+assert 'BDSpoofer_1.8.1_UI1.3_9.30-26.dylib' in build and 'UI1.1.dylib' not in build
+assert 'BDSpooferCraneManager_1.0.2-ui1_9.30-26_RootHide.deb' in build
 assert 'BDSLoginDeviceDict' in plugin and 'ssologin' in plugin
 assert 'BDSPassEncryptedDi' in plugin and 'deviceInfoForLogin' in plugin
 assert 'BDSPassEnsureDVIF' in plugin and 'bds_my_uname' in plugin and '{"uname"' in plugin
-assert 'self.title = @"卍解 1.0.2 9.30-24"' in manager
+assert 'self.title = @"卍解 1.0.2 9.30-26"' in manager
 assert '[verified isEqualToDictionary:config]' in manager
 assert 'targetedScreenHwMachine' in plugin and 'targetedScreenHwMachine' in manager
 def function(text,name):
@@ -117,7 +117,7 @@ plugin_systems=re.findall(r'BDSSystem\(@"([^"]+)",\s*@"([^"]+)"\)',function(plug
 manager_systems=re.findall(r'BDSSystem\(@"([^"]+)",\s*@"([^"]+)"\)',function(manager,'BDSSystemProfiles'))
 assert plugin_systems==manager_systems and len(plugin_systems)>50
 base=subprocess.check_output(['git','show','b65d42ab33948455ef84e57d109d0dbede2a1b72:BDSpoofer.m'],cwd=root).decode('utf-8')
-# 9.30-24 起这些是“故意改动”的函数，因此不再做整函数基线比对：
+# 9.30-26 起这些是“故意改动”的函数，因此不再做整函数基线比对：
 #   bds_is_suspicious_dlopen_path（分量边界匹配 + /private/var/jb）
 #   bds_my_dlopen / bds_my_dlopen_preflight（去掉固定哨兵路径、orig 判空）
 #   bds_perform_rebinding_with_section（页对齐、orig 只捕获一次、symtab 边界）
@@ -132,20 +132,20 @@ for name in ['bds_my_stat','bds_my_lstat','bds_my_access','bds_my_fopen','bds_my
     assert strip_guards(plugin,name)==strip_guards(base,name),name
 for path in ['bdspoofer_config.plist','CraneManager/Info.plist','CraneManager/BDSCraneManager.entitlements','CraneManager/BDSCraneManager.libSandy.plist']:plistlib.loads((root/path).read_bytes())
 manager_info=plistlib.loads((root/'CraneManager/Info.plist').read_bytes())
-assert manager_info['CFBundleVersion']=='9.30.24' and manager_info['CFBundleShortVersionString']=='1.0.2-9.30.24'
+assert manager_info['CFBundleVersion']=='9.30-26' and manager_info['CFBundleShortVersionString']=='1.0.2-9.30-26'
 assert 'CPU iPhone OS ' in plugin and 'setCustomUserAgent:' in plugin
 assert 'if (hw.length && f.count > 3) f[3] = hw;' in plugin
 assert 'if (sv.length && f.count > 4) f[4] = sv;' in plugin
 assert 'if (f.count > 27)' in plugin and 'cfgStr(@"deviceModel", @"iPhone")' in plugin
 assert 'f[3].length' not in plugin and 'f[4].length' not in plugin
 assert 'UIApplicationExitsOnSuspend' not in manager_info
-# ---- 9.30-24：开关生效、X/M 语义一致、随机池、健壮性 ----
+# ---- 9.30-26：开关生效、X/M 语义一致、随机池、健壮性 ----
 # 金额阻断必须每次请求都读开关，否则“关掉开关仍在拦”。
 assert 'static BOOL (*BDSCashTelemetrySwitchProvider)(void)' in blocker
 assert 'if (!BDSCashTelemetrySwitchIsOn()) return NO;' in blocker
 assert 'static BOOL BDSCashTelemetrySwitchEnabled(void)' in plugin
 assert 'BDSCashTelemetrySwitchProvider = BDSCashTelemetrySwitchEnabled;' in plugin
-# 金额拦截只在开关打开时安装（9.30-24 起如此，与 9.28-03 一致）；
+# 金额拦截只在开关打开时安装（9.30-26 起如此，与 9.28-03 一致）；
 # 但判定入口必须每次请求读开关，否则“关掉开关仍在拦”。
 assert 'if (!BDSCashTelemetrySwitchIsOn()) return NO;' in blocker
 assert 'BDSCashTelemetrySwitchProvider = BDSCashTelemetrySwitchEnabled;' in plugin
@@ -180,7 +180,7 @@ assert 'if (!orig_dlopen) { errno = ENOENT; return NULL; }' in plugin
 assert 'orig_dlopen("/.bds_blocked_nonexistent"' not in plugin
 assert '[NSThread isMainThread]' in function(plugin,'bds_dyld_add_image_cb')
 assert 'g_bdsRebindFailures++' in plugin
-# ---- 9.30-24：屏幕参数同步到百度侧出口（只改 B 层，UIScreen 保持真机）----
+# ---- 9.30-26：屏幕参数同步到百度侧出口（只改 B 层，UIScreen 保持真机）----
 assert 'static NSDictionary *BDSBaiduScreenSyncValues(NSDictionary *device)' in plugin
 assert 'static NSDictionary *BDSBaiduScreenSyncValues(NSDictionary *device)' in manager
 # 插件侧：基础参数生成时同步
@@ -193,7 +193,7 @@ assert 'static BOOL tg_screen_enabled(void)' in plugin
 assert 'return cfgBool(@"spoofBaiduTargetedScreen", NO);' in plugin
 assert 'tg_feature_enabled(@"spoofBaiduTargetedScreen")' not in plugin
 assert plugin.count('tg_screen_enabled()') >= 4
-# 9.30-24：UA 也必须与定向总开关解耦。
+# 9.30-26：UA 也必须与定向总开关解耦。
 # 真机诊断实测：spoofBaiduTargetedUA=1 而 spoofBaiduTargeted=0 时，
 # tg_feature_enabled 返回假，两个 UA 分支都不执行（rewriteUA=0 rewriteSystem=0），
 # UA 里长期留着真机系统号，与配置的 P2 段矛盾。
@@ -201,7 +201,7 @@ assert 'static BOOL tg_ua_enabled(void)' in plugin
 assert 'return cfgBool(@"spoofBaiduTargetedUA", NO);' in plugin
 assert 'tg_feature_enabled(@"spoofBaiduTargetedUA")' not in plugin
 assert 'BOOL rewriteUA = tg_ua_enabled();' in plugin
-# 9.30-24：防越狱检测默认关闭，且一键基础不得打开它（索引逻辑要跳过 off 项）
+# 9.30-26：防越狱检测默认关闭，且一键基础不得打开它（索引逻辑要跳过 off 项）
 assert 'static NSArray<NSString *> *BDSFirstEnabledKeys' in policy
 assert 'BDSFirstEnabledKeys(groups[1], 3)' in plugin
 assert 'BDSFirstEnabledKeys(groups[1], 3)' in manager
@@ -210,7 +210,7 @@ assert 'if([item[@"off"] boolValue]) continue;' in policy
 assert 'merged[@"bypassJailbreakDetect"] = @NO;' in plugin
 # 关键顺序：迁移必须写在 BDSApplyInitialDefaults 之后。
 # 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
-# 写在它之前会被设回 @YES（9.30-24 真机实测就是因此关不掉）。
+# 写在它之前会被设回 @YES（9.30-26 真机实测就是因此关不掉）。
 _lc = function(plugin, 'loadConfig')
 assert _lc.index('BDSApplyInitialDefaults(merged, loaded);') < _lc.index('if (ver < 189)'), \
     'v189 迁移必须在 BDSApplyInitialDefaults 之后'
@@ -220,7 +220,7 @@ assert 'config[@"configVersion"]=@188;' not in policy
 assert 'config[@"configVersion"]=@187;' not in policy
 # 默认配置表里防越狱检测必须是关的，与策略一致
 assert '@"bypassJailbreakDetect": @NO' in plugin
-# 9.30-24：一键基础自动配一个常见 WiFi SSID。
+# 9.30-26：一键基础自动配一个常见 WiFi SSID。
 # 理由：CNCopyCurrentNetworkInfo 钩子只在 wifiSSID 非空时返回伪造值，
 # 留空则返回 NULL —— 有 Wi-Fi 权限却读不到网络，本身不自然。
 assert 'static NSString *BDSRandomCommonSSID(void)' in policy
@@ -228,7 +228,7 @@ assert 'static NSString *BDSRandomHexLower(NSUInteger digits)' in policy
 assert 'values[@"wifiSSID"] = BDSRandomCommonSSID();' in plugin
 assert 'config[@"wifiSSID"] = BDSRandomCommonSSID();' in manager
 
-# 9.30-24 设备名：必须是真人习惯的随机名，不能再是 "iPhone-" + 十六进制
+# 9.30-26 设备名：必须是真人习惯的随机名，不能再是 "iPhone-" + 十六进制
 assert 'static NSString *BDSRandomDeviceName(void)' in policy
 assert 'values[@"deviceName"] = deviceName;' in plugin
 assert 'NSString *deviceName = BDSRandomDeviceName();' in plugin
@@ -242,7 +242,7 @@ for _bad in ['工作机', '备用机']:
 _nameblk = policy[policy.index('BDSRandomDeviceName(void)'):]
 assert _nameblk.count('@"') > 200, _nameblk.count('@"')
 
-# 9.30-24 本地 IP：从“隐藏”改为“伪造常见内网 IP”
+# 9.30-26 本地 IP：从“隐藏”改为“伪造常见内网 IP”
 assert 'static NSString *BDSRandomLanIP(void)' in policy
 assert 'values[@"localIP"] = BDSRandomLanIP();' in plugin
 assert 'config[@"localIP"] = BDSRandomLanIP();' in manager
@@ -255,7 +255,7 @@ for _seg in ['192.168.1.', '192.168.0.', '192.168.31.', '10.0.0.', '172.20.10.']
 for _pub in ['203.0.113.', '8.8.8.', '1.1.1.']:
     assert _pub not in policy, _pub
 
-# 9.30-24 时区：固定内地，不与伪装地区联动
+# 9.30-26 时区：固定内地，不与伪装地区联动
 assert 'new_localTimeZone' in plugin and 'new_systemTimeZone' in plugin and 'new_defaultTimeZone' in plugin
 assert '@selector(localTimeZone)' in plugin
 assert '@selector(systemTimeZone)' in plugin
@@ -265,13 +265,13 @@ assert '@"spoofTimeZone"' in plugin
 for _tz in ['America/', 'Europe/London', 'Asia/Tokyo']:
     assert _tz not in plugin, _tz
 
-# 9.30-24 自检面板可验收这四项
+# 9.30-26 自检面板可验收这四项
 assert 'bds_real_lan_ip' in plugin and 'bds_current_lan_ip' in plugin
 assert 'realTimeZone' in plugin and 'currentTimeZone' in plugin
 assert 'realSSID' in plugin and 'currentSSID' in plugin
 assert 'realLocalIP' in plugin and 'currentLocalIP' in plugin
 
-# 9.30-24 电池：状态固定“未充电”，电量随时间缓慢下降且**区间/速度/下限全随机**
+# 9.30-26 电池：状态固定“未充电”，电量随时间缓慢下降且**区间/速度/下限全随机**
 # （用户明确要求：不能每台都 85->65）
 assert 'static float bds_battery_level(void)' in plugin
 assert 'g_batteryFloor' in plugin and 'g_batterySecondsPerPct' in plugin
@@ -296,7 +296,7 @@ assert 'values[@"batteryBasePct"]' in plugin, '一键基础必须写入电池基
 assert '@"batteryBasePct": @0' in plugin, '默认配置需含电池基准键'
 assert 'kCFAbsoluteTimeIntervalSince1970' in plugin, '基准时刻需换算成 CFAbsoluteTime'
 
-# 9.30-24 审计修复批次
+# 9.30-26 审计修复批次
 # (1) 剪贴板：原来只在非活动状态拦，等于没生效。必须有前台抑制窗口。
 assert 'kBDSPasteboardSuppressWindow' in plugin
 assert 'UIApplicationDidBecomeActiveNotification' in plugin
@@ -321,7 +321,7 @@ assert '@selector(attributesOfItemAtPath:error:)' in plugin
 assert 'config[@"batteryBasePct"]' in manager
 assert 'config[@"localTimeZone"]' in manager
 
-# 9.30-24 A 组补漏：静态分析确证百度导入但插件未覆盖的接口
+# 9.30-26 A 组补漏：静态分析确证百度导入但插件未覆盖的接口
 # sysctl 本体（原来只钩了 sysctlbyname，两者是独立符号）
 assert 'static int bds_my_sysctl(' in plugin
 assert '"sysctl", (void *)bds_my_sysctl' in plugin
@@ -340,9 +340,9 @@ assert 'bds_my_host_statistics64' in plugin
 assert 'new_systemUptime' in plugin and '@selector(systemUptime)' in plugin
 assert 'new_processorCount' in plugin and '@selector(processorCount)' in plugin
 assert 'new_activeProcessorCount' in plugin and '@selector(activeProcessorCount)' in plugin
-# 9.30-24 网络类型：静态分析确认百度在用 currentRadioAccessTechnology
+# 9.30-26 网络类型：静态分析确认百度在用 currentRadioAccessTechnology
 assert 'new_currentRadioAccessTechnology' in plugin
-# 9.30-24 内网 IP 池按探针实测调整
+# 9.30-26 内网 IP 池按探针实测调整
 # 实测这台机器 en0 = 10.88.12.1，原池里 10.x 只有 10.0.0./10.0.1.（合计 11%），
 # 且 192.168.1. 独占 40%。现补入常见 10.x/192.168.x 段并重排权重。
 assert '10.88.12.' in policy, 'IP 池应含实测到的 10.88.12. 段'

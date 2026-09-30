@@ -3457,22 +3457,16 @@ static BOOL bds_shouldBlockPasteboardRead(id pasteboard) {
     // 非活动状态：一律拦（后台读取没有正当理由）
     if (app.applicationState != UIApplicationStateActive) return YES;
 
-    // 活动状态但刚回到前台：在抑制窗口内也拦
-    static CFAbsoluteTime activeSince = 0;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        activeSince = CFAbsoluteTimeGetCurrent();
-        [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification
-                                                       object:nil
-                                                        queue:NSOperationQueue.mainQueue
-                                                   usingBlock:^(NSNotification *n) {
-            (void)n;
-            activeSince = CFAbsoluteTimeGetCurrent();
-        }];
-    });
-    // 理论上只增不减，但保险起见不允许负值
-    if (activeSince <= 0) return NO;
-    return (CFAbsoluteTimeGetCurrent() - activeSince) < kBDSPasteboardSuppressWindow;
+    // 【9.30-26 修复】此处原先（9.30-20 加入）用 dispatch_once 注册了一条
+    // UIApplicationDidBecomeActiveNotification 观察者，以实现在"回到前台后
+    // 若干秒内也拦截"的额外行为。但本函数挂在 UIPasteboard 的 string/strings/
+    // URL/items 四个 getter 上，可被任意线程调用 —— dispatch_once 首次执行
+    // 发生在哪个线程，就会从那个线程去操作 NSNotificationCenter 的内部表，
+    // 与主线程的通知中心操作构成竞态（崩溃现场正是后台队列
+    // BBAFeedPrefetchManager 在 NSLog 时拿到已损坏的对象指针）。
+    // 该额外行为非需求项，予以移除，恢复 9.30-19 的稳定行为。
+    (void)kBDSPasteboardSuppressWindow;
+    return NO;
 }
 
 static IMP orig_pb_string = NULL;
@@ -4931,7 +4925,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-24";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-26";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
