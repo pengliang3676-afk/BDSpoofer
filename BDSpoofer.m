@@ -117,8 +117,6 @@ typedef CFArrayRef (*IOPSListFn)(CFTypeRef);
 typedef CFDictionaryRef (*IOPSDescFn)(CFTypeRef, CFTypeRef);
 #import <CoreLocation/CoreLocation.h>
 #import <ifaddrs.h>
-#import <net/route.h>
-#import <net/if.h>
 #import <net/if_dl.h>
 #import <arpa/inet.h>
 #import <sys/mount.h>
@@ -148,6 +146,56 @@ static int g_spoofLocalIPC = 0;
 // 伪造的本地 IP（网络字节序）。由 cfgStr(@"localIP") 在 bds_update_c_cache 中转成 s_addr。
 static in_addr_t g_localIPC = 0;
 
+// ---- 路由表读取所需的最小定义 ----
+// iOS SDK 不提供 net/route.h，这里只补用得到的常量与结构，
+// 布局与 Darwin 内核的 rt_msghdr 一致（字段按 long 对齐）。
+#ifndef IFNAMSIZ
+#define IFNAMSIZ 16
+#endif
+#define BDS_RTF_UP          0x1
+#define BDS_RTF_GATEWAY     0x2
+#define BDS_RTF_HOST        0x4
+#define BDS_RTF_LLINFO      0x400
+#define BDS_RTF_MULTICAST   0x800
+#define BDS_RTF_BROADCAST   0x20000
+#define BDS_RTF_IFSCOPE     0x1000000
+#define BDS_RTF_IFREF       0x4000000
+#define BDS_RTF_ROUTER      0x8000000
+
+struct bds_rt_metrics {
+    uint32_t rmx_locks;
+    uint32_t rmx_mtu;
+    uint32_t rmx_hopcount;
+    int32_t  rmx_expire;
+    uint32_t rmx_recvpipe;
+    uint32_t rmx_sendpipe;
+    uint32_t rmx_ssthresh;
+    uint32_t rmx_rtt;
+    uint32_t rmx_rttvar;
+    uint32_t rmx_pksent;
+    uint32_t rmx_state;
+    uint32_t rmx_filler[3];
+};
+
+struct bds_rt_msghdr {
+    unsigned short rtm_msglen;
+    unsigned char  rtm_version;
+    unsigned char  rtm_type;
+    unsigned short rtm_index;
+    int            rtm_flags;
+    int            rtm_addrs;
+    pid_t          rtm_pid;
+    int            rtm_seq;
+    int            rtm_errno;
+    int            rtm_use;
+    uint32_t       rtm_inits;
+    struct bds_rt_metrics rtm_rmx;
+};
+
+// iOS SDK 头文件里没有声明 if_indextoname / if_nametoindex，自己声明
+extern char *if_indextoname(unsigned int, char *);
+extern unsigned int if_nametoindex(const char *);
+
 // ---- 主网卡探测 ----
 //
 // 为什么需要：本地 IP 的伪造原先写死只改 en0（Wi-Fi）。
@@ -156,7 +204,7 @@ static in_addr_t g_localIPC = 0;
 // 面板上「当前」显示 (无地址)，App 走隧道那条路照样能读到自己想要的地址。
 //
 // 正确做法：问内核「默认路由走哪张网卡」，改那张。
-// 查法：sysctl(NET_RT_DUMP) 拿路由表，找 rt_flags 带 RTF_GATEWAY 的默认项
+// 查法：sysctl(NET_RT_DUMP) 拿路由表，找 rt_flags 带 BDS_RTF_GATEWAY 的默认项
 // （目的地址为 0/0），取它的接口名。找不到就退回 en0。
 static char g_primaryIfName[IFNAMSIZ] = "en0";
 
@@ -171,11 +219,12 @@ static BOOL bds_route_lookup_default_ifname(char *out, size_t outLen) {
 
     BOOL found = NO;
     for (char *p = buf; p < buf + need; ) {
-        struct rt_msghdr *rtm = (struct rt_msghdr *)p;
-        if (rtm->rtm_msglen <= 0) break;
+        struct bds_rt_msghdr *rtm = (struct bds_rt_msghdr *)p;
+        if (rtm->rtm_msglen < sizeof(struct bds_rt_msghdr)) break;
         // 默认路由：带网关标志，且不是本机/广播/组播
-        if ((rtm->rtm_flags & RTF_GATEWAY) &&
-            !(rtm->rtm_flags & (RTF_HOST | RTF_BROADCAST | RTF_MULTICAST | RTF_LLINFO))) {
+        if ((rtm->rtm_flags & BDS_RTF_GATEWAY) &&
+            !(rtm->rtm_flags & (BDS_RTF_HOST | BDS_RTF_BROADCAST |
+                                BDS_RTF_MULTICAST | BDS_RTF_LLINFO))) {
             // rtm_index 只有 16 位，iOS 上字节序不一定如文档；
             // 两种解释都试，都不成才退回扫描报文尾部里的接口名。
             char nm[IFNAMSIZ] = {0};
@@ -185,7 +234,7 @@ static BOOL bds_route_lookup_default_ifname(char *out, size_t outLen) {
             if (!got) {
                 // 兜底：rt_msghdr 之后紧跟接口名（sockaddr_dl 布局），
                 // 按已知前缀直接找，避免依赖 IFNAMSIZ 对齐。
-                const char *tail = p + sizeof(struct rt_msghdr);
+                const char *tail = p + sizeof(struct bds_rt_msghdr);
                 const char *end = p + rtm->rtm_msglen;
                 for (const char *q = tail; q + 3 < end; q++) {
                     if (strncmp(q, "utun", 4) == 0 || strncmp(q, "en", 2) == 0 ||
