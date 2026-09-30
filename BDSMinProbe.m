@@ -207,9 +207,10 @@ static void bfp_perform_rebinding_with_section(struct bfp_rebindings_entry *rebi
         if (strsize - strtab_offset < 2) continue;
         char *symbol_name = strtab + strtab_offset;
         // 再确认这个地址确实落在本镜像的 __LINKEDIT 段区间内（纯算术，无系统调用）。
-        // 这是挡住坏指针的最后一道，且不引入任何 syscall。
+        // __LINKEDIT 运行时基址 = slide + fileoff = slide + vmaddr - (vmaddr - fileoff)
+        // 这里直接用传入的 fileoff/vmsize 计算，不依赖 bfp_rebind_symbols_for_image 的局部变量。
         uintptr_t sn = (uintptr_t)symbol_name;
-        uintptr_t le_start = (uintptr_t)linkedit_base + linkedit_fileoff;
+        uintptr_t le_start = (uintptr_t)slide + linkedit_fileoff;
         uintptr_t le_end = le_start + (uintptr_t)linkedit_vmsize;
         if (sn < le_start || sn + 2 > le_end) continue;
         if (!symbol_name[0] || !symbol_name[1]) continue;
