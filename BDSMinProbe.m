@@ -13,7 +13,7 @@
 //     全部已加载，构造阶段扫一遍即可。
 //  3. 符号名偏移做纯算术边界校验（strsize + __LINKEDIT 区间），零系统调用。
 //  4. C hook 全部判空原函数指针。
-//  5. 对象返回值直接发消息读（返回的 id 已经过 objc_msgSend 认证，是安全的）。
+//  5. 对象返回值先用 vm_region 验证可读，再 CFRetain，再取描述。
 //     绝不对可能失效的指针发消息（那会在 objc_retain 崩）。
 //  6. bfp_rec 内部不调用任何被 hook 的函数；递归锁 + 递归守卫。
 //
@@ -160,13 +160,6 @@ static bfp_hook_stat *bfp_stat_for(const char *name) {
 static void bfp_mark_called(const char *name) {
     bfp_hook_stat *s = bfp_stat_for(name);
     if (s) s->called = 1;
-}
-
-// 预登记所有想 hook 的符号（即使最后没装上也要出现在报告里）。
-// 上一版只登记“确实被改写成功”的符号，导致 sysctl/uname 直接消失，
-// 我误读成“App 没调用”。这个坑必须堵上。
-static void bfp_preregister(const char *name) {
-    (void)bfp_stat_for(name);
 }
 
 #pragma mark - fishhook（复用主插件验证过的实现）
@@ -387,21 +380,236 @@ static int m_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
 }
 
 
+// sysctl 本体：与 sysctlbyname 是两个独立符号。
+// 静态分析确认百度两个都导入了；上一版探针只钩了 sysctlbyname，漏了这条。
+static int (*o_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
+static int m_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp,
+                    void *newp, size_t newlen) {
+    bfp_mark_called("sysctl");
+    if (!o_sysctl) { errno = ENOSYS; return -1; }
+    int r = o_sysctl(name, namelen, oldp, oldlenp, newp, newlen);
+    if (r == 0 && name && namelen >= 2 && oldp && oldlenp && !newp) {
+        // CTL_HW = 6
+        if (name[0] == 6) {
+            NSString *key = [NSString stringWithFormat:@"L1 sysctl mib=[6,%d]", name[1]];
+            size_t len = *oldlenp;
+            if (len == 4)      bfp_rec_int(key, *(int *)oldp);
+            else if (len == 8) bfp_rec_int(key, *(long long *)oldp);
+            else if (len > 0 && len < 256) {
+                char buf[257] = {0};
+                memcpy(buf, oldp, len < 256 ? len : 256);
+                bfp_rec_str(key, buf);
+            }
+        }
+    }
+    return r;
+}
+
+static int (*o_uname)(struct utsname *);
+static int m_uname(struct utsname *b) {
+    bfp_mark_called("uname");
+    if (!o_uname) { errno = ENOSYS; return -1; }
+    int r = o_uname(b);
+    if (r == 0 && b) {
+        bfp_rec_str(@"L1 uname.machine", b->machine);
+        bfp_rec_str(@"L1 uname.release", b->release);
+    }
+    return r;
+}
+
+#pragma mark - L2 文件
+
+static BOOL bfp_is_jb_path(const char *p) {
+    if (!p) return NO;
+    static const char *k[] = {
+        "Cydia", "cydia", "Sileo", "sileo", "Zebra", "Substrate", "substrate",
+        "MobileSubstrate", "frida", "Frida", "cycript", "/jb/", "apt", "dpkg",
+        "sshd", "/bin/bash", "roothide", "RootHide", "dopamine", "Dopamine",
+        "TrollStore", "trollstore", "ellekit", "ElleKit", "bootstrap",
+        "libhooker", "Substitute", NULL
+    };
+    for (int i = 0; k[i]; i++) if (strstr(p, k[i])) return YES;
+    return NO;
+}
+
+static NSMutableSet *g_jbPaths;
+
+static void bfp_note_path(const char *p) {
+    if (!p) return;
+    if (bfp_is_jb_path(p)) {
+        bfp_init();
+        [g_lock lock];
+        if (!g_jbPaths) g_jbPaths = [NSMutableSet set];
+        if (g_jbPaths.count < 500) [g_jbPaths addObject:[NSString stringWithFormat:@"%s", p]];
+        [g_lock unlock];
+        bfp_rec_str(@"L2 \u26a0\ufe0f \u8d8a\u72f1\u8def\u5f84\u547d\u4e2d", p);
+    } else {
+        bfp_rec_str(@"L2 \u8bbf\u95ee\u8fc7\u7684\u8def\u5f84", p);
+    }
+}
+
+static int (*o_stat)(const char *, struct stat *);
+static int m_stat(const char *p, struct stat *b) {
+    bfp_mark_called("stat");
+    if (!o_stat) { errno = ENOSYS; return -1; }
+    bfp_note_path(p); return o_stat(p, b);
+}
+static int (*o_lstat)(const char *, struct stat *);
+static int m_lstat(const char *p, struct stat *b) {
+    bfp_mark_called("lstat");
+    if (!o_lstat) { errno = ENOSYS; return -1; }
+    bfp_note_path(p); return o_lstat(p, b);
+}
+static int (*o_access)(const char *, int);
+static int m_access(const char *p, int md) {
+    bfp_mark_called("access");
+    if (!o_access) { errno = ENOSYS; return -1; }
+    bfp_note_path(p); return o_access(p, md);
+}
+static FILE *(*o_fopen)(const char *, const char *);
+static FILE *m_fopen(const char *p, const char *md) {
+    bfp_mark_called("fopen");
+    if (!o_fopen) { errno = ENOSYS; return NULL; }
+    bfp_note_path(p); return o_fopen(p, md);
+}
+static DIR *(*o_opendir)(const char *);
+static DIR *m_opendir(const char *p) {
+    bfp_mark_called("opendir");
+    if (!o_opendir) { errno = ENOSYS; return NULL; }
+    bfp_note_path(p); return o_opendir(p);
+}
+
+#pragma mark - L3 网络
+
+static int (*o_getifaddrs)(struct ifaddrs **);
+static int m_getifaddrs(struct ifaddrs **out) {
+    bfp_mark_called("getifaddrs");
+    if (!o_getifaddrs) { errno = ENOSYS; return -1; }
+    int r = o_getifaddrs(out);
+    if (r == 0 && out && *out) {
+        for (struct ifaddrs *ifa = *out; ifa; ifa = ifa->ifa_next) {
+            if (!ifa->ifa_name || !ifa->ifa_addr) continue;
+            sa_family_t f = ifa->ifa_addr->sa_family;
+            if (f == AF_INET) {
+                char b[INET_ADDRSTRLEN] = {0};
+                inet_ntop(AF_INET, &((struct sockaddr_in *)ifa->ifa_addr)->sin_addr, b, sizeof(b));
+                bfp_rec([NSString stringWithFormat:@"L3 \u63a5\u53e3 %s", ifa->ifa_name],
+                        [NSString stringWithUTF8String:b]);
+            } else if (f == AF_INET6) {
+                bfp_rec([NSString stringWithFormat:@"L3 \u63a5\u53e3 %s", ifa->ifa_name],
+                        @"\u6709 IPv6");
+            } else if (f == AF_LINK && ifa->ifa_addr->sa_len >= 8) {
+                struct sockaddr_dl *dl = (struct sockaddr_dl *)ifa->ifa_addr;
+                if (dl->sdl_alen == 6) {
+                    unsigned char *mp = (unsigned char *)LLADDR(dl);
+                    bfp_rec([NSString stringWithFormat:@"L3 \u63a5\u53e3 %s MAC", ifa->ifa_name],
+                            [NSString stringWithFormat:@"%02x:%02x:%02x:%02x:%02x:%02x",
+                             mp[0], mp[1], mp[2], mp[3], mp[4], mp[5]]);
+                }
+            }
+        }
+    }
+    return r;
+}
+
+#pragma mark - L4 动态库
+
+static uint32_t (*o_dyld_count)(void);
+static uint32_t m_dyld_count(void) {
+    bfp_mark_called("_dyld_image_count");
+    if (!o_dyld_count) return 0;
+    uint32_t c = o_dyld_count();
+    bfp_rec_int(@"L4 _dyld_image_count", c);
+    return c;
+}
+
+static const char *(*o_dyld_name)(uint32_t);
+static const char *m_dyld_name(uint32_t idx) {
+    bfp_mark_called("_dyld_get_image_name");
+    if (!o_dyld_name) return NULL;
+    const char *n = o_dyld_name(idx);
+    if (n) bfp_rec_str(@"L4 _dyld_get_image_name", n);
+    return n;
+}
+
+#pragma mark - L5 时间
+
+static CFAbsoluteTime (*o_cfabs)(void);
+static CFAbsoluteTime m_cfabs(void) {
+    bfp_mark_called("CFAbsoluteTimeGetCurrent");
+    if (!o_cfabs) return 0;
+    CFAbsoluteTime v = o_cfabs();
+    g_depth++;
+    bfp_rec(@"L5 CFAbsoluteTimeGetCurrent", [NSString stringWithFormat:@"%.1f", v]);
+    g_depth--;
+    return v;
+}
+
+static time_t (*o_time)(time_t *);
+static time_t m_time(time_t *tp) {
+    bfp_mark_called("time");
+    if (!o_time) return 0;
+    time_t r = o_time(tp);
+    bfp_rec_int(@"L5 time()", (long long)r);
+    return r;
+}
+
+static int (*o_gettimeofday)(struct timeval *, void *);
+static int m_gettimeofday(struct timeval *tv, void *tz) {
+    bfp_mark_called("gettimeofday");
+    if (!o_gettimeofday) { errno = ENOSYS; return -1; }
+    int r = o_gettimeofday(tv, tz);
+    if (r == 0 && tv) bfp_rec_int(@"L5 gettimeofday", (long long)tv->tv_sec);
+    return r;
+}
+
+static void bfp_install_c_hooks(void) {
+    // 先预登记：确保报告里能看到每个符号的真实状态。
+    // 上一版只登记"确实改写成功"的符号，导致 sysctl/uname 直接消失，
+    // 被误读成"App 没调用"。这个坑必须堵。
+    static const char *want[] = {
+        "sysctlbyname", "sysctl", "uname", "stat", "lstat", "access",
+        "fopen", "opendir", "getifaddrs", "_dyld_image_count",
+        "_dyld_get_image_name", "CFAbsoluteTimeGetCurrent", "time",
+        "gettimeofday", NULL
+    };
+    for (int i = 0; want[i]; i++) (void)bfp_stat_for(want[i]);
+
+    struct bfp_rebinding rb[] = {
+        {"sysctlbyname", (void *)m_sysctlbyname, (void **)&o_sysctlbyname},
+        {"sysctl", (void *)m_sysctl, (void **)&o_sysctl},
+        {"uname", (void *)m_uname, (void **)&o_uname},
+        {"stat", (void *)m_stat, (void **)&o_stat},
+        {"lstat", (void *)m_lstat, (void **)&o_lstat},
+        {"access", (void *)m_access, (void **)&o_access},
+        {"fopen", (void *)m_fopen, (void **)&o_fopen},
+        {"opendir", (void *)m_opendir, (void **)&o_opendir},
+        {"getifaddrs", (void *)m_getifaddrs, (void **)&o_getifaddrs},
+        {"_dyld_image_count", (void *)m_dyld_count, (void **)&o_dyld_count},
+        {"_dyld_get_image_name", (void *)m_dyld_name, (void **)&o_dyld_name},
+        {"CFAbsoluteTimeGetCurrent", (void *)m_cfabs, (void **)&o_cfabs},
+        {"time", (void *)m_time, (void **)&o_time},
+        {"gettimeofday", (void *)m_gettimeofday, (void **)&o_gettimeofday},
+    };
+    bfp_rebind_symbols(rb, sizeof(rb) / sizeof(rb[0]));
+}
+
+#pragma mark - L6 关键 getter
+
+
 // 读对象返回值的安全做法。
 //
-// 【为什么上一版会把大量值记成"不可读"】
+// 【为什么上一版把大量值记成"不可读"】
 // 那些指针形如 0x9c318a9189961ca1（高位带 PAC 签名）。
-// 返回给调用方的 id 是已经过 objc_msgSend 认证的合法对象指针，
-// 对它发消息本身是安全的；而我用 vm_region_64 去查原始地址会失败，
-// 于是误判成不可读 —— 把 model / systemVersion 这些关键值全挡在外面了。
+// 返回给调用方的 id 是已过 objc_msgSend 认证的合法对象指针，
+// 对它发消息本身是安全的；用 vm_region_64 预检原始地址反而会失败，
+// 于是误判成不可读，把 model / systemVersion 这些关键值全挡在外面。
 //
-// 现在：直接发消息读，用 @try 兜底（只对真·已释放对象会抛异常）。
+// 现在：直接发消息读，@try 兜底。
 static NSString *bfp_safe_copy(id obj) {
     if (!obj) return @"(nil)";
     NSString *out = nil;
     @try {
-        // NSString / NSNumber 直接取 description；
-        // 其它对象先看能否转字符串，再退化到 class 名。
         if ([obj respondsToSelector:@selector(description)]) {
             out = [NSString stringWithFormat:@"%@", obj];
         }
@@ -410,8 +618,7 @@ static NSString *bfp_safe_copy(id obj) {
     }
     if (!out || !out.length) {
         @try {
-            out = [NSString stringWithFormat:@"<%@>",
-                   NSStringFromClass([obj class])];
+            out = [NSString stringWithFormat:@"<%@>", NSStringFromClass([obj class])];
         } @catch (NSException *e2) {
             out = @"(无法读取)";
         }
@@ -419,6 +626,7 @@ static NSString *bfp_safe_copy(id obj) {
     if (out.length > 200) out = [out substringToIndex:200];
     return out;
 }
+
 static IMP o_identifierForVendor, o_systemVersion, o_model, o_systemName, o_deviceName;
 static IMP o_physicalMemory, o_processorCount, o_hostName, o_systemUptime;
 static IMP o_localeIdentifier, o_preferredLanguages, o_localTimeZone, o_systemTimeZone;
@@ -446,9 +654,9 @@ static id h_preferredLanguages(id s, SEL c) {
     NSString *d = @"(nil)";
     @try {
         if (r && [r respondsToSelector:@selector(count)]) {
-            d = [NSString stringWithFormat:@"%lu \u9879", (unsigned long)[r count]];
+            d = [NSString stringWithFormat:@"%lu 项", (unsigned long)[r count]];
         }
-    } @catch (NSException *e) { d = @"(\u5f02\u5e38)"; }
+    } @catch (NSException *e) { d = @"(异常)"; }
     bfp_rec(@"L6 NSLocale.preferredLanguages", d);
     return r;
 }
@@ -756,13 +964,8 @@ static NSString *bfp_report(void) {
             s->origFilled ? "YES" : "NO",
             s->called ? "YES" : "NO"];
     }
-    [o appendString:@"\n  \u8bf4\u660e\uff1a\n"
-                @"    \u88c5\u4e0a=NO  -> fishhook \u6ca1\u5728\u5df2\u52a0\u8f7d\u955c\u50cf\u7684 GOT \u91cc\u627e\u5230\u8fd9\u4e2a\u7b26\u53f7\n"
-                @"                 \uff08\u53ef\u80fd\u5728 __AUTH_CONST\uff0c\u5e26 PAC \u4e0d\u80fd\u6539\uff1b"
-                @"\u6216 App \u6839\u672c\u6ca1\u5bfc\u5165\uff09\n"
-                @"    \u88ab\u8c03\u7528=NO -> \u94a9\u5b50\u5df2\u88c5\u4e0a\uff0c\u4f46 App \u786e\u5b9e\u6ca1\u8c03\u7528\n"
-                @"    \u539f\u6307\u9488=NO -> \u539f\u51fd\u6570\u5730\u5740\u672a\u586b\u4e0a\uff0c"
-                @"\u66ff\u6362\u51fd\u6570\u4f1a\u76f4\u63a5\u8fd4\u56de\u5931\u8d25\n"];
+    [o appendString:@"\n  \uff08\u88c5\u4e0a=NO \u610f\u5473\u7740 fishhook \u6ca1\u6539\u5230 GOT\uff1b"
+                @"\u88ab\u8c03\u7528=NO \u610f\u5473\u7740 App \u786e\u5b9e\u6ca1\u8c03\uff09\n"];
 
     [g_lock lock];
     NSDictionary *snap = [g_rec copy];
