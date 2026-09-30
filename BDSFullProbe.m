@@ -53,7 +53,7 @@
 #import <CoreTelephony/CTTelephonyNetworkInfo.h>
 #import <CoreTelephony/CTCarrier.h>
 
-static NSString * const BFPVersion = @"1.3";
+static NSString * const BFPVersion = @"1.4";
 
 #pragma mark - 记录器（线程安全，只读）
 
@@ -739,10 +739,6 @@ static void bfp_install_c_hooks(void) {
         {"time", (void *)bfp_my_time, (void **)&bfp_orig_time},
         {"gettimeofday", (void *)bfp_my_gettimeofday, (void **)&bfp_orig_gettimeofday},
         // 本轮新增：内存的其它读取路径
-        {"task_info", (void *)bfp_my_task_info, (void **)&bfp_orig_task_info},
-        {"host_statistics64", (void *)bfp_my_host_statistics64, (void **)&bfp_orig_host_statistics64},
-        {"host_statistics", (void *)bfp_my_host_statistics, (void **)&bfp_orig_host_statistics},
-        {"host_processor_info", (void *)bfp_my_host_processor_info, (void **)&bfp_orig_host_processor_info},
         // 本轮新增：时间全套（百度 time() 调用 5000+ 次）
         {"localtime", (void *)bfp_my_localtime, (void **)&bfp_orig_localtime},
         {"gmtime", (void *)bfp_my_gmtime, (void **)&bfp_orig_gmtime},
@@ -947,16 +943,55 @@ static void bfp_build_button(void) {
     });
 }
 
+
+#pragma mark - 启动进度标记（崩在哪一步，文件里留痕迹）
+//
+// 探针在启动期崩溃时，单看崩溃日志难区分是哪个 hook 装崩的。
+// 做法：每个阶段前写一个标记文件到 App 沙盒 Documents/probe_marker/。
+//       崩溃后看最后一个标记文件即可定位阶段。
+// 刻意只用最小 API，不调用任何被 hook 的函数。
+
+static void bfp_marker(const char *stage) {
+    @autoreleasepool {
+        NSArray *dirs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
+                                                            NSUserDomainMask, YES);
+        if (dirs.count == 0) return;
+        NSString *dir = [NSString stringWithFormat:@"%@/probe_marker", dirs.firstObject];
+        [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                                 withIntermediateDirectories:YES
+                                                  attributes:nil
+                                                       error:NULL];
+        NSString *f = [NSString stringWithFormat:@"%@/%s.txt", dir, stage];
+        [[NSString stringWithFormat:@"stage=%s", stage]
+            writeToFile:f atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+    }
+}
+
 __attribute__((constructor))
 static void bfp_start(void) {
+    bfp_marker("00_enter");
     bfp_init();
+    bfp_marker("01_inited");
     bfp_install_c_hooks();
+    bfp_marker("02_c_hooks_done");
     bfp_install_L1();
+    bfp_marker("03_L1_identifiers");
     bfp_install_L2();
+    bfp_marker("04_L2_hardware");
     bfp_install_L4();
+    bfp_marker("05_L4_locale");
     bfp_install_L6();
-    bfp_install_L7();
+    bfp_marker("06_L6_time");
+    // L7 传感器延后 3 秒再装：CoreMotion 在启动期初始化会与系统自身的
+    // 传感器服务竞争，是已知的启动崩溃来源。
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        bfp_marker("07_L7_sensor");
+        bfp_install_L7();
+        bfp_marker("07b_L7_done");
+    });
     bfp_install_L8();
-    // L3/L5 的 C 层 hook 需要 fishhook，探针这里先用 ObjC 可覆盖的部分 + dlsym 记录
+    bfp_marker("08_L8_baidu");
     bfp_build_button();
+    bfp_marker("09_done");
 }
