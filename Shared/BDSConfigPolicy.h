@@ -18,7 +18,11 @@ static NSArray<NSArray<NSDictionary *> *> *BDSSettingGroups(void) {
           // 9.30-23：反注入与防越狱检测性质不同，拆成独立开关。
           // 前者防的是“发现你在改我”，后者是“伪装越狱状态”。
           // 放在组末尾：避免被“一键基础打开前 3 项”的逻辑当成常规项而打开。
-          @{@"key":@"hideInjection",@"name":@"隐藏插件注入",@"off":@NO}],
+          @{@"key":@"hideInjection",@"name":@"隐藏插件注入",@"off":@NO},
+          // 9.30-24：时间偏移。默认关闭 ——
+          // 百度有 BDPanServerTimeHelper 会拿服务器时间与客户端时间比对，
+          // 偏移量过大会反而构成“时钟异常”特征。建议 ±3~8 分钟。
+          @{@"key":@"spoofTimeOffset",@"name":@"时间偏移",@"off":@YES}],
         @[@{@"key":@"spoofWiFi",@"name":@"Wi-Fi 参数"},
           @{@"key":@"spoofLocalIP",@"name":@"本地 IP 参数"},
           @{@"key":@"spoofPasteboard",@"name":@"剪贴板保护"},
@@ -129,7 +133,7 @@ static void BDSApplyInitialDefaults(NSMutableDictionary *config, NSDictionary *s
     config[@"targetedScreenHwMachine"]=saved[@"targetedScreenHwMachine"] ?: config[@"targetedHwMachine"] ?: @"iPhone14,6";
     // 必须写当前版本号。写成 @187 会把 loadConfig 里已经抬上去的版本又按回去，
     // 导致 ver < 189 之类的迁移每次启动都重复触发（防越狱检测就踩过这个坑）。
-    config[@"configVersion"]=@189;
+    config[@"configVersion"]=@190;
 }
 
 // ---- 随机 WiFi SSID（一键基础时自动配一个）----

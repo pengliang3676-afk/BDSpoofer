@@ -141,8 +141,10 @@ static NSDictionary *g_config = nil;
 static int g_enabledC = 0;
 static int g_spoofSysctlC = 0;
 static int g_bypassJailbreakC = 0;
-// 9.30-23：隐藏注入独立于防越狱检测。防的是“发现你在改我”，与伪装越狱状态无关。
+// 9.30-24：隐藏注入独立于防越狱检测。防的是“发现你在改我”，与伪装越狱状态无关。
 static int g_hideInjectionC = 0;
+// 9.30-24：时间偏移（钟差伪装）。默认关闭，见实现处的风险说明。
+static int g_spoofTimeOffsetC = 0;
 static int g_spoofWiFiC = 0;
 static int g_spoofLocalIPC = 0;
 // 伪造的本地 IP（网络字节序）。由 cfgStr(@"localIP") 在 bds_update_c_cache 中转成 s_addr。
@@ -183,7 +185,7 @@ static NSDictionary *BDSDefaultConfig(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @189,
+            @"configVersion": @190,
             @"spoofBaiduTargeted": @NO,
             @"spoofBaiduTargetedSystem": @NO,
             @"spoofBaiduTargetedModel": @NO,
@@ -354,7 +356,7 @@ static void loadConfig() {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            // 9.30-23 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
+            // 9.30-24 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
             // （v189 迁移还会兜底强制关一次。）
             @"bypassJailbreakDetect": @NO
         }];
@@ -561,9 +563,9 @@ static void loadConfig() {
     BDSApplyInitialDefaults(merged, loaded);
     // 注意顺序：迁移必须放在 BDSApplyInitialDefaults 之后。
     // 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
-    // 写在它之前会被它设回 @YES（9.30-23 实测就是这个原因导致开关关不掉）。
+    // 写在它之前会被它设回 @YES（9.30-24 实测就是这个原因导致开关关不掉）。
     if (ver < 189) {
-        // 9.30-23：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
+        // 9.30-24：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
         // 老配置里这个键通常已存 @YES，光靠默认值救不了，必须强制写一次 @NO。
         // 用独立的版本号 189 是为了让已经处在 188 的配置也能被这次修正覆盖到，
         // 且只执行一次：之后用户在面板手动打开仍然有效。
@@ -573,6 +575,28 @@ static void loadConfig() {
     } else if (![loaded[@"configVersion"] isEqual:@189]) {
         // 新装（没有已保存配置）：模板已按策略写成 @NO，这里只补版本号，不覆盖用户选择。
         merged[@"configVersion"] = @189;
+        [merged writeToFile:p1 atomically:YES];
+    }
+    if (ver < 190) {
+        // 9.30-24：新增两个开关 + 时间偏移配置。
+        // hideInjection（隐藏插件注入）：默认开启 —— 它防的是"发现你在改我"，
+        //   与"伪装越狱状态"性质不同，与 bypassJailbreakDetect 解耦。
+        // spoofTimeOffset（时间偏移）：默认关闭 —— 百度有 BDPanServerTimeHelper
+        //   会拿服务端时间与客户端时间比对，偏移量过大会构成"时钟异常"特征。
+        if (!loaded[@"hideInjection"])               merged[@"hideInjection"] = @YES;
+        if (!loaded[@"spoofTimeOffset"])             merged[@"spoofTimeOffset"] = @NO;
+        if (!loaded[@"timeOffsetSeconds"])           merged[@"timeOffsetSeconds"] = @0;
+        if (!loaded[@"timeOffsetJitterSeconds"])     merged[@"timeOffsetJitterSeconds"] = @120;
+        // 老配置若已手动打开时间偏移但基准是 0，给一个保守默认（5 分钟），
+        // 让它立刻生效而不是静默不动。之后用户仍可在面板自由调整。
+        if ([merged[@"spoofTimeOffset"] boolValue] &&
+            [merged[@"timeOffsetSeconds"] integerValue] == 0) {
+            merged[@"timeOffsetSeconds"] = @300;
+        }
+        merged[@"configVersion"] = @190;
+        [merged writeToFile:p1 atomically:YES];
+    } else if (![loaded[@"configVersion"] isEqual:@190]) {
+        merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     }
     // 没点过一键基础：内存里关掉机型伪装，不把默认 SE 写回文件。
@@ -611,6 +635,8 @@ static BOOL saveConfigValues(NSDictionary *values) {
         BDS_ATOMIC_SET(g_spoofSysctlC, cfgBool(@"spoofSysctl", NO) ? 1 : 0);
         BDS_ATOMIC_SET(g_bypassJailbreakC, cfgBool(@"bypassJailbreakDetect", NO) ? 1 : 0);
     BDS_ATOMIC_SET(g_hideInjectionC, cfgBool(@"hideInjection", NO) ? 1 : 0);
+    BDS_ATOMIC_SET(g_spoofTimeOffsetC, cfgBool(@"spoofTimeOffset", NO) ? 1 : 0);
+    g_timeOffsetSec = BDS_ATOMIC_GET(g_spoofTimeOffsetC) ? bds_compute_time_offset() : 0;
         BDS_ATOMIC_SET(g_spoofWiFiC, cfgBool(@"spoofWiFi", NO) ? 1 : 0);
         BDS_ATOMIC_SET(g_spoofLocalIPC, cfgBool(@"spoofLocalIP", NO) ? 1 : 0);
         BDS_ATOMIC_SET(g_spoofProxyC, cfgBool(@"spoofProxyDetection", NO) ? 1 : 0);
@@ -2333,10 +2359,25 @@ static void tg_add_image_cb(const struct mach_header *mh, intptr_t slide) {
     });
 }
 static void tg_schedule_retry(void);
+// 时间偏移相关的前向声明（定义在后面的"时间偏移"小节，但 install* 会先调用）
+static int  bds_time_offset(void);
+static int  bds_compute_time_offset(void);
+static id   new_NSDate_date(id self, SEL _cmd);
+static NSTimeInterval new_NSDate_timeIntervalSince1970(id self, SEL _cmd);
+static IMP  orig_NSDate_date;
+static IMP  orig_NSDate_timeIntervalSince1970;
+static int  g_timeOffsetSec;
+
 static void installBaiduTargetedHooks(void) {
     tg_install_all();
     _dyld_register_func_for_add_image(tg_add_image_cb);   // 晚加载的 framework 在主队列补 hook
     if (!tg_all_resolved()) tg_schedule_retry();          // 每 0.5s 重试，最多 30 次（约 15s）
+    // 时间偏移：NSDate 的类方法与读取路径（墙钟时间；单调时钟不碰）
+    {
+        Class dateCls = objc_getClass("NSDate");
+        hookInst(dateCls, @selector(date), (IMP)new_NSDate_date, &orig_NSDate_date);
+        hookInst(dateCls, @selector(timeIntervalSince1970), (IMP)new_NSDate_timeIntervalSince1970, &orig_NSDate_timeIntervalSince1970);
+    }
 }
 static void tg_schedule_retry(void) {
     if (g_tgRetryCount >= 30) return;
@@ -3095,7 +3136,7 @@ static const char *bds_my_dyld_get_image_name(uint32_t image_index) {
         BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
         return name;
     }
-    // 反注入独立开关（9.30-23）：隐藏注入与防越狱检测拆开
+    // 反注入独立开关（9.30-24）：隐藏注入与防越狱检测拆开
     if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_hideInjectionC)) {
         BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
         return name;
@@ -3106,6 +3147,137 @@ static const char *bds_my_dyld_get_image_name(uint32_t image_index) {
     }
     BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
     return name;
+}
+
+#pragma mark - 时间偏移（钟差伪装）
+//
+// 目的：打散"客户端上报的时间戳"，让作息规律不那么整齐。
+//
+// 【关键设计】只偏移「墙钟时间」，绝不动「单调时钟」：
+//   墙钟（可偏移）：time / gettimeofday / clock_gettime(CLOCK_REALTIME) /
+//                   CFAbsoluteTimeGetCurrent / NSDate
+//   单调（不碰）  ：mach_absolute_time / mach_continuous_time / systemUptime /
+//                   CLOCK_MONOTONIC / CLOCK_UPTIME_RAW
+//   原因：单调时钟被计时器、性能统计、退避算法依赖；偏移会破坏它们的行为，
+//         而且"单调时钟与墙钟的差值"本身就是一个稳定的检测点。
+//
+// 【偏移量为什么必须小】百度有 BDPanServerTimeHelper，会把客户端时间与
+//   服务端时间做比对（还有 checkLocalTimeIsValid: 这样的显式校验）。
+//   真实手机时钟经 NTP 同步后偏差通常是秒级到分钟级；
+//   若客户端比服务端快 30 分钟，直接构成"时钟异常"特征。
+//   因此偏移量限制在 ±3~8 分钟，单台固定 + 每次启动小幅抖动。
+//
+// 【诚实的边界】服务器收到请求的真实时刻改不了。时间偏移只能打散
+//   "客户端自报的时间戳"，无法改变"服务端观测到的到达时间"。
+//   最有效的仍是打散 70 台设备的实际操作时间。
+
+#define BDS_TIME_OFFSET_LIMIT_SEC (8 * 60)   // 硬上限 8 分钟
+
+g_timeOffsetSec = 0;                       // 本次启动实际使用的偏移量
+
+static int bds_time_offset(void) {
+    return g_timeOffsetSec;
+}
+
+// 计算偏移：配置基准 + 每次启动抖动，整体夹在 ±8 分钟内
+static int bds_compute_time_offset(void) {
+    NSInteger base = cfgInt(@"timeOffsetSeconds", 0);
+    if (base > BDS_TIME_OFFSET_LIMIT_SEC)  base = BDS_TIME_OFFSET_LIMIT_SEC;
+    if (base < -BDS_TIME_OFFSET_LIMIT_SEC) base = -BDS_TIME_OFFSET_LIMIT_SEC;
+    if (base == 0) return 0;
+    // 每次启动抖动 ±(60~180) 秒，避免"同一台设备每次偏移量完全一致"
+    NSInteger jitterRange = cfgInt(@"timeOffsetJitterSeconds", 120);
+    if (jitterRange < 0) jitterRange = 0;
+    if (jitterRange > 300) jitterRange = 300;
+    NSInteger jitter = 0;
+    if (jitterRange > 0) {
+        jitter = (NSInteger)arc4random_uniform((uint32_t)(jitterRange * 2 + 1)) - jitterRange;
+    }
+    NSInteger v = base + jitter;
+    if (v > BDS_TIME_OFFSET_LIMIT_SEC)  v = BDS_TIME_OFFSET_LIMIT_SEC;
+    if (v < -BDS_TIME_OFFSET_LIMIT_SEC) v = -BDS_TIME_OFFSET_LIMIT_SEC;
+    return (int)v;
+}
+
+// ---- time() ----
+static time_t (*orig_time)(time_t *);
+static time_t bds_my_time(time_t *tp) {
+    time_t real = orig_time ? orig_time(NULL) : 0;
+    int off = bds_time_offset();
+    time_t v = real;
+    if (off != 0 && BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_spoofTimeOffsetC)) {
+        BDS_DIAG_RECORD(g_diagBootTime, BDSDiagStateChanged);
+        v = real + (time_t)off;
+    } else {
+        BDS_DIAG_RECORD(g_diagBootTime, BDSDiagStatePassed);
+    }
+    if (tp) *tp = v;
+    return v;
+}
+
+// ---- clock_gettime（只改 CLOCK_REALTIME，单调时钟原样返回）----
+static int (*orig_clock_gettime)(clockid_t, struct timespec *);
+static int bds_my_clock_gettime(clockid_t clk, struct timespec *ts) {
+    int r = orig_clock_gettime ? orig_clock_gettime(clk, ts) : -1;
+    if (r != 0 || !ts) return r;
+    if (clk != CLOCK_REALTIME) return r;   // 单调时钟绝不碰
+    int off = bds_time_offset();
+    if (off != 0 && BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_spoofTimeOffsetC)) {
+        BDS_DIAG_RECORD(g_diagBootTime, BDSDiagStateChanged);
+        ts->tv_sec += (time_t)off;
+    }
+    return r;
+}
+
+// ---- gettimeofday ----
+static int (*orig_gettimeofday)(struct timeval *, void *);
+static int bds_my_gettimeofday(struct timeval *tv, void *tz) {
+    int r = orig_gettimeofday ? orig_gettimeofday(tv, tz) : -1;
+    if (r != 0 || !tv) return r;
+    int off = bds_time_offset();
+    if (off != 0 && BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_spoofTimeOffsetC)) {
+        BDS_DIAG_RECORD(g_diagBootTime, BDSDiagStateChanged);
+        tv->tv_sec += (time_t)off;
+    }
+    return r;
+}
+
+// ---- CFAbsoluteTimeGetCurrent ----
+static CFAbsoluteTime (*orig_CFAbsoluteTimeGetCurrent)(void);
+static CFAbsoluteTime bds_my_CFAbsoluteTimeGetCurrent(void) {
+    CFAbsoluteTime real = orig_CFAbsoluteTimeGetCurrent ? orig_CFAbsoluteTimeGetCurrent() : 0;
+    int off = bds_time_offset();
+    if (off != 0 && BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_spoofTimeOffsetC)) {
+        BDS_DIAG_RECORD(g_diagBootTime, BDSDiagStateChanged);
+        return real + (CFAbsoluteTime)off;
+    }
+    return real;
+}
+
+// ---- NSDate（类方法 + 实例读取路径）----
+orig_NSDate_date = NULL;
+static id new_NSDate_date(id self, SEL _cmd) {
+    id real = orig_NSDate_date ? ((id (*)(id, SEL))orig_NSDate_date)(self, _cmd) : nil;
+    int off = bds_time_offset();
+    if (real && off != 0 && BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_spoofTimeOffsetC)) {
+        BDS_DIAG_RECORD(g_diagBootTime, BDSDiagStateChanged);
+        return [real dateByAddingTimeInterval:(NSTimeInterval)off];
+    }
+    return real;
+}
+
+orig_NSDate_timeIntervalSince1970 = NULL;
+static NSTimeInterval new_NSDate_timeIntervalSince1970(id self, SEL _cmd) {
+    NSTimeInterval real = 0;
+    if (orig_NSDate_timeIntervalSince1970) {
+        real = ((NSTimeInterval (*)(id, SEL))orig_NSDate_timeIntervalSince1970)(self, _cmd);
+    }
+    int off = bds_time_offset();
+    if (off != 0 && BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_spoofTimeOffsetC)) {
+        BDS_DIAG_RECORD(g_diagBootTime, BDSDiagStateChanged);
+        return real + (NSTimeInterval)off;
+    }
+    return real;
 }
 
 #pragma mark - A 组补漏：静态分析确证百度导入但插件未覆盖的接口
@@ -4155,6 +4327,11 @@ static void installCHooks(void) {
         {"getppid", (void *)bds_my_getppid, (void **)&orig_getppid},
         {"getenv", (void *)bds_my_getenv, (void **)&orig_getenv},
         {"getpeername", (void *)bds_my_getpeername, (void **)&orig_getpeername},
+        // 时间偏移（墙钟时间；单调时钟绝不注册）
+        {"time", (void *)bds_my_time, (void **)&orig_time},
+        {"clock_gettime", (void *)bds_my_clock_gettime, (void **)&orig_clock_gettime},
+        {"gettimeofday", (void *)bds_my_gettimeofday, (void **)&orig_gettimeofday},
+        {"CFAbsoluteTimeGetCurrent", (void *)bds_my_CFAbsoluteTimeGetCurrent, (void **)&orig_CFAbsoluteTimeGetCurrent},
         {"task_info", (void *)bds_my_task_info, (void **)&orig_task_info},
         {"host_statistics64", (void *)bds_my_host_statistics64, (void **)&orig_host_statistics64},
         {"IOPSGetPowerSourceDescription", (void *)bds_my_IOPSGetPowerSourceDescription, (void **)&orig_IOPSGetPowerSourceDescription},
@@ -4925,7 +5102,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-23";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-24";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5079,7 +5256,7 @@ static NSString *BDSConfigSummary(void) {
     if (g_lastBasicSystem) {
         [values addEntriesFromDictionary:BDSBaiduSystemSyncValues(g_lastBasicSystem)];
     }
-    values[@"configVersion"] = @189;
+    values[@"configVersion"] = @190;
     BOOL saved = saveConfigValues(values);
     if (!saved) {
         [self presentMessage:@"配置文件写入失败，基础参数没有更换。" title:@"保存失败"];
@@ -5217,7 +5394,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
 - (void)randomizeAdvancedProfile {
     NSMutableDictionary *values = [BDSRandomIdentityValues() mutableCopy];
     // 与卍解一键高级语义一致：只更换五项身份值，不动开关。
-    values[@"configVersion"] = @189;
+    values[@"configVersion"] = @190;
     BOOL saved = saveConfigValues(values);
     if (!saved) {
         [self presentMessage:@"配置文件写入失败，高级参数没有更换。" title:@"保存失败"];
