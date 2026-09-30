@@ -53,7 +53,7 @@
 #import <stdlib.h>
 #import <time.h>
 
-static NSString * const BFPVersion = @"4.3";
+static NSString * const BFPVersion = @"5.0";
 
 #pragma mark - 记录器
 
@@ -639,17 +639,17 @@ static void bfp_install_getters(void) {
 // 沙盒里的 txt 我在电脑端读不到。而「照片」就在 /var/mobile/Media/DCIM/ 下，
 // AFC 能读 —— 把报告做成图片存进相册，我就能直接拉走。
 static UIImage *bfp_render_text_image(NSString *txt) {
-    UIFont *font = [UIFont monospacedSystemFontOfSize:9 weight:UIFontWeightRegular];
-    CGFloat w = 1400.0, pad = 12.0;
+    UIFont *font = [UIFont monospacedSystemFontOfSize:22 weight:UIFontWeightRegular];
+    CGFloat w = 2200.0, pad = 24.0;
     NSDictionary *attrs = @{ NSFontAttributeName: font,
                              NSForegroundColorAttributeName: UIColor.blackColor };
 
     NSMutableArray<NSString *> *lines = [NSMutableArray array];
     for (NSString *ln in [txt componentsSeparatedByString:@"\n"]) {
-        if (ln.length <= 150) { [lines addObject:ln]; continue; }
+        if (ln.length <= 100) { [lines addObject:ln]; continue; }
         NSUInteger i = 0;
         while (i < ln.length) {
-            NSUInteger n = MIN((NSUInteger)150, ln.length - i);
+            NSUInteger n = MIN((NSUInteger)100, ln.length - i);
             [lines addObject:[ln substringWithRange:NSMakeRange(i, n)]];
             i += n;
         }
@@ -685,6 +685,78 @@ static void bfp_save_image_to_photos(UIImage *img, UIViewController *presenter) 
         CGRectMake(presenter.view.bounds.size.width / 2,
                    presenter.view.bounds.size.height / 2, 1, 1);
     [presenter presentViewController:av animated:YES completion:nil];
+}
+
+
+#pragma mark - 局域网 HTTP 服务（报告直接取，不碰文件系统）
+
+// 为什么加这个：前面所有"把文件送到电脑"的办法都受 iOS 沙盒限制。
+// 最直接的办法是——让手机自己把报告挂在局域网上，电脑用浏览器/curl 取。
+// 只用 BSD socket，不依赖任何外部库，也不碰剪贴板/相册/文件系统。
+#include <sys/socket.h>
+#include <netinet/in.h>
+
+static NSString *g_httpBody = nil;
+static int g_httpPort = 0;
+
+static void bfp_start_http(NSString *body) {
+    g_httpBody = [body copy];
+
+    int srv = socket(AF_INET, SOCK_STREAM, 0);
+    if (srv < 0) return;
+    int on = 1;
+    setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(0);                 // 让内核分配端口
+    if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) != 0) { close(srv); return; }
+
+    struct sockaddr_in got;
+    socklen_t glen = sizeof(got);
+    if (getsockname(srv, (struct sockaddr *)&got, &glen) != 0) { close(srv); return; }
+    g_httpPort = ntohs(got.sin_port);
+
+    if (listen(srv, 4) != 0) { close(srv); return; }
+
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        for (;;) {
+            int cli = accept(srv, NULL, NULL);
+            if (cli < 0) continue;
+            char buf[1024];
+            recv(cli, buf, sizeof(buf) - 1, 0);      // 请求头不关心
+            NSData *bd = [g_httpBody dataUsingEncoding:NSUTF8StringEncoding];
+            NSString *hdr = [NSString stringWithFormat:
+                @"HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\n"
+                @"Content-Length: %lu\r\nConnection: close\r\n\r\n",
+                (unsigned long)bd.length];
+            send(cli, hdr.UTF8String, strlen(hdr.UTF8String), 0);
+            send(cli, bd.bytes, bd.length, 0);
+            close(cli);
+        }
+    });
+}
+
+// 取本机 Wi-Fi 地址，拼出可访问 URL
+static NSString *bfp_local_url(void) {
+    NSString *ip = nil;
+    struct ifaddrs *ifa0 = NULL;
+    if (getifaddrs(&ifa0) == 0) {
+        for (struct ifaddrs *i = ifa0; i; i = i->ifa_next) {
+            if (!i->ifa_name || !i->ifa_addr) continue;
+            if (i->ifa_addr->sa_family != AF_INET) continue;
+            if (strcmp(i->ifa_name, "en0") != 0) continue;
+            char b[INET_ADDRSTRLEN] = {0};
+            inet_ntop(AF_INET, &((struct sockaddr_in *)i->ifa_addr)->sin_addr, b, sizeof(b));
+            ip = [NSString stringWithUTF8String:b];
+            break;
+        }
+        freeifaddrs(ifa0);
+    }
+    if (!ip || g_httpPort == 0) return nil;
+    return [NSString stringWithFormat:@"http://%@:%d/", ip, g_httpPort];
 }
 
 static NSArray<NSString *> *bfp_write_file(NSString *txt) {
@@ -928,6 +1000,21 @@ static void bfp_show_panel(void) {
                                        handler:^(UIAlertAction *x) {
         (void)x;
         UIPasteboard.generalPasteboard.string = txt;
+    }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"\u5f00\u670d\u52a1\u5668" style:UIAlertActionStyleDefault
+                                       handler:^(UIAlertAction *x) {
+        (void)x;
+        bfp_start_http(txt);
+        NSString *u = bfp_local_url();
+        UIAlertController *c3 = [UIAlertController
+            alertControllerWithTitle:@"\u670d\u52a1\u5668\u5df2\u5f00"
+                             message:(u ? [NSString stringWithFormat:
+                                      @"\u7535\u8111\u6d4f\u89c8\u5668\u6253\u5f00\uff1a\n%@\n\n"
+                                      @"\uff08\u624b\u673a\u4e0e\u7535\u8111\u9700\u5728\u540c\u4e00 Wi-Fi\uff09", u]
+                                    : @"\u672a\u53d6\u5230 Wi-Fi \u5730\u5740")
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [c3 addAction:[UIAlertAction actionWithTitle:@"\u597d" style:UIAlertActionStyleCancel handler:nil]];
+        [top presentViewController:c3 animated:YES completion:nil];
     }]];
     [a addAction:[UIAlertAction actionWithTitle:@"\u5173\u95ed" style:UIAlertActionStyleCancel handler:nil]];
     [top presentViewController:a animated:YES completion:nil];
