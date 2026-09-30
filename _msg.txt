@@ -1,4 +1,5 @@
-Fix build: 删除重复的 struct bfp_rebinding 定义
+Fix build: 修复 struct bfp_rebindings_entry 被误删的收尾
 
-替换 fishhook 实现时，旧的内联定义残留在替换起点之前，
-导致 redefinition of 'bfp_rebinding'。已删除旧的那份。
+删除重复 struct 定义时，正则多吃了 bfp_rebindings_entry 的
+成员声明、收尾 }; 以及 g_bfpRebindingsHead 声明，导致后续语法错乱。
+已补回。花括号/圆括号已平衡（169/169、642/642）。

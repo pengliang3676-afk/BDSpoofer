@@ -646,7 +646,10 @@ struct bfp_rebinding {
 struct bfp_rebindings_entry {
     struct bfp_rebinding *rebindings;
     size_t rebindings_nel;
-sHead = NULL;
+    struct bfp_rebindings_entry *next;
+};
+
+static struct bfp_rebindings_entry *g_bfpRebindingsHead = NULL;
 static int g_bfpRebindFailures = 0;
 
 static vm_address_t bfp_page_mask(void) {
