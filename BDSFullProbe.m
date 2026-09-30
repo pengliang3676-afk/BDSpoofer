@@ -603,10 +603,6 @@ static void bfp_install_L6(void) {
 
 #pragma mark - fishhook（自实现，用于 C 函数）
 
-struct bfp_rebinding { const char *name; void *replacement; void **replaced; };
-static struct bfp_rebinding *g_reb_head = NULL;
-static size_t g_reb_count = 0;
-static int g_reb_inited = 0;
 
 // ============================================================
 // fishhook —— 直接复用主插件里已验证的实现
@@ -650,10 +646,7 @@ struct bfp_rebinding {
 struct bfp_rebindings_entry {
     struct bfp_rebinding *rebindings;
     size_t rebindings_nel;
-    struct bfp_rebindings_entry *next;
-};
-
-static struct bfp_rebindings_entry *g_bfpRebindingsHead = NULL;
+sHead = NULL;
 static int g_bfpRebindFailures = 0;
 
 static vm_address_t bfp_page_mask(void) {

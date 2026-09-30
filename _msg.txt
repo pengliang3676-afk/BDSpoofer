@@ -1,30 +1,4 @@
-FullProbe 1.5: 修复启动闪退真因 —— 自己写的 fishhook 有 3 处错误
+Fix build: 删除重复的 struct bfp_rebinding 定义
 
-终于拿到崩溃日志（通过 pymobiledevice3 从设备直接拉取），定位精确：
-
-  EXC_BAD_ACCESS (SIGSEGV)  KERN_INVALID_ADDRESS at 0xffffffff022fae00
-  #0 bfp_rebind_image      <- 我写的
-  #2 bfp_rebind_cb
-  #3 _dyld_register_func_for_add_image
-  #6 bfp_rebind_symbols    <- 我写的
-  #7 bfp_install_c_hooks
-  #8 bfp_start             <- 构造函数
-
-崩在启动阶段遍历镜像时，即我自写的 fishhook。对比主插件里已验证的
-实现，发现三处错误（插件版早已修好并留了注释，我没复用，重写了一遍）：
-
-  1. 我遍历了所有段。插件版明确只扫 __DATA / __DATA_CONST ——
-     arm64e 上 __AUTH/__AUTH_CONST 的 GOT 指针带 PAC 签名，
-     写入未签名指针会在调用时认证失败并崩溃。这是本次闪退的直接原因。
-  2. linkedit 基址算错：我在 slide 上减 vmaddr 再加文件偏移；
-     正确是 slide + vmaddr - fileoff。
-  3. 缺间接符号表越界检查（reserved1 / nindirectsyms），
-     也未跳过 chained fixups 镜像（nindirectsyms == 0）。
-
-修法：删掉自写实现，直接复用主插件里验证过的
-bds_perform_rebinding_with_section / bds_rebind_symbols_for_image
-（改名为 bfp_ 前缀避免符号冲突），保留其全部安全措施。
-
-教训：这类底层代码不该重写，应直接复用已验证版本。
-
-同时保留 1.4 的改动（进度标记、移除启动期危险 hook、L7 延迟安装）。
+替换 fishhook 实现时，旧的内联定义残留在替换起点之前，
+导致 redefinition of 'bfp_rebinding'。已删除旧的那份。
