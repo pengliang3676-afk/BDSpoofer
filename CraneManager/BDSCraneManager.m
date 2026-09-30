@@ -339,8 +339,6 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
         // WiFi SSID 一起随机，规则与卐解一致：配一个常见名字，
         // 让 CNCopyCurrentNetworkInfo 钩子返回伪造值而不是 NULL。
         config[@"wifiSSID"] = BDSRandomCommonSSID();
-        // 本地 IP 伪造一个常见内网地址（“查不到本地 IP”比“查到 192.168.x.x”更可疑）
-        config[@"localIP"] = BDSRandomLanIP();
         NSArray<NSArray<NSDictionary *> *> *groups = BDSSettingGroups();
         for (NSString *key in BDSFirstEnabledKeys(groups[0], 6)) config[key] = @YES;
         for (NSString *key in BDSFirstEnabledKeys(groups[1], 3)) config[key] = @YES;
