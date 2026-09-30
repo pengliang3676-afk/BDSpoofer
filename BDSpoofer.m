@@ -3755,6 +3755,13 @@ static void bds_ensure_primary_iface(void) {
 }
 
 
+// 探测到的网卡是否真的持有 IPv4。若不是，说明探测不可靠，
+// 此时改为"所有持有 IPv4 的非回环网卡都写假地址"——宁可多写一张，
+// 也不能出现「配置了假 IP 但当前仍显示无地址」。
+static BOOL bds_primary_iface_usable(void) {
+    return bds_iface_has_ipv4(g_primaryIfName);
+}
+
 static int bds_my_getifaddrs(struct ifaddrs **ifap) {
     int result = orig_getifaddrs(ifap);
     // 【9.30-28 修正】网卡纠正必须放在最前面。
@@ -3778,10 +3785,17 @@ static int bds_my_getifaddrs(struct ifaddrs **ifap) {
     int modified = 0;
     for (struct ifaddrs *ifa = *ifap; ifa; ifa = ifa->ifa_next) {
         if (!ifa->ifa_name || !ifa->ifa_addr) continue;
-        // 【9.30-28】改主网卡，不再写死 en0。
-        // 开代理/VPN 时默认路由在 utun*，en0 没有 IPv4，写死 en0 等于没改。
+        // 【9.30-28】优先只改探测到的主网卡；若探测不可靠（那张卡没有 IPv4），
+        // 则对"所有持有 IPv4 的非回环网卡"都写假地址。
+        // 宁可多写一张，也不能出现「配了假 IP 却仍显示无地址」。
         const char *target = g_primaryIfName[0] ? g_primaryIfName : "en0";
-        if (strcmp(ifa->ifa_name, target) != 0) continue;
+        BOOL strict = bds_primary_iface_usable();
+        if (strict) {
+            if (strcmp(ifa->ifa_name, target) != 0) continue;
+        } else {
+            if (!ifa->ifa_name) continue;
+            if (strncmp(ifa->ifa_name, "lo", 2) == 0) continue;   // 跳过回环
+        }
         sa_family_t family = ifa->ifa_addr->sa_family;
         if (family == AF_INET) {
             struct sockaddr_in fake;
@@ -3799,9 +3813,10 @@ static int bds_my_getifaddrs(struct ifaddrs **ifap) {
                 memcpy(ifa->ifa_netmask, &mask, sizeof(mask));
             }
             modified = 1;
-        } else if (family == AF_INET6) {
+        } else if (family == AF_INET6 && strict) {
             // IPv6 无法凭一个 v4 值伪造，保持“不可见”。
             // 只有 IPv4、没有 IPv6，在双栈家庭网络里很常见，不算矛盾。
+            // 仅在精确模式下这么做；全改模式下不动 IPv6，避免把别的网卡也弄没。
             ifa->ifa_addr->sa_family = AF_UNSPEC;
             if (ifa->ifa_netmask) ifa->ifa_netmask->sa_family = AF_UNSPEC;
             if (ifa->ifa_dstaddr) ifa->ifa_dstaddr->sa_family = AF_UNSPEC;
