@@ -3117,6 +3117,12 @@ static const char *bds_my_dyld_get_image_name(uint32_t image_index) {
 static int (*orig_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
 static int bds_my_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp,
                          void *newp, size_t newlen) {
+    // 空指针保护：fishhook 若因二进制布局差异没能填上原函数指针，
+    // 直接调用就是 NULL 调用 -> 立刻闪退。其余 10 个新 C hook 都有这层保护，此处原先漏了。
+    if (!orig_sysctl) {
+        errno = ENOSYS;
+        return -1;
+    }
     int r = orig_sysctl(name, namelen, oldp, oldlenp, newp, newlen);
     if (r != 0 || !name || namelen < 2 || !oldp || !oldlenp || newp) return r;
     if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofSysctlC)) return r;

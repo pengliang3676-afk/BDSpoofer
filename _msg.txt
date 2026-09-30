@@ -1,0 +1,7 @@
+Fix: bds_my_sysctl 缺空指针保护（唯一的漏网项）
+
+排查闪退时发现：我新增的 11 个 C hook 里有 10 个都做了 orig_ 判空，
+只有 bds_my_sysctl 直接在函数第一行调用 orig_sysctl(...)。
+若 fishhook 因二进制布局差异没能填上该指针，就是 NULL 调用 -> 立刻闪退。
+
+现在补上保护：orig_sysctl 为空时返回 -1（errno=ENOSYS），不再调用。
