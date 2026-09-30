@@ -1,4 +1,49 @@
-# 卐解 1.8.1 UI1.3 9.30-20 / 卍解 1.0.2 UI1.3 9.30-20
+# 卐解 1.8.1 UI1.3 9.30-21 / 卍解 1.0.2 UI1.3 9.30-21
+
+## 9.30-21 A 组补漏：静态分析确证但插件未覆盖的接口
+
+对百度极速版 7.17.0 解密二进制做符号级静态分析（26699 类 / 228171 选择器 /
+3316 个 C 导入符号）后，补齐以下**确证导入**但插件未覆盖的接口：
+
+### sysctl 本体（原来只钩了 sysctlbyname）
+
+两个是**独立符号**，`sysctl(CTL_HW, HW_MACHINE)` 完全绕过 `sysctlbyname`。
+现在补齐 `HW_MACHINE`（机型）与 `HW_MEMSIZE`（内存）两个键。
+
+### fstat
+
+通过已打开的文件描述符取元数据，**绕过所有路径检查**。现在挂钩并计入诊断。
+
+### getppid
+
+正常 App 返回 1（launchd）。越狱环境下若经 frida-server / debugserver / ssh 启动，
+会返回非 1 值 —— 这是父进程检测。现在异常值纠正为 1。
+
+### getenv（注入检测）
+
+`DYLD_INSERT_LIBRARIES` 字符串确实存在于百度二进制中，这是**最经典的注入检测**
+（而 TrollFools 正是用这种方式注入插件）。现在对该变量及同族变量返回 NULL。
+
+### getpeername / task_info / host_statistics64
+
+这三项**只做诊断计数，不改写返回值**：
+- `getpeername` 返回的是对端地址（真实远端），改了反而错
+- `task_info(TASK_BASIC_INFO)` 是**本进程**虚拟/常驻内存，与 `hw.memsize`
+  （物理内存总量）不是同一个量，强行对齐会与真实值矛盾
+- `host_statistics64` 的 `free_count` 是物理页口径，与 statfs 的文件系统口径不同
+
+### NSProcessInfo 补三项
+
+- **`systemUptime`（开机时长）** —— 静态分析确认百度在用，是**最强的
+  "重启 vs 改机"判据**：改机/多开工具通常不重启设备。现在从伪造的开机时刻推算，
+  与 `kern.boottime` 保持一致。
+- `processorCount` / `activeProcessorCount` —— 与已伪造的 CPU 核数统一。
+
+### 尚未处理（需用户决定）
+
+`_dyld_image_count` / `_dyld_get_image_header` 的**镜像隐藏一致化** ——
+这属于"隐藏插件自身注入"，与"防越狱检测"是不同性质，需用户确认后单独做。
+
 
 ## 9.30-20 全量审计后的 7 项修复
 

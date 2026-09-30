@@ -352,7 +352,7 @@ static void loadConfig() {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            // 9.30-20 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
+            // 9.30-21 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
             // （v189 迁移还会兜底强制关一次。）
             @"bypassJailbreakDetect": @NO
         }];
@@ -559,9 +559,9 @@ static void loadConfig() {
     BDSApplyInitialDefaults(merged, loaded);
     // 注意顺序：迁移必须放在 BDSApplyInitialDefaults 之后。
     // 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
-    // 写在它之前会被它设回 @YES（9.30-20 实测就是这个原因导致开关关不掉）。
+    // 写在它之前会被它设回 @YES（9.30-21 实测就是这个原因导致开关关不掉）。
     if (ver < 189) {
-        // 9.30-20：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
+        // 9.30-21：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
         // 老配置里这个键通常已存 @YES，光靠默认值救不了，必须强制写一次 @NO。
         // 用独立的版本号 189 是为了让已经处在 188 的配置也能被这次修正覆盖到，
         // 且只执行一次：之后用户在面板手动打开仍然有效。
@@ -1232,6 +1232,43 @@ static IMP orig_hostName = NULL;
 static NSString *new_hostName(id self, SEL _cmd) {
     BDS_DIAG_RECORD(g_diagProcess, BDSDiagStateChanged);
     return cfgStr(@"kernHostname", @"iPhone");
+}
+
+// systemUptime（开机时长）：静态分析确认百度在用，是最强的"重启 vs 改机"判据。
+// 真实设备开机时长单调递增；改机/多开工具通常不重启设备。
+// 这里让它从"伪造的开机时刻"推算，与 kern.boottime 保持一致。
+static IMP orig_systemUptime = NULL;
+static NSTimeInterval new_systemUptime(id self, SEL _cmd) {
+    if (!cfgBool(@"spoofBootTime", NO)) {
+        if (orig_systemUptime) return ((NSTimeInterval (*)(id, SEL))orig_systemUptime)(self, _cmd);
+        return 0;
+    }
+    BDS_DIAG_RECORD(g_diagProcess, BDSDiagStateChanged);
+    NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+    NSTimeInterval boot = (NSTimeInterval)g_fakeBootTime.tv_sec;
+    NSTimeInterval up = now - boot;
+    if (up < 60) up = 60;              // 兜底：不允许出现负数或极小值
+    return up;
+}
+
+static IMP orig_processorCount = NULL;
+static NSUInteger new_processorCount(id self, SEL _cmd) {
+    if (!cfgBool(@"spoofCPU", NO)) {
+        if (orig_processorCount) return ((NSUInteger (*)(id, SEL))orig_processorCount)(self, _cmd);
+        return 6;
+    }
+    BDS_DIAG_RECORD(g_diagCPU, BDSDiagStateChanged);
+    return (NSUInteger)(g_fakeNcpu > 0 ? g_fakeNcpu : 6);
+}
+
+static IMP orig_activeProcessorCount = NULL;
+static NSUInteger new_activeProcessorCount(id self, SEL _cmd) {
+    if (!cfgBool(@"spoofCPU", NO)) {
+        if (orig_activeProcessorCount) return ((NSUInteger (*)(id, SEL))orig_activeProcessorCount)(self, _cmd);
+        return 6;
+    }
+    BDS_DIAG_RECORD(g_diagCPU, BDSDiagStateChanged);
+    return (NSUInteger)(g_fakeActiveCPU > 0 ? g_fakeActiveCPU : g_fakeNcpu);
 }
 
 static IMP orig_physicalMemory = NULL;
@@ -3037,6 +3074,116 @@ static const char *bds_my_dyld_get_image_name(uint32_t image_index) {
     return name;
 }
 
+#pragma mark - A 组补漏：静态分析确证百度导入但插件未覆盖的接口
+//
+// 这些是"防御性补漏"：不补的话，百度可以绕过已有 hook 拿到真实值，
+// 或发现两条路给的值互相矛盾。均为百度二进制中确证的导入符号。
+
+// ---- sysctl 本体（插件原来只钩了 sysctlbyname，两者是独立符号）----
+static int (*orig_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
+static int bds_my_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp,
+                         void *newp, size_t newlen) {
+    int r = orig_sysctl(name, namelen, oldp, oldlenp, newp, newlen);
+    if (r != 0 || !name || namelen < 2 || !oldp || !oldlenp || newp) return r;
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofSysctlC)) return r;
+    // CTL_HW = 6
+    if (name[0] != CTL_HW) return r;
+    // HW_MACHINE = 1（字符串），HW_MEMSIZE = 24（uint64）
+    if (name[1] == HW_MACHINE && g_hwMachine[0]) {
+        size_t len = strlen(g_hwMachine) + 1;
+        if (*oldlenp >= len) {
+            memcpy(oldp, g_hwMachine, len);
+            *oldlenp = len;
+            BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStateChanged);
+        }
+        return 0;
+    }
+    if (name[1] == HW_MEMSIZE && *oldlenp >= sizeof(uint64_t)) {
+        uint64_t mem = (uint64_t)cfgInt(@"memorySize", 4096) * 1024ULL * 1024ULL;
+        *(uint64_t *)oldp = mem;
+        *oldlenp = sizeof(uint64_t);
+        BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStateChanged);
+        return 0;
+    }
+    return r;
+}
+
+// ---- fstat：通过已打开的文件描述符绕过路径检查 ----
+static int (*orig_fstat)(int, struct stat *);
+static int bds_my_fstat(int fd, struct stat *buf) {
+    // fstat 拿不到路径，无法按路径判断；保持原样返回。
+    // 这一项的意义在于：确认百度是否调用（诊断计数），而不是拦截。
+    BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStatePassed);
+    if (!orig_fstat) { errno = EBADF; return -1; }
+    return orig_fstat(fd, buf);
+}
+
+// ---- getppid：正常 App 返回 1（launchd），异常值暴露调试器/ssh 启动 ----
+static pid_t (*orig_getppid)(void);
+static pid_t bds_my_getppid(void) {
+    pid_t real = orig_getppid ? orig_getppid() : 1;
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_bypassJailbreakC)) return real;
+    // 只有异常值才需要纠正（正常就是 1）
+    if (real != 1 && real != 0) {
+        BDS_DIAG_RECORD(g_diagObjCJailbreak, BDSDiagStateChanged);
+        return 1;
+    }
+    return real;
+}
+
+// ---- getenv：DYLD_INSERT_LIBRARIES 是最经典的注入检测 ----
+static char *(*orig_getenv)(const char *);
+static char *bds_my_getenv(const char *name) {
+    if (!name) return orig_getenv ? orig_getenv(name) : NULL;
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_bypassJailbreakC)) {
+        return orig_getenv ? orig_getenv(name) : NULL;
+    }
+    static const char *inject_vars[] = {
+        "DYLD_INSERT_LIBRARIES", "DYLD_FORCE_FLAT_NAMESPACE",
+        "_MSSafeMode", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH", NULL
+    };
+    for (int i = 0; inject_vars[i]; i++) {
+        if (strcmp(name, inject_vars[i]) == 0) {
+            BDS_DIAG_RECORD(g_diagObjCJailbreak, BDSDiagStateChanged);
+            return NULL;   // 视为未设置
+        }
+    }
+    return orig_getenv ? orig_getenv(name) : NULL;
+}
+
+// ---- getpeername：与 getsockname 配对，不处理会出现"两个地址不一致" ----
+static int (*orig_getpeername)(int, struct sockaddr *, socklen_t *);
+static int bds_my_getpeername(int fd, struct sockaddr *addr, socklen_t *len) {
+    int r = orig_getpeername ? orig_getpeername(fd, addr, len) : -1;
+    // 对端地址不改（它是真实的远端，改了反而错）。
+    // 这一项只做诊断计数：确认百度是否在用这条交叉校验路径。
+    BDS_DIAG_RECORD(g_diagLocalIP, BDSDiagStatePassed);
+    return r;
+}
+
+// ---- task_info / host_statistics64：内存与 CPU 的另外两条路 ----
+static kern_return_t (*orig_task_info)(task_name_t, task_flavor_t, task_info_t, mach_msg_type_number_t *);
+static kern_return_t bds_my_task_info(task_name_t task, task_flavor_t flavor,
+                                      task_info_t info, mach_msg_type_number_t *cnt) {
+    kern_return_t r = orig_task_info ? orig_task_info(task, flavor, info, cnt) : KERN_FAILURE;
+    BDS_DIAG_RECORD(g_diagProcess, BDSDiagStatePassed);
+    // 说明：task_info(TASK_BASIC_INFO) 返回的是"本进程虚拟内存/常驻内存"，
+    // 与 hw.memsize（物理内存总量）不是同一个量，强行改会与真实值矛盾。
+    // 故此处只做诊断，不改写。
+    return r;
+}
+
+static kern_return_t (*orig_host_statistics64)(host_t, int, host_info64_t, mach_msg_type_number_t *);
+static kern_return_t bds_my_host_statistics64(host_t host, int flavor, host_info64_t info,
+                                              mach_msg_type_number_t *cnt) {
+    kern_return_t r = orig_host_statistics64 ? orig_host_statistics64(host, flavor, info, cnt)
+                                             : KERN_FAILURE;
+    BDS_DIAG_RECORD(g_diagStatfs, BDSDiagStatePassed);
+    // free_count 与 statfs 的可用空间是两个不同口径（物理页 vs 文件系统），
+    // 强行对齐反而矛盾。故只做诊断。
+    return r;
+}
+
 #pragma mark - C: C 函数级文件检测 hook（fishhook）
 // arm64 iOS 上 struct stat 已使用 64 位 inode（__DARWIN_ONLY_64_BIT_INO_T=1），
 // stat64/struct stat64 不公开，因此不 hook stat64。
@@ -3968,6 +4115,14 @@ static void installCHooks(void) {
         {"CNCopyCurrentNetworkInfo", (void *)bds_my_CNCopyCurrentNetworkInfo, (void **)&orig_CNCopyCurrentNetworkInfo},
         {"getifaddrs", (void *)bds_my_getifaddrs, (void **)&orig_getifaddrs},
         {"getsockname", (void *)bds_my_getsockname, (void **)&orig_getsockname},
+        // A 组补漏（静态分析确证的导入符号）
+        {"sysctl", (void *)bds_my_sysctl, (void **)&orig_sysctl},
+        {"fstat", (void *)bds_my_fstat, (void **)&orig_fstat},
+        {"getppid", (void *)bds_my_getppid, (void **)&orig_getppid},
+        {"getenv", (void *)bds_my_getenv, (void **)&orig_getenv},
+        {"getpeername", (void *)bds_my_getpeername, (void **)&orig_getpeername},
+        {"task_info", (void *)bds_my_task_info, (void **)&orig_task_info},
+        {"host_statistics64", (void *)bds_my_host_statistics64, (void **)&orig_host_statistics64},
         {"IOPSGetPowerSourceDescription", (void *)bds_my_IOPSGetPowerSourceDescription, (void **)&orig_IOPSGetPowerSourceDescription},
         {"CFNetworkCopySystemProxySettings", (void *)bds_my_CFNetworkCopySystemProxySettings, (void **)&orig_CFNetworkCopySystemProxySettings},
         {"SCDynamicStoreCopyProxies", (void *)bds_my_SCDynamicStoreCopyProxies, (void **)&orig_SCDynamicStoreCopyProxies},
@@ -4736,7 +4891,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-20";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-21";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5956,6 +6111,9 @@ static void bds_initialize() {
         if (basicEnabled && cfgBool(@"spoofProcessHardware", NO)) {
             hookInst(cls, @selector(hostName), (IMP)new_hostName, &orig_hostName);
             hookInst(cls, @selector(physicalMemory), (IMP)new_physicalMemory, &orig_physicalMemory);
+            hookInst(cls, @selector(systemUptime), (IMP)new_systemUptime, &orig_systemUptime);
+            hookInst(cls, @selector(processorCount), (IMP)new_processorCount, &orig_processorCount);
+            hookInst(cls, @selector(activeProcessorCount), (IMP)new_activeProcessorCount, &orig_activeProcessorCount);
         }
 
         if (basicEnabled && cfgBool(@"spoofLocale", NO)) {
