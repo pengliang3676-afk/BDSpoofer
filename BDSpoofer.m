@@ -352,7 +352,7 @@ static void loadConfig() {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            // 9.30-21 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
+            // 9.30-22 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
             // （v189 迁移还会兜底强制关一次。）
             @"bypassJailbreakDetect": @NO
         }];
@@ -559,9 +559,9 @@ static void loadConfig() {
     BDSApplyInitialDefaults(merged, loaded);
     // 注意顺序：迁移必须放在 BDSApplyInitialDefaults 之后。
     // 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
-    // 写在它之前会被它设回 @YES（9.30-21 实测就是这个原因导致开关关不掉）。
+    // 写在它之前会被它设回 @YES（9.30-22 实测就是这个原因导致开关关不掉）。
     if (ver < 189) {
-        // 9.30-21：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
+        // 9.30-22：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
         // 老配置里这个键通常已存 @YES，光靠默认值救不了，必须强制写一次 @NO。
         // 用独立的版本号 189 是为了让已经处在 188 的配置也能被这次修正覆盖到，
         // 且只执行一次：之后用户在面板手动打开仍然有效。
@@ -1387,6 +1387,36 @@ static NSDictionary *new_serviceSubscriberCellularProviders(id self, SEL _cmd) {
     BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
     CTCarrier *fake = [[CTCarrier alloc] init];
     return @{@"0000000100000001": fake};
+}
+
+// currentRadioAccessTechnology：上报"当前网络类型"（LTE / NR / WCDMA…）。
+// 静态分析确认百度在用（选择器 _getRadioAccessTech 存在）。
+// 不处理的话，机型/系统都伪装了、网络类型却是真实蜂窝制式，形成矛盾。
+// 用户场景是插电常驻 + 软路由代理，因此统一报"Wi-Fi"，与本地 IP 伪造一致。
+static IMP orig_currentRadioAccessTechnology = NULL;
+static NSString *new_currentRadioAccessTechnology(id self, SEL _cmd) {
+    if (!cfgBool(@"spoofCarrier", NO)) {
+        if (orig_currentRadioAccessTechnology) {
+            return ((NSString *(*)(id, SEL))orig_currentRadioAccessTechnology)(self, _cmd);
+        }
+        return nil;
+    }
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
+    // CTRadioAccessTechnologyLTE 的字面值；用 Wi-Fi 场景下更自然
+    return @"CTRadioAccessTechnologyLTE";
+}
+
+static IMP orig_serviceCurrentRadioAccessTechnology = NULL;
+static NSDictionary *new_serviceCurrentRadioAccessTechnology(id self, SEL _cmd) {
+    if (!cfgBool(@"spoofCarrier", NO)) {
+        if (orig_serviceCurrentRadioAccessTechnology) {
+            return ((NSDictionary *(*)(id, SEL))orig_serviceCurrentRadioAccessTechnology)(self, _cmd);
+        }
+        return @{};
+    }
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
+    // 双卡：给一个稳定的单卡结构，避免暴露真实双卡布局
+    return @{@"0000000100000001": @"CTRadioAccessTechnologyLTE"};
 }
 
 static IMP orig_carrierName = NULL;
@@ -4891,7 +4921,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-21";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-22";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -6135,6 +6165,9 @@ static void bds_initialize() {
             cls = objc_getClass("CTTelephonyNetworkInfo");
             hookInst(cls, @selector(subscriberCellularProvider), (IMP)new_subscriberCellularProvider, &orig_subscriberCellularProvider);
             hookInst(cls, @selector(serviceSubscriberCellularProviders), (IMP)new_serviceSubscriberCellularProviders, &orig_serviceSubscriberCellularProviders);
+            // 网络类型（静态分析确认百度在用）
+            hookInst(cls, @selector(currentRadioAccessTechnology), (IMP)new_currentRadioAccessTechnology, &orig_currentRadioAccessTechnology);
+            hookInst(cls, @selector(serviceCurrentRadioAccessTechnology), (IMP)new_serviceCurrentRadioAccessTechnology, &orig_serviceCurrentRadioAccessTechnology);
 
             cls = objc_getClass("CTCarrier");
             hookInst(cls, @selector(carrierName), (IMP)new_carrierName, &orig_carrierName);
