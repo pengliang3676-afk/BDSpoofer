@@ -47,6 +47,7 @@
 #import <time.h>
 #import <sys/time.h>
 #import <SystemConfiguration/CaptiveNetwork.h>
+#import <SystemConfiguration/SystemConfiguration.h>
 #import <AdSupport/AdSupport.h>
 #import <AppTrackingTransparency/AppTrackingTransparency.h>
 #import <CoreTelephony/CTTelephonyNetworkInfo.h>
