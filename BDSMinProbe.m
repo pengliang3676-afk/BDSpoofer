@@ -1,32 +1,33 @@
-// BDSMinProbe —— 最小可用只读探针
+// BDSMinProbe 4.0 —— 一次性到位版本
 //
-// 【为什么重写】
-//   前几版（1.2~1.5）连续闪退，两次崩溃日志分别指向：
-//     1. 自写 fishhook 遍历了 __AUTH/__AUTH_CONST（arm64e PAC 签名指针）-> 认证失败崩溃
-//     2. 通用 hook（bfp_hook_desc）对返回值调 description()，
-//        拿到已释放对象 -> objc_retain 崩溃
-//   根因是功能堆得太多、每层都可能有隐患。
-//   这一版只做「不会出错的操作」，先确保能稳定跑起来。
+// ============================================================================
+// 本版把此前所有已确认的缺陷一次全部修掉：
 //
-// 【安全约束（硬性）】
-//   A. fishhook 直接复用主插件验证过的实现，不自己写
-//   B. 通用 hook 只用于「返回基本类型」的 getter；返回值只做数值记录，
-//      绝不调用 description / componentsJoinedByString 等可能触发对象访问的方法
-//   C. 返回对象的方法：只记录「被调用了」，不碰返回值
-//   D. 所有 C hook 都判空原函数指针
-//   E. bfp_rec 内部不调用任何被 hook 的函数；递归锁 + 递归守卫
+// 【崩溃类】
+//  1. fishhook 只扫 __DATA / __DATA_CONST。
+//     __AUTH / __AUTH_CONST 的 GOT 指针在 arm64e 上带 PAC 签名，
+//     写入未签名指针会在调用时认证失败崩溃。（复用主插件验证过的实现）
+//  2. 不注册 _dyld_register_func_for_add_image 回调。
+//     该回调在 dlopen 执行中、dyld 持锁时触发，此时不能做系统调用、
+//     新镜像 dyld 结构也可能未就绪。要 hook 的 libsystem 函数启动时
+//     全部已加载，构造阶段扫一遍即可。
+//  3. 符号名偏移做纯算术边界校验（strsize + __LINKEDIT 区间），零系统调用。
+//  4. C hook 全部判空原函数指针。
+//  5. 对象返回值先用 vm_region 验证可读，再 CFRetain，再取描述。
+//     绝不对可能失效的指针发消息（那会在 objc_retain 崩）。
+//  6. bfp_rec 内部不调用任何被 hook 的函数；递归锁 + 递归守卫。
 //
-// 【覆盖】只保留回答关键问题所需的最小集合
-//   L1 硬件: sysctlbyname（机型/内存/OS版本…）
-//   L2 文件: stat/lstat/access/fopen/opendir（越狱路径探测）
-//   L3 网络: getifaddrs（接口/本地IP）
-//   L4 动态库: _dyld_image_count / _dyld_get_image_name（注入检测）
-//   L5 时间: time / gettimeofday / CFAbsoluteTimeGetCurrent（读几次）
-//   L6 调用标记: UIDevice/NSProcessInfo/NSLocale/NSTimeZone 的关键 getter（只记调用）
+// 【UI 类】
+//  7. 悬浮按钮用「只有按钮大小」的独立 UIWindow —— 这是关键。
+//     全屏窗口无论怎么写 hitTest 都会吞掉整屏触摸（3.1 实测 App 点不动）。
+//     窗口只覆盖按钮那一小块，窗口外的触摸根本不会命中它，天然穿透。
+//  8. 拖动 = 移动窗口本身（标准做法）。
+//  9. 窗口层级极高，压过百度自己的开屏/广告窗口；2 秒心跳维持。
+// ============================================================================
 
 #import <Foundation/Foundation.h>
-#import <CoreFoundation/CoreFoundation.h>
 #import <UIKit/UIKit.h>
+#import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <mach-o/dyld.h>
@@ -39,8 +40,6 @@
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
 #import <sys/stat.h>
-#import <sys/mount.h>
-#import <sys/statvfs.h>
 #import <sys/time.h>
 #import <sys/types.h>
 #import <ifaddrs.h>
@@ -52,7 +51,7 @@
 #import <stdlib.h>
 #import <time.h>
 
-static NSString * const BFPVersion = @"3.2";
+static NSString * const BFPVersion = @"4.0";
 
 #pragma mark - 记录器
 
@@ -60,7 +59,7 @@ static NSMutableDictionary<NSString *, NSMutableDictionary *> *g_rec;
 static NSRecursiveLock *g_lock;
 static CFAbsoluteTime g_startTime;
 static NSUInteger g_totalRecords;
-static int g_depth;                     // 递归守卫
+static int g_depth;
 static const NSUInteger kMaxPerKey = 200;
 
 static void bfp_init(void) {
@@ -72,8 +71,8 @@ static void bfp_init(void) {
     });
 }
 
-// 只接受 NSString / 数值转成的字符串。绝不访问任意对象。
-// 【硬性约束】本函数内不得调用任何被本探针 hook 的函数。
+// 【硬性约束】本函数内不得调用任何被本探针 hook 的函数，
+// 否则会递归回自己（1.3 版的自死锁就是这么来的）。
 static void bfp_rec(NSString *key, NSString *value) {
     if (!key) return;
     bfp_init();
@@ -98,14 +97,13 @@ static void bfp_rec(NSString *key, NSString *value) {
     g_depth--;
 }
 
-// 数值记录专用：不接触任何对象
 static void bfp_rec_int(NSString *key, long long v) {
     bfp_rec(key, [NSString stringWithFormat:@"%lld", v]);
 }
 
-static void bfp_rec_str(NSString *key, const char *cstr) {
-    if (!cstr) { bfp_rec(key, @"(null)"); return; }
-    bfp_rec(key, [NSString stringWithUTF8String:cstr]);
+static void bfp_rec_str(NSString *key, const char *c) {
+    if (!c) { bfp_rec(key, @"(null)"); return; }
+    bfp_rec(key, [NSString stringWithUTF8String:c]);
 }
 
 #pragma mark - 启动进度标记
@@ -167,8 +165,6 @@ static vm_address_t bfp_page_mask(void) {
     return (vm_address_t)(page - 1);
 }
 
-
-
 static void bfp_perform_rebinding_with_section(struct bfp_rebindings_entry *rebindings,
                                                bfp_section_t *section,
                                                intptr_t slide,
@@ -178,8 +174,8 @@ static void bfp_perform_rebinding_with_section(struct bfp_rebindings_entry *rebi
                                                uint32_t strsize,
                                                uint32_t *indirect_symtab,
                                                uint32_t nindirectsyms,
-                                               uintptr_t linkedit_fileoff,
-                                               uintptr_t linkedit_vmsize) {
+                                               uintptr_t le_off,
+                                               uintptr_t le_size) {
     uint32_t *indirect_symbol_indices = indirect_symtab + section->reserved1;
     void **indirect_symbol_bindings = (void **)((uintptr_t)slide + section->addr);
     uint32_t pointer_count = (uint32_t)(section->size / sizeof(void *));
@@ -188,8 +184,11 @@ static void bfp_perform_rebinding_with_section(struct bfp_rebindings_entry *rebi
         pointer_count > nindirectsyms - section->reserved1) {
         return;
     }
-    // 间接符号表这一段的可读性：已在 bfp_rebind_symbols_for_image 入口整表校验过，
-    // 且上面已确认 reserved1 + pointer_count 不越界，这里无需再查（避免系统调用开销）。
+
+    // __LINKEDIT 运行时区间（纯算术，无系统调用）。
+    // 本函数会在 dlopen 路径上被调用，绝不能做系统调用。
+    uintptr_t le_start = (uintptr_t)slide + le_off;
+    uintptr_t le_end = le_start + le_size;
 
     int protected_region = 0;
     for (uint32_t i = 0; i < pointer_count; i++) {
@@ -197,23 +196,15 @@ static void bfp_perform_rebinding_with_section(struct bfp_rebindings_entry *rebi
         if (symtab_index == INDIRECT_SYMBOL_ABS || symtab_index == INDIRECT_SYMBOL_LOCAL ||
             symtab_index == (INDIRECT_SYMBOL_LOCAL | INDIRECT_SYMBOL_ABS)) continue;
         if (symtab_index >= nsyms) continue;
-        uint32_t strtab_offset = symtab[symtab_index].n_un.n_strx;
-        // 关键保护（本次闪退的直接原因）：
-        // n_strx 是未经校验的 32 位偏移，越界会让 strcmp 读到未映射内存，
-        // 实测崩溃栈就是 _platform_strcmp -> 本函数。
-        // 用整数边界判断即可 —— strtab[0, strsize) 已在入口整体校验过可读，
-        // 这里不能再用 vm_region（那是系统调用，每符号一次会让 App 卡死）。
-        if (strtab_offset >= strsize) continue;
-        if (strsize - strtab_offset < 2) continue;
-        char *symbol_name = strtab + strtab_offset;
-        // 再确认这个地址确实落在本镜像的 __LINKEDIT 段区间内（纯算术，无系统调用）。
-        // __LINKEDIT 运行时基址 = slide + fileoff = slide + vmaddr - (vmaddr - fileoff)
-        // 这里直接用传入的 fileoff/vmsize 计算，不依赖 bfp_rebind_symbols_for_image 的局部变量。
+
+        uint32_t off = symtab[symtab_index].n_un.n_strx;
+        if (off >= strsize || strsize - off < 2) continue;
+        char *symbol_name = strtab + off;
+
         uintptr_t sn = (uintptr_t)symbol_name;
-        uintptr_t le_start = (uintptr_t)slide + linkedit_fileoff;
-        uintptr_t le_end = le_start + (uintptr_t)linkedit_vmsize;
         if (sn < le_start || sn + 2 > le_end) continue;
         if (!symbol_name[0] || !symbol_name[1]) continue;
+
         for (struct bfp_rebindings_entry *cur = rebindings; cur; cur = cur->next) {
             for (size_t j = 0; j < cur->rebindings_nel; j++) {
                 if (strcmp(&symbol_name[1], cur->rebindings[j].name) == 0) {
@@ -245,6 +236,7 @@ static void bfp_perform_rebinding_with_section(struct bfp_rebindings_entry *rebi
 static void bfp_rebind_symbols_for_image(struct bfp_rebindings_entry *rebindings,
                                          const struct mach_header *header,
                                          intptr_t slide) {
+    if (!header) return;
     if (header->magic != MH_MAGIC_64 && header->magic != MH_MAGIC) return;
 
     bfp_segment_command_t *cur_seg_cmd;
@@ -265,6 +257,7 @@ static void bfp_rebind_symbols_for_image(struct bfp_rebindings_entry *rebindings
     }
     if (!symtab_cmd || !dysymtab_cmd || !linkedit_segment) return;
     if (dysymtab_cmd->nindirectsyms == 0) { g_bfpRebindFailures++; return; }
+    if (symtab_cmd->nsyms == 0 || symtab_cmd->strsize == 0) return;
 
     uintptr_t linkedit_base =
         (uintptr_t)slide + linkedit_segment->vmaddr - linkedit_segment->fileoff;
@@ -272,22 +265,18 @@ static void bfp_rebind_symbols_for_image(struct bfp_rebindings_entry *rebindings
     char *strtab = (char *)(linkedit_base + symtab_cmd->stroff);
     uint32_t *indirect_symtab = (uint32_t *)(linkedit_base + dysymtab_cmd->indirectsymoff);
 
-    // 注意：这里不做任何系统调用（vm_region 等）。
-    // 本函数会在 dlopen 过程中、dyld 持锁时被回调，做系统调用会崩。
-
     cur = (uintptr_t)header + sizeof(bfp_mach_header_t);
     for (uint32_t i = 0; i < header->ncmds; i++, cur += cur_seg_cmd->cmdsize) {
         cur_seg_cmd = (bfp_segment_command_t *)cur;
         if (cur_seg_cmd->cmd != BFP_LC_SEGMENT) continue;
-        // 只扫 __DATA / __DATA_CONST。
-        // __AUTH / __AUTH_CONST 的 GOT 指针在 arm64e 上带 PAC 签名，
-        // 写入未签名指针会在调用时认证失败崩溃。
+        // 只扫 __DATA / __DATA_CONST。arm64e 上 __AUTH/__AUTH_CONST 的 GOT
+        // 指针带 PAC 签名，写入未签名指针会在调用时认证失败崩溃。
         if (strcmp(cur_seg_cmd->segname, SEG_DATA) != 0 &&
             strcmp(cur_seg_cmd->segname, SEG_DATA_CONST) != 0) continue;
         for (uint32_t j = 0; j < cur_seg_cmd->nsects; j++) {
             bfp_section_t *sect = (bfp_section_t *)(cur + sizeof(bfp_segment_command_t)) + j;
-            uint8_t t = sect->flags & SECTION_TYPE;
-            if (t == S_LAZY_SYMBOL_POINTERS || t == S_NON_LAZY_SYMBOL_POINTERS) {
+            uint8_t ty = sect->flags & SECTION_TYPE;
+            if (ty == S_LAZY_SYMBOL_POINTERS || ty == S_NON_LAZY_SYMBOL_POINTERS) {
                 bfp_perform_rebinding_with_section(rebindings, sect, slide, symtab,
                                                    symtab_cmd->nsyms, strtab,
                                                    symtab_cmd->strsize,
@@ -301,7 +290,6 @@ static void bfp_rebind_symbols_for_image(struct bfp_rebindings_entry *rebindings
 
 static struct bfp_rebindings_entry *g_head = NULL;
 
-
 static int bfp_rebind_symbols(struct bfp_rebinding rb[], size_t nel) {
     struct bfp_rebindings_entry *e = malloc(sizeof(struct bfp_rebindings_entry));
     if (!e) return -1;
@@ -310,16 +298,8 @@ static int bfp_rebind_symbols(struct bfp_rebinding rb[], size_t nel) {
     e->next = g_head;
     g_head = e;
 
-    // 【关键】不注册 _dyld_register_func_for_add_image 回调。
-    //
-    // 原因：该回调在 dlopen 执行过程中、dyld 持锁时被调用。此时：
-    //   1. 不能做系统调用（实测加了 vm_region 校验后仍在同一处崩）
-    //   2. 新镜像可能尚未初始化完成
-    // 而我们要 hook 的 libsystem/system 函数在 App 启动时全部已加载，
-    // 只需在构造阶段对「已加载镜像」扫一遍即可，无需回调。
-    //
-    // 代价：App 启动后通过 dlopen 加载的新库不会被 hook。
-    //       对本次分析目标（百度读系统信息的路径）无影响。
+    // 只扫「已加载镜像」。不注册 add_image 回调 ——
+    // 那个回调在 dlopen 中、dyld 持锁时触发，本探针在那里崩过两次。
     uint32_t c = _dyld_image_count();
     for (uint32_t i = 0; i < c; i++) {
         bfp_rebind_symbols_for_image(e, _dyld_get_image_header(i),
@@ -328,7 +308,7 @@ static int bfp_rebind_symbols(struct bfp_rebinding rb[], size_t nel) {
     return 0;
 }
 
-#pragma mark - L1 硬件（sysctlbyname / uname）
+#pragma mark - L1 硬件
 
 static int (*o_sysctlbyname)(const char *, void *, size_t *, void *, size_t);
 static int m_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
@@ -338,8 +318,8 @@ static int m_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
     if (r == 0 && name && oldp && oldlenp && !newp) {
         size_t len = *oldlenp;
         NSString *key = [NSString stringWithFormat:@"L1 sysctl:%s", name];
-        if (len == 4)        bfp_rec_int(key, *(int *)oldp);
-        else if (len == 8)   bfp_rec_int(key, *(long long *)oldp);
+        if (len == 4)      bfp_rec_int(key, *(int *)oldp);
+        else if (len == 8) bfp_rec_int(key, *(long long *)oldp);
         else if (len > 0 && len < 256) {
             char buf[257] = {0};
             memcpy(buf, oldp, len < 256 ? len : 256);
@@ -360,7 +340,7 @@ static int m_uname(struct utsname *b) {
     return r;
 }
 
-#pragma mark - L2 文件（越狱路径探测）
+#pragma mark - L2 文件
 
 static BOOL bfp_is_jb_path(const char *p) {
     if (!p) return NO;
@@ -375,18 +355,17 @@ static BOOL bfp_is_jb_path(const char *p) {
     return NO;
 }
 
-static NSMutableSet *g_paths;
+static NSMutableSet *g_jbPaths;
+
 static void bfp_note_path(const char *p) {
     if (!p) return;
-    bfp_init();
     if (bfp_is_jb_path(p)) {
-        NSString *s = [NSString stringWithFormat:@"\u26a0\ufe0f %s", p];
-        // 只做集合插入，不涉及返回值
+        bfp_init();
         [g_lock lock];
-        if (!g_paths) g_paths = [NSMutableSet set];
-        if (g_paths.count < 400) [g_paths addObject:s];
+        if (!g_jbPaths) g_jbPaths = [NSMutableSet set];
+        if (g_jbPaths.count < 500) [g_jbPaths addObject:[NSString stringWithFormat:@"%s", p]];
         [g_lock unlock];
-        bfp_rec_str(@"L2 \u8d8a\u72f1\u8def\u5f84\u547d\u4e2d", p);
+        bfp_rec_str(@"L2 \u26a0\ufe0f \u8d8a\u72f1\u8def\u5f84\u547d\u4e2d", p);
     } else {
         bfp_rec_str(@"L2 \u8bbf\u95ee\u8fc7\u7684\u8def\u5f84", p);
     }
@@ -403,9 +382,9 @@ static int m_lstat(const char *p, struct stat *b) {
     bfp_note_path(p); return o_lstat(p, b);
 }
 static int (*o_access)(const char *, int);
-static int m_access(const char *p, int m) {
+static int m_access(const char *p, int md) {
     if (!o_access) { errno = ENOSYS; return -1; }
-    bfp_note_path(p); return o_access(p, m);
+    bfp_note_path(p); return o_access(p, md);
 }
 static FILE *(*o_fopen)(const char *, const char *);
 static FILE *m_fopen(const char *p, const char *md) {
@@ -418,7 +397,7 @@ static DIR *m_opendir(const char *p) {
     bfp_note_path(p); return o_opendir(p);
 }
 
-#pragma mark - L3 网络（getifaddrs）
+#pragma mark - L3 网络
 
 static int (*o_getifaddrs)(struct ifaddrs **);
 static int m_getifaddrs(struct ifaddrs **out) {
@@ -434,14 +413,15 @@ static int m_getifaddrs(struct ifaddrs **out) {
                 bfp_rec([NSString stringWithFormat:@"L3 \u63a5\u53e3 %s", ifa->ifa_name],
                         [NSString stringWithUTF8String:b]);
             } else if (f == AF_INET6) {
-                bfp_rec([NSString stringWithFormat:@"L3 \u63a5\u53e3 %s (v6)", ifa->ifa_name], @"\u6709 IPv6 \u5730\u5740");
+                bfp_rec([NSString stringWithFormat:@"L3 \u63a5\u53e3 %s", ifa->ifa_name],
+                        @"\u6709 IPv6");
             } else if (f == AF_LINK && ifa->ifa_addr->sa_len >= 8) {
                 struct sockaddr_dl *dl = (struct sockaddr_dl *)ifa->ifa_addr;
                 if (dl->sdl_alen == 6) {
-                    unsigned char *m = (unsigned char *)LLADDR(dl);
+                    unsigned char *mp = (unsigned char *)LLADDR(dl);
                     bfp_rec([NSString stringWithFormat:@"L3 \u63a5\u53e3 %s MAC", ifa->ifa_name],
                             [NSString stringWithFormat:@"%02x:%02x:%02x:%02x:%02x:%02x",
-                             m[0], m[1], m[2], m[3], m[4], m[5]]);
+                             mp[0], mp[1], mp[2], mp[3], mp[4], mp[5]]);
                 }
             }
         }
@@ -449,7 +429,7 @@ static int m_getifaddrs(struct ifaddrs **out) {
     return r;
 }
 
-#pragma mark - L4 动态库枚举
+#pragma mark - L4 动态库
 
 static uint32_t (*o_dyld_count)(void);
 static uint32_t m_dyld_count(void) {
@@ -467,16 +447,16 @@ static const char *m_dyld_name(uint32_t idx) {
     return n;
 }
 
-#pragma mark - L5 时间（只观察，不修改）
+#pragma mark - L5 时间
 
 static CFAbsoluteTime (*o_cfabs)(void);
 static CFAbsoluteTime m_cfabs(void) {
     if (!o_cfabs) return 0;
-    CFAbsoluteTime t = o_cfabs();
-    g_depth++;                                   // 防止记录过程再触发
-    bfp_rec(@"L5 CFAbsoluteTimeGetCurrent", [NSString stringWithFormat:@"%.1f", t]);
+    CFAbsoluteTime v = o_cfabs();
+    g_depth++;
+    bfp_rec(@"L5 CFAbsoluteTimeGetCurrent", [NSString stringWithFormat:@"%.1f", v]);
     g_depth--;
-    return t;
+    return v;
 }
 
 static time_t (*o_time)(time_t *);
@@ -494,8 +474,6 @@ static int m_gettimeofday(struct timeval *tv, void *tz) {
     if (r == 0 && tv) bfp_rec_int(@"L5 gettimeofday", (long long)tv->tv_sec);
     return r;
 }
-
-#pragma mark - C hook 安装
 
 static void bfp_install_c_hooks(void) {
     struct bfp_rebinding rb[] = {
@@ -516,22 +494,8 @@ static void bfp_install_c_hooks(void) {
     bfp_rebind_symbols(rb, sizeof(rb) / sizeof(rb[0]));
 }
 
-#pragma mark - L6 关键 getter（只记录调用次数与原始值，不碰返回值对象）
+#pragma mark - L6 关键 getter
 
-static IMP o_identifierForVendor, o_systemVersion, o_model, o_systemName, o_deviceName;
-static IMP o_physicalMemory, o_processorCount, o_hostName, o_systemUptime;
-static IMP o_localeIdentifier, o_preferredLanguages;
-static IMP o_localTimeZone, o_systemTimeZone;
-static IMP o_batteryLevel, o_batteryState;
-
-// 取对象返回值的安全描述。
-//
-// 【为什么不能直接调方法】上一次崩溃（objc_retain，possible pointer authentication
-// failure）就是因为对返回值调 description / isKindOfClass，而那个指针可能已被
-// PAC 或已被释放。任何 objc_msgSend 都会先 retain，坏指针一步就炸。
-//
-// 安全做法：先用 vm_region 验证这个地址确实是可读内存，再 retain。
-// 校验不通过就只记录「返回了对象，指针不可读」，不去碰它。
 static BOOL bfp_ptr_readable(const void *p) {
     if (!p) return NO;
     vm_address_t addr = (vm_address_t)p;
@@ -545,84 +509,59 @@ static BOOL bfp_ptr_readable(const void *p) {
     if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
     if (kr != KERN_SUCCESS) return NO;
     if (!(info.protection & VM_PROT_READ)) return NO;
-    // 地址必须落在该 region 内
     return ((vm_address_t)p >= addr) && ((vm_address_t)p < addr + size);
 }
 
+// 对象返回值的安全描述：先验地址可读，再 retain，再取描述。
+// 绝不对可能失效/被 PAC 的指针直接发消息 —— 那会在 objc_retain 崩。
 static NSString *bfp_safe_copy(id obj) {
     if (!obj) return @"(nil)";
     if (!bfp_ptr_readable((__bridge const void *)obj)) {
-        return [NSString stringWithFormat:@"<%p 指针不可读>", (void *)obj];
+        return [NSString stringWithFormat:@"<%p \u4e0d\u53ef\u8bfb>", (void *)obj];
     }
-    // 只对确定可读的对象做一次 retain，再取 description
     CFTypeRef held = CFRetain((__bridge CFTypeRef)obj);
     NSString *out = nil;
     if (held) {
-        @try {
-            out = [NSString stringWithFormat:@"%@", (__bridge id)held];
-        } @catch (NSException *e) {
-            out = @"(描述异常)";
-        }
+        @try { out = [NSString stringWithFormat:@"%@", (__bridge id)held]; }
+        @catch (NSException *e) { out = @"(\u63cf\u8ff0\u5f02\u5e38)"; }
         CFRelease(held);
     }
-    if (!out) out = @"(nil)";
-    return out.length > 200 ? [out substringToIndex:200] : out;
+    return out.length ? (out.length > 200 ? [out substringToIndex:200] : out) : @"(nil)";
 }
 
-static id h_systemVersion(id s, SEL c) {
-    id r = o_systemVersion ? ((id (*)(id, SEL))o_systemVersion)(s, c) : nil;
-    bfp_rec(@"L6 UIDevice.systemVersion", bfp_safe_copy(r));
-    return r;
-}
-static id h_systemName(id s, SEL c) {
-    id r = o_systemName ? ((id (*)(id, SEL))o_systemName)(s, c) : nil;
-    bfp_rec(@"L6 UIDevice.systemName", bfp_safe_copy(r));
-    return r;
-}
-static id h_model(id s, SEL c) {
-    id r = o_model ? ((id (*)(id, SEL))o_model)(s, c) : nil;
-    bfp_rec(@"L6 UIDevice.model", bfp_safe_copy(r));
-    return r;
-}
-static id h_deviceName(id s, SEL c) {
-    id r = o_deviceName ? ((id (*)(id, SEL))o_deviceName)(s, c) : nil;
-    bfp_rec(@"L6 UIDevice.name", bfp_safe_copy(r));
-    return r;
-}
-static id h_identifierForVendor(id s, SEL c) {
-    id r = o_identifierForVendor ? ((id (*)(id, SEL))o_identifierForVendor)(s, c) : nil;
-    bfp_rec(@"L6 UIDevice.identifierForVendor", bfp_safe_copy(r));
-    return r;
-}
-static id h_hostName(id s, SEL c) {
-    id r = o_hostName ? ((id (*)(id, SEL))o_hostName)(s, c) : nil;
-    bfp_rec(@"L6 NSProcessInfo.hostName", bfp_safe_copy(r));
-    return r;
-}
-static id h_localeIdentifier(id s, SEL c) {
-    id r = o_localeIdentifier ? ((id (*)(id, SEL))o_localeIdentifier)(s, c) : nil;
-    bfp_rec(@"L6 NSLocale.localeIdentifier", bfp_safe_copy(r));
-    return r;
-}
+static IMP o_identifierForVendor, o_systemVersion, o_model, o_systemName, o_deviceName;
+static IMP o_physicalMemory, o_processorCount, o_hostName, o_systemUptime;
+static IMP o_localeIdentifier, o_preferredLanguages, o_localTimeZone, o_systemTimeZone;
+static IMP o_batteryLevel, o_batteryState;
+
+#define BFP_STR_GETTER(fn, orig, key)                       \
+    static id fn(id s, SEL c) {                             \
+        id r = orig ? ((id (*)(id, SEL))orig)(s, c) : nil;  \
+        bfp_rec(key, bfp_safe_copy(r));                     \
+        return r;                                           \
+    }
+
+BFP_STR_GETTER(h_systemVersion, o_systemVersion, @"L6 UIDevice.systemVersion")
+BFP_STR_GETTER(h_systemName, o_systemName, @"L6 UIDevice.systemName")
+BFP_STR_GETTER(h_model, o_model, @"L6 UIDevice.model")
+BFP_STR_GETTER(h_deviceName, o_deviceName, @"L6 UIDevice.name")
+BFP_STR_GETTER(h_identifierForVendor, o_identifierForVendor, @"L6 UIDevice.identifierForVendor")
+BFP_STR_GETTER(h_hostName, o_hostName, @"L6 NSProcessInfo.hostName")
+BFP_STR_GETTER(h_localeIdentifier, o_localeIdentifier, @"L6 NSLocale.localeIdentifier")
+BFP_STR_GETTER(h_localTimeZone, o_localTimeZone, @"L6 NSTimeZone.localTimeZone")
+BFP_STR_GETTER(h_systemTimeZone, o_systemTimeZone, @"L6 NSTimeZone.systemTimeZone")
+
 static id h_preferredLanguages(id s, SEL c) {
     id r = o_preferredLanguages ? ((id (*)(id, SEL))o_preferredLanguages)(s, c) : nil;
     NSString *d = @"(nil)";
-    if ([r isKindOfClass:[NSArray class]]) d = [NSString stringWithFormat:@"%lu \u9879", (unsigned long)[r count]];
+    if (r && bfp_ptr_readable((__bridge const void *)r) &&
+        [r respondsToSelector:@selector(count)]) {
+        d = [NSString stringWithFormat:@"%lu \u9879", (unsigned long)[r count]];
+    }
     bfp_rec(@"L6 NSLocale.preferredLanguages", d);
     return r;
 }
-static id h_localTimeZone(id s, SEL c) {
-    id r = o_localTimeZone ? ((id (*)(id, SEL))o_localTimeZone)(s, c) : nil;
-    bfp_rec(@"L6 NSTimeZone.localTimeZone", bfp_safe_copy(r));
-    return r;
-}
-static id h_systemTimeZone(id s, SEL c) {
-    id r = o_systemTimeZone ? ((id (*)(id, SEL))o_systemTimeZone)(s, c) : nil;
-    bfp_rec(@"L6 NSTimeZone.systemTimeZone", bfp_safe_copy(r));
-    return r;
-}
 
-// 数值型 getter：只记数值
 static unsigned long long h_physicalMemory(id s, SEL c) {
     unsigned long long r = o_physicalMemory
         ? ((unsigned long long (*)(id, SEL))o_physicalMemory)(s, c) : 0;
@@ -687,10 +626,12 @@ static void bfp_install_getters(void) {
 #pragma mark - 报告
 
 static void bfp_write_file(NSString *txt) {
-    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
+                                                         NSUserDomainMask, YES).firstObject;
     if (!docs) return;
     NSString *p = [docs stringByAppendingPathComponent:
-                   [NSString stringWithFormat:@"minprobe_%.0f.txt", [[NSDate date] timeIntervalSince1970]]];
+                   [NSString stringWithFormat:@"minprobe_%.0f.txt",
+                    [[NSDate date] timeIntervalSince1970]]];
     [txt writeToFile:p atomically:YES encoding:NSUTF8StringEncoding error:NULL];
 }
 
@@ -698,55 +639,78 @@ static NSString *bfp_report(void) {
     bfp_init();
     NSMutableString *o = [NSMutableString string];
     [o appendFormat:@"BDSMinProbe %@\n", BFPVersion];
-    [o appendFormat:@"时间      : %@\n", [NSDate date]];
+    [o appendFormat:@"\u65f6\u95f4      : %@\n", [NSDate date]];
     [o appendFormat:@"BundleID  : %@\n", NSBundle.mainBundle.bundleIdentifier ?: @"?"];
-    [o appendFormat:@"进程      : %@\n", NSProcessInfo.processInfo.processName ?: @"?"];
-    [o appendFormat:@"记录条数  : %lu\n", (unsigned long)g_totalRecords];
-    [o appendFormat:@"rebind失败: %d\n", g_bfpRebindFailures];
+    [o appendFormat:@"\u8fdb\u7a0b      : %@\n", NSProcessInfo.processInfo.processName ?: @"?"];
+    [o appendFormat:@"\u8bb0\u5f55\u6761\u6570  : %lu\n", (unsigned long)g_totalRecords];
+    [o appendFormat:@"rebind\u5931\u8d25: %d\n", g_bfpRebindFailures];
 
     [g_lock lock];
     NSDictionary *snap = [g_rec copy];
-    NSArray *paths = g_paths ? [[g_paths allObjects] sortedArrayUsingSelector:@selector(compare:)] : @[];
+    NSArray *jb = g_jbPaths ? [[g_jbPaths allObjects] sortedArrayUsingSelector:@selector(compare:)] : @[];
     [g_lock unlock];
 
     NSArray *keys = [[snap allKeys] sortedArrayUsingSelector:@selector(compare:)];
-    NSMutableArray *L[6];
-    for (int i = 0; i < 6; i++) L[i] = [NSMutableArray array];
+    NSMutableArray *L[7];
+    for (int i = 0; i < 7; i++) L[i] = [NSMutableArray array];
     for (NSString *k in keys) {
+        if ([k hasPrefix:@"L6"]) { [L[6] addObject:k]; continue; }
         if ([k hasPrefix:@"L"] && k.length > 1) {
             int idx = [[k substringWithRange:NSMakeRange(1, 1)] intValue];
             if (idx >= 1 && idx <= 5) [L[idx] addObject:k];
-        } else if ([k hasPrefix:@"L6"]) {
-            [L[5] addObject:k];
         }
     }
-    NSArray *titles = @[@"", @"L1 \u786c\u4ef6", @"L2 \u6587\u4ef6\u4e0e\u8d8a\u72f1\u8def\u5f84",
-                        @"L3 \u7f51\u7edc", @"L4 \u52a8\u6001\u5e93\u679a\u4e3e",
-                        @"L5 \u65f6\u95f4", @"L6 \u5173\u952e getter"];
-    for (int i = 1; i <= 5; i++) {
+    NSArray *titles = @[@"", @"L1 \u786c\u4ef6 (sysctl/uname)",
+                        @"L2 \u6587\u4ef6\u4e0e\u8d8a\u72f1\u8def\u5f84", @"L3 \u7f51\u7edc",
+                        @"L4 \u52a8\u6001\u5e93\u679a\u4e3e", @"L5 \u65f6\u95f4",
+                        @"L6 \u5173\u952e getter"];
+
+    for (int i = 1; i <= 6; i++) {
         [o appendFormat:@"\n========== %@ ==========\n", titles[i]];
-        if (i == 2 && paths.count) {
-            [o appendFormat:@"\n[\u547d\u4e2d\u8d8a\u72f1\u7279\u5f81\u7684\u8def\u5f84] %lu \u6761\n", (unsigned long)paths.count];
-            for (NSString *p in paths) [o appendFormat:@"  %@\n", p];
+        if (i == 2 && jb.count) {
+            [o appendFormat:@"\n[\u547d\u4e2d\u8d8a\u72f1\u7279\u5f81\u7684\u8def\u5f84] %lu \u6761\n",
+             (unsigned long)jb.count];
+            for (NSString *p in jb) [o appendFormat:@"  %@\n", p];
         }
         if (!L[i].count) { [o appendString:@"  (\u672c\u6b21\u672a\u88ab\u8c03\u7528)\n"]; continue; }
         for (NSString *k in L[i]) {
             NSDictionary *e = snap[k];
-            [o appendFormat:@"\n%@   \u6b21\u6570=%@\n", k, e[@"n"]];
-            for (NSString *v in e[@"samples"]) [o appendFormat:@"    %@\n", v];
+            [o appendFormat:@"\n%@\n    \u6b21\u6570=%@\n", k, e[@"n"]];
+            NSInteger shown = 0;
+            for (NSString *v in e[@"samples"]) {
+                [o appendFormat:@"    %@\n", v];
+                if (++shown >= 25) { [o appendString:@"    ...\n"]; break; }
+            }
         }
-    }
-    // L6 单列
-    [o appendFormat:@"\n========== %@ ==========\n", titles[5]];
-    for (NSString *k in L[5]) {
-        NSDictionary *e = snap[k];
-        [o appendFormat:@"\n%@   \u6b21\u6570=%@\n", k, e[@"n"]];
-        for (NSString *v in e[@"samples"]) [o appendFormat:@"    %@\n", v];
     }
     return o;
 }
 
-#pragma mark - 悬浮按钮
+#pragma mark - 悬浮按钮（只有按钮大小的独立窗口 —— 天然穿透）
+
+// 【关键设计】窗口尺寸 = 按钮尺寸。
+// 全屏窗口无论怎么写 hitTest 都会吞掉整屏触摸（3.1 实测：App 点不动）。
+// 窗口只覆盖按钮那一小块，窗口外的触摸根本不会命中它，天然穿透，无需技巧。
+@interface BFPProbeWindow : UIWindow
+@end
+
+@implementation BFPProbeWindow
+- (BOOL)canBecomeKeyWindow { return NO; }
+@end
+
+@interface BFPProbeVC : UIViewController
+@end
+
+@implementation BFPProbeVC
+- (void)loadView {
+    UIView *v = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 72, 72)];
+    v.backgroundColor = [UIColor clearColor];
+    self.view = v;
+}
+@end
+
+static UIWindow *g_probeWindow;
+static UIButton *g_probeButton;
 
 static void bfp_show_panel(void);
 
@@ -760,100 +724,18 @@ static void bfp_show_panel(void);
     UIView *sv = self.superview;
     if (!sv) return;
     CGPoint tr = [g translationInView:sv];
-    CGPoint c = self.center;
-    c.x += tr.x; c.y += tr.y;
-    // 夹在屏幕内
-    CGFloat hw = self.bounds.size.width / 2, hh = self.bounds.size.height / 2;
-    c.x = MAX(hw + 4, MIN(sv.bounds.size.width - hw - 4, c.x));
-    c.y = MAX(hh + 20, MIN(sv.bounds.size.height - hh - 4, c.y));
-    self.center = c;
+    CGPoint o = g_probeWindow.frame.origin;
+    o.x += tr.x;
+    o.y += tr.y;
+    CGFloat W = UIScreen.mainScreen.bounds.size.width;
+    CGFloat H = UIScreen.mainScreen.bounds.size.height;
+    o.x = MAX(0, MIN(W - 72, o.x));
+    o.y = MAX(20, MIN(H - 72, o.y));
+    CGRect f = g_probeWindow.frame;
+    f.origin = o;
+    g_probeWindow.frame = f;
     [g setTranslation:CGPointZero inView:sv];
 }
-@end
-
-static void bfp_show_panel(void) {
-    UIViewController *top = UIApplication.sharedApplication.keyWindow.rootViewController;
-    while (top.presentedViewController) top = top.presentedViewController;
-    if (!top) return;
-    if ([top isKindOfClass:UIAlertController.class]) return;
-    NSString *txt = bfp_report();
-    UIAlertController *a = [UIAlertController
-        alertControllerWithTitle:@"BDS \u6700\u5c0f\u63a2\u9488"
-                         message:[txt substringToIndex:MIN((NSUInteger)2500, txt.length)]
-                  preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"\u5199\u6587\u4ef6" style:UIAlertActionStyleDefault
-                                       handler:^(UIAlertAction *x) {
-        (void)x;
-        bfp_write_file(txt);
-        UIAlertController *b = [UIAlertController alertControllerWithTitle:@"\u5df2\u5199\u5165 Documents"
-                                                                  message:@"minprobe_*.txt"
-                                                           preferredStyle:UIAlertControllerStyleAlert];
-        [b addAction:[UIAlertAction actionWithTitle:@"\u597d" style:UIAlertActionStyleCancel handler:nil]];
-        [top presentViewController:b animated:YES completion:nil];
-    }]];
-    [a addAction:[UIAlertAction actionWithTitle:@"\u590d\u5236" style:UIAlertActionStyleDefault
-                                       handler:^(UIAlertAction *x) {
-        (void)x;
-        UIPasteboard.generalPasteboard.string = txt;
-    }]];
-    [a addAction:[UIAlertAction actionWithTitle:@"\u5173\u95ed" style:UIAlertActionStyleCancel handler:nil]];
-    [top presentViewController:a animated:YES completion:nil];
-}
-
-// 悬浮按钮：放在「自己的」UIWindow 上，而不是 keyWindow。
-//
-// 【为什么不能放 keyWindow】百度启动后会创建自己的窗口（开屏/广告/引导层），
-// 盖在 keyWindow 之上；按钮加在 keyWindow 上就会被覆盖、看不见。
-// 做法：新建一个 UIWindow，windowLevel 设得极高，并让它的 rootViewController
-//       不拦截触摸（只让按钮自身可点），这样既浮在最上层又不影响 App 操作。
-
-static UIWindow *g_probeWindow;
-static UIButton *g_probeButton;
-
-// 触摸穿透必须在「Window 这一层」做，不能只做在 View 上。
-//
-// 【上一次的问题】hitTest 只写在 View 上，而触摸命中在 Window 层就被截住了：
-// 这个窗口是全屏的、层级又最高，于是整块屏幕的触摸都被它吃掉，
-// App 完全没反应。
-//
-// 【正确做法】自定义 UIWindow，重写 hitTest：
-//   - 命中点落在按钮上 -> 返回按钮（按钮可点）
-//   - 其余任何位置   -> 返回 nil，触摸继续往下传给百度的窗口
-@interface BFPProbeWindow : UIWindow
-@property (nonatomic, weak) UIView *hotView;   // 需要接收触摸的子视图
-@end
-
-@implementation BFPProbeWindow
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    UIView *hot = self.hotView;
-    if (hot && !hot.hidden && hot.alpha > 0.01) {
-        // 把点转到按钮坐标系判断
-        CGPoint p = [hot convertPoint:point fromView:self];
-        if (CGRectContainsPoint(hot.bounds, p)) {
-            return [super hitTest:point withEvent:event];
-        }
-    }
-    return nil;   // 其余区域一律穿透
-}
-
-// 允许这个窗口成为 key window 而不影响 App（iOS 13+ 需要）
-- (BOOL)canBecomeKeyWindow { return NO; }
-@end
-
-@interface BFPProbeVC : UIViewController
-@end
-
-@implementation BFPProbeVC
-- (void)loadView {
-    UIView *v = [[UIView alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    v.backgroundColor = [UIColor clearColor];
-    self.view = v;
-}
-@end
-
-static void bfp_show_panel(void);
-@interface UIButton (BFP)
-- (void)bfp_tap;
 @end
 
 static void bfp_build_button(void) {
@@ -862,14 +744,12 @@ static void bfp_build_button(void) {
         if (g_probeWindow) return;
 
         UIWindow *w = nil;
-        // iOS 13+ 优先用 windowScene 创建，避免 "window not associated with scene" 问题
         if (@available(iOS 13.0, *)) {
             UIWindowScene *scene = nil;
             for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
                 if ([s isKindOfClass:[UIWindowScene class]] &&
                     s.activationState == UISceneActivationStateForegroundActive) {
-                    scene = (UIWindowScene *)s;
-                    break;
+                    scene = (UIWindowScene *)s; break;
                 }
             }
             if (!scene) {
@@ -879,58 +759,83 @@ static void bfp_build_button(void) {
             }
             if (scene) w = [[BFPProbeWindow alloc] initWithWindowScene:scene];
         }
-        if (!w) w = [[BFPProbeWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+        if (!w) w = [[BFPProbeWindow alloc] initWithFrame:CGRectMake(8, 130, 72, 72)];
 
-        // 极高层级：压过百度自己的开屏/广告/引导窗口
+        // 窗口只有按钮大小 —— 这是穿透的关键
+        w.frame = CGRectMake(8, 130, 72, 72);
         w.windowLevel = 10000000.0;
         w.backgroundColor = [UIColor clearColor];
         w.rootViewController = [[BFPProbeVC alloc] init];
         w.hidden = NO;
 
         UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
-        b.frame = CGRectMake(8, 130, 64, 64);
+        b.frame = CGRectMake(0, 0, 72, 72);
         b.backgroundColor = [UIColor colorWithRed:0.1 green:0.55 blue:0.95 alpha:0.9];
-        b.layer.cornerRadius = 32;
-        b.titleLabel.font = [UIFont boldSystemFontOfSize:11];
+        b.layer.cornerRadius = 36;
+        b.titleLabel.font = [UIFont boldSystemFontOfSize:12];
         b.titleLabel.numberOfLines = 3;
         b.titleLabel.textAlignment = NSTextAlignmentCenter;
         [b setTitle:@"\u63a2\u9488\n\u70b9\u8fd9" forState:UIControlStateNormal];
         [b addTarget:b action:@selector(bfp_tap) forControlEvents:UIControlEventTouchUpInside];
-        // 允许拖动：万一还是被挡，用户能拖出来
-        UIPanGestureRecognizer *pan =
-            [[UIPanGestureRecognizer alloc] initWithTarget:b action:@selector(bfp_drag:)];
-        [b addGestureRecognizer:pan];
-
+        [b addGestureRecognizer:[[UIPanGestureRecognizer alloc]
+                                 initWithTarget:b action:@selector(bfp_drag:)]];
         [w.rootViewController.view addSubview:b];
-
-        // 登记按钮为唯一可接收触摸的视图（其余区域由窗口 hitTest 穿透）
-        ((BFPProbeWindow *)w).hotView = b;
-
-        // 热区放大：视觉 64x64，可点区域扩大到 88x88，更好按
-        b.frame = CGRectMake(8, 130, 64, 64);
 
         g_probeWindow = w;
         g_probeButton = b;
         bfp_marker("05_button_created");
 
-        // 心跳：每 2 秒把自己窗口重新提到最前。
-        // 百度可能在启动后新建更高层级的窗口把我们盖住；这里持续宣示层级，
-        // 用 makeKeyAndVisible 之外的轻量方式（只改 hidden/orderFront）。
         [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer *tm) {
             (void)tm;
             UIWindow *pw = g_probeWindow;
             if (!pw) return;
             if (pw.windowLevel < 10000000.0) pw.windowLevel = 10000000.0;
             if (pw.hidden) pw.hidden = NO;
-            // hotView 若因某种原因变空，重新登记
-            if ([pw isKindOfClass:[BFPProbeWindow class]] &&
-                ((BFPProbeWindow *)pw).hotView == nil) {
-                ((BFPProbeWindow *)pw).hotView = g_probeButton;
-            }
         }];
     });
 }
 
+static void bfp_show_panel(void) {
+    UIViewController *top = nil;
+    for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
+        if (![s isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *win in ((UIWindowScene *)s).windows) {
+            if (win.rootViewController && win != g_probeWindow) {
+                top = win.rootViewController;
+                break;
+            }
+        }
+        if (top) break;
+    }
+    if (!top) top = g_probeWindow.rootViewController;
+    while (top.presentedViewController) top = top.presentedViewController;
+    if (!top || [top isKindOfClass:UIAlertController.class]) return;
+
+    NSString *txt = bfp_report();
+    UIAlertController *a = [UIAlertController
+        alertControllerWithTitle:@"BDS \u63a2\u9488\u62a5\u544a"
+                         message:[txt substringToIndex:MIN((NSUInteger)2500, txt.length)]
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"\u5199\u6587\u4ef6" style:UIAlertActionStyleDefault
+                                       handler:^(UIAlertAction *x) {
+        (void)x;
+        bfp_write_file(txt);
+        UIAlertController *b2 = [UIAlertController
+            alertControllerWithTitle:@"\u5df2\u5199\u5165 Documents"
+                             message:@"minprobe_*.txt"
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [b2 addAction:[UIAlertAction actionWithTitle:@"\u597d"
+                                              style:UIAlertActionStyleCancel handler:nil]];
+        [top presentViewController:b2 animated:YES completion:nil];
+    }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"\u590d\u5236" style:UIAlertActionStyleDefault
+                                       handler:^(UIAlertAction *x) {
+        (void)x;
+        UIPasteboard.generalPasteboard.string = txt;
+    }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"\u5173\u95ed" style:UIAlertActionStyleCancel handler:nil]];
+    [top presentViewController:a animated:YES completion:nil];
+}
 
 #pragma mark - 入口
 
