@@ -26,6 +26,12 @@
 #import <mach/vm_map.h>
 #import <dlfcn.h>
 #import <dirent.h>
+#import <mach/mach.h>
+#import <mach/mach_host.h>
+#import <mach/task_info.h>
+#import <mach/host_info.h>
+#import <CoreMotion/CoreMotion.h>
+#import <CoreLocation/CoreLocation.h>
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
 #import <sys/stat.h>
@@ -46,7 +52,7 @@
 #import <CoreTelephony/CTTelephonyNetworkInfo.h>
 #import <CoreTelephony/CTCarrier.h>
 
-static NSString * const BFPVersion = @"1.0";
+static NSString * const BFPVersion = @"1.1";
 
 #pragma mark - 记录器（线程安全，只读）
 
@@ -235,6 +241,178 @@ static void bfp_install_L2(void) {
         }
     }
     // 注意：attributesOfFileSystemForPath:error: 有参数，单独用精确签名处理（见下）
+}
+
+#pragma mark - L2b 内存的其它读取路径（task_info / host_statistics）
+
+static kern_return_t (*bfp_orig_task_info)(task_name_t, task_flavor_t, task_info_t, mach_msg_type_number_t *);
+static kern_return_t bfp_my_task_info(task_name_t task, task_flavor_t flavor, task_info_t info, mach_msg_type_number_t *cnt) {
+    kern_return_t r = bfp_orig_task_info(task, flavor, info, cnt);
+    if (r == KERN_SUCCESS && info) {
+        if (flavor == TASK_BASIC_INFO && *cnt >= TASK_BASIC_INFO_COUNT) {
+            struct task_basic_info_64 *b = (struct task_basic_info_64 *)info;
+            bfp_rec(@"L2b task_info TASK_BASIC_INFO", [NSString stringWithFormat:@"virtual=%llu resident=%llu",
+                     (unsigned long long)b->virtual_size, (unsigned long long)b->resident_size]);
+        } else if (flavor == TASK_VM_INFO) {
+            bfp_rec(@"L2b task_info TASK_VM_INFO", [NSString stringWithFormat:@"cnt=%u", *cnt]);
+        } else {
+            bfp_rec([NSString stringWithFormat:@"L2b task_info flavor=%d", flavor], [NSString stringWithFormat:@"cnt=%u", *cnt]);
+        }
+    }
+    return r;
+}
+
+static kern_return_t (*bfp_orig_host_statistics64)(host_t, int, host_info64_t, mach_msg_type_number_t *);
+static kern_return_t bfp_my_host_statistics64(host_t host, int flavor, host_info64_t info, mach_msg_type_number_t *cnt) {
+    kern_return_t r = bfp_orig_host_statistics64(host, flavor, info, cnt);
+    if (r == KERN_SUCCESS && info && flavor == HOST_VM_INFO64 && *cnt >= HOST_VM_INFO64_COUNT) {
+        vm_statistics64_data_t *s = (vm_statistics64_data_t *)info;
+        unsigned long long free_bytes = (unsigned long long)s->free_count * vm_page_size;
+        bfp_rec(@"L2b host_statistics64 HOST_VM_INFO64",
+                [NSString stringWithFormat:@"free_pages=%u free_bytes=%llu",
+                 s->free_count, free_bytes]);
+    }
+    return r;
+}
+
+static kern_return_t (*bfp_orig_host_statistics)(host_t, int, host_info_t, mach_msg_type_number_t *);
+static kern_return_t bfp_my_host_statistics(host_t host, int flavor, host_info_t info, mach_msg_type_number_t *cnt) {
+    kern_return_t r = bfp_orig_host_statistics(host, flavor, info, cnt);
+    if (r == KERN_SUCCESS && info) {
+        bfp_rec([NSString stringWithFormat:@"L2b host_statistics flavor=%d", flavor], @"(已调用)");
+    }
+    return r;
+}
+
+static kern_return_t (*bfp_orig_host_processor_info)(host_t, processor_flavor_t, natural_t *, processor_info_array_t *, mach_msg_type_number_t *);
+static kern_return_t bfp_my_host_processor_info(host_t host, processor_flavor_t flavor,
+                                               natural_t *out_count, processor_info_array_t *out_info,
+                                               mach_msg_type_number_t *out_cnt) {
+    kern_return_t r = bfp_orig_host_processor_info(host, flavor, out_count, out_info, out_cnt);
+    if (r == KERN_SUCCESS) {
+        bfp_rec(@"L2b host_processor_info", [NSString stringWithFormat:@"processors=%u", out_count ? *out_count : 0]);
+    }
+    return r;
+}
+
+#pragma mark - L6b 时间全套（百度 time() 调用 5000+ 次）
+
+static struct tm *(*bfp_orig_localtime)(const time_t *);
+static struct tm *bfp_my_localtime(const time_t *tp) {
+    struct tm *r = bfp_orig_localtime(tp);
+    bfp_rec(@"L6b localtime", @"(已调用)");
+    return r;
+}
+static struct tm *(*bfp_orig_gmtime)(const time_t *);
+static struct tm *bfp_my_gmtime(const time_t *tp) {
+    struct tm *r = bfp_orig_gmtime(tp);
+    bfp_rec(@"L6b gmtime", @"(已调用)");
+    return r;
+}
+static time_t (*bfp_orig_mktime)(struct tm *);
+static time_t bfp_my_mktime(struct tm *tm_) {
+    time_t r = bfp_orig_mktime(tm_);
+    bfp_rec(@"L6b mktime", [NSString stringWithFormat:@"%lld", (long long)r]);
+    return r;
+}
+static size_t (*bfp_orig_strftime)(char *, size_t, const char *, const struct tm *);
+static size_t bfp_my_strftime(char *s, size_t max, const char *fmt, const struct tm *tm_) {
+    size_t r = bfp_orig_strftime(s, max, fmt, tm_);
+    if (s) bfp_rec(@"L6b strftime", [NSString stringWithFormat:@"格式=%s 结果=%s", fmt ? fmt : "?", s]);
+    return r;
+}
+static int (*bfp_orig_clock_gettime)(clockid_t, struct timespec *);
+static int bfp_my_clock_gettime(clockid_t id, struct timespec *ts) {
+    int r = bfp_orig_clock_gettime(id, ts);
+    if (r == 0 && ts) bfp_rec([NSString stringWithFormat:@"L6b clock_gettime(%d)", (int)id],
+                              [NSString stringWithFormat:@"%lld.%09ld", (long long)ts->tv_sec, ts->tv_nsec]);
+    return r;
+}
+static uint64_t (*bfp_orig_mach_absolute_time)(void);
+static uint64_t bfp_my_mach_absolute_time(void) {
+    uint64_t r = bfp_orig_mach_absolute_time();
+    bfp_rec(@"L6b mach_absolute_time", [NSString stringWithFormat:@"%llu", r]);
+    return r;
+}
+static uint64_t (*bfp_orig_mach_continuous_time)(void);
+static uint64_t bfp_my_mach_continuous_time(void) {
+    uint64_t r = bfp_orig_mach_continuous_time();
+    bfp_rec(@"L6b mach_continuous_time", [NSString stringWithFormat:@"%llu", r]);
+    return r;
+}
+
+#pragma mark - L3b 网络补充
+
+static int (*bfp_orig_getpeername)(int, struct sockaddr *, socklen_t *);
+static int bfp_my_getpeername(int fd, struct sockaddr *sa, socklen_t *len) {
+    int r = bfp_orig_getpeername(fd, sa, len);
+    if (r == 0 && sa && sa->sa_family == AF_INET) {
+        char b[INET_ADDRSTRLEN] = {0};
+        struct sockaddr_in *s = (struct sockaddr_in *)sa;
+        inet_ntop(AF_INET, &s->sin_addr, b, sizeof(b));
+        bfp_rec(@"L3b getpeername", [NSString stringWithFormat:@"%s:%d", b, ntohs(s->sin_port)]);
+    }
+    return r;
+}
+
+static CFArrayRef (*bfp_orig_CNCopySupportedInterfaces)(void);
+static CFArrayRef bfp_my_CNCopySupportedInterfaces(void) {
+    CFArrayRef a = bfp_orig_CNCopySupportedInterfaces();
+    if (a) {
+        NSArray *ns = (__bridge NSArray *)a;
+        bfp_rec(@"L3b CNCopySupportedInterfaces", [ns componentsJoinedByString:@","]);
+    } else {
+        bfp_rec(@"L3b CNCopySupportedInterfaces", @"(nil)");
+    }
+    return a;
+}
+
+static SCNetworkReachabilityRef (*bfp_orig_SCNetworkReachabilityCreateWithAddress)(CFAllocatorRef, const struct sockaddr *);
+static SCNetworkReachabilityRef bfp_my_SCNetworkReachabilityCreateWithAddress(CFAllocatorRef alloc, const struct sockaddr *addr) {
+    if (addr && addr->sa_family == AF_INET) {
+        char b[INET_ADDRSTRLEN] = {0};
+        struct sockaddr_in *s = (struct sockaddr_in *)addr;
+        inet_ntop(AF_INET, &s->sin_addr, b, sizeof(b));
+        bfp_rec(@"L3b SCNetworkReachability(addr)", [NSString stringWithFormat:@"%s", b]);
+    } else {
+        bfp_rec(@"L3b SCNetworkReachability(addr)", @"(非 IPv4)");
+    }
+    return bfp_orig_SCNetworkReachabilityCreateWithAddress(alloc, addr);
+}
+
+#pragma mark - L7 传感器（行为指纹）
+
+static void bfp_install_L7(void) {
+    Class mm = objc_getClass("CMMotionManager");
+    if (mm) {
+        // 观察是否真的启动了采样
+        SEL sels[] = { @selector(startAccelerometerUpdates), @selector(startGyroUpdates),
+                       @selector(startDeviceMotionUpdates), @selector(startMagnetometerUpdates) };
+        const char *names[] = { "startAccelerometerUpdates", "startGyroUpdates",
+                                "startDeviceMotionUpdates", "startMagnetometerUpdates" };
+        for (int i = 0; i < 4; i++) {
+            Method m = class_getInstanceMethod(mm, sels[i]);
+            if (!m) continue;
+            SEL sel = sels[i];
+            IMP o = method_getImplementation(m);
+            NSString *label = [NSString stringWithFormat:@"L7 CMMotionManager.%s", names[i]];
+            IMP ni = imp_implementationWithBlock(^(id self_) {
+                bfp_rec(label, @"(已启动采样)");
+                ((void (*)(id, SEL))o)(self_, sel);
+            });
+            method_setImplementation(m, ni);
+        }
+        // 读取属性（0 参）
+        bfp_hook_desc(mm, @"isAccelerometerAvailable", @"L7 CMMotionManager.isAccelerometerAvailable");
+        bfp_hook_desc(mm, @"isGyroAvailable", @"L7 CMMotionManager.isGyroAvailable");
+        bfp_hook_desc(mm, @"accelerometerData", @"L7 CMMotionManager.accelerometerData");
+        bfp_hook_desc(mm, @"gyroData", @"L7 CMMotionManager.gyroData");
+        bfp_hook_desc(mm, @"deviceMotion", @"L7 CMMotionManager.deviceMotion");
+    }
+    Class pm = objc_getClass("CMPedometer");
+    if (pm) {
+        bfp_hook_desc(pm, @"isStepCountingAvailable", @"L7 CMPedometer.isStepCountingAvailable");
+    }
 }
 
 #pragma mark - L3 网络
@@ -555,6 +733,23 @@ static void bfp_install_c_hooks(void) {
         {"CFAbsoluteTimeGetCurrent", (void *)bfp_my_CFAbsoluteTimeGetCurrent, (void **)&bfp_orig_CFAbsoluteTimeGetCurrent},
         {"time", (void *)bfp_my_time, (void **)&bfp_orig_time},
         {"gettimeofday", (void *)bfp_my_gettimeofday, (void **)&bfp_orig_gettimeofday},
+        // 本轮新增：内存的其它读取路径
+        {"task_info", (void *)bfp_my_task_info, (void **)&bfp_orig_task_info},
+        {"host_statistics64", (void *)bfp_my_host_statistics64, (void **)&bfp_orig_host_statistics64},
+        {"host_statistics", (void *)bfp_my_host_statistics, (void **)&bfp_orig_host_statistics},
+        {"host_processor_info", (void *)bfp_my_host_processor_info, (void **)&bfp_orig_host_processor_info},
+        // 本轮新增：时间全套（百度 time() 调用 5000+ 次）
+        {"localtime", (void *)bfp_my_localtime, (void **)&bfp_orig_localtime},
+        {"gmtime", (void *)bfp_my_gmtime, (void **)&bfp_orig_gmtime},
+        {"mktime", (void *)bfp_my_mktime, (void **)&bfp_orig_mktime},
+        {"strftime", (void *)bfp_my_strftime, (void **)&bfp_orig_strftime},
+        {"clock_gettime", (void *)bfp_my_clock_gettime, (void **)&bfp_orig_clock_gettime},
+        {"mach_absolute_time", (void *)bfp_my_mach_absolute_time, (void **)&bfp_orig_mach_absolute_time},
+        {"mach_continuous_time", (void *)bfp_my_mach_continuous_time, (void **)&bfp_orig_mach_continuous_time},
+        // 本轮新增：网络补充
+        {"getpeername", (void *)bfp_my_getpeername, (void **)&bfp_orig_getpeername},
+        {"CNCopySupportedInterfaces", (void *)bfp_my_CNCopySupportedInterfaces, (void **)&bfp_orig_CNCopySupportedInterfaces},
+        {"SCNetworkReachabilityCreateWithAddress", (void *)bfp_my_SCNetworkReachabilityCreateWithAddress, (void **)&bfp_orig_SCNetworkReachabilityCreateWithAddress},
     };
     bfp_rebind_symbols(rb, sizeof(rb) / sizeof(rb[0]));
 }
@@ -584,21 +779,22 @@ static NSString *bfp_report(void) {
 
     [g_lock lock];
     NSArray *keys = [[g_rec allKeys] sortedArrayUsingSelector:@selector(compare:)];
-    NSMutableArray *L[7];
-    for (int i = 0; i < 7; i++) L[i] = [NSMutableArray array];
+    NSMutableArray *L[8];
+    for (int i = 0; i < 8; i++) L[i] = [NSMutableArray array];
     for (NSString *k in keys) {
         if (![k hasPrefix:@"L"]) continue;
         int idx = [[k substringWithRange:NSMakeRange(1, 1)] intValue];
-        if (idx >= 1 && idx <= 6) [L[idx] addObject:k];
+        if (idx >= 1 && idx <= 7) [L[idx] addObject:k];
     }
     NSArray *titles = @[@"", @"L1 标识符", @"L2 硬件与系统", @"L3 网络",
-                        @"L4 地区 / 时区 / 越狱路径", @"L5 动态库枚举（注入检测）", @"L6 时间"];
+                        @"L4 地区 / 时区 / 越狱路径", @"L5 动态库枚举（注入检测）",
+                        @"L6 时间", @"L7 传感器（行为指纹）"];
     NSMutableDictionary *snap = [g_rec copy];
     NSArray *jbSnap = [g_jbPaths copy];
     NSUInteger imgCount = g_images.count;
     [g_lock unlock];
 
-    for (int i = 1; i <= 6; i++) {
+    for (int i = 1; i <= 7; i++) {
         [o appendFormat:@"\n\n========== %@ ==========\n", titles[i]];
         if (i == 4 && jbSnap.count) {
             [o appendFormat:@"\n[百度查过的路径]  共 %lu 条（⚠️ = 命中越狱特征）\n", (unsigned long)jbSnap.count];
@@ -698,6 +894,7 @@ static void bfp_start(void) {
     bfp_install_L2();
     bfp_install_L4();
     bfp_install_L6();
+    bfp_install_L7();
     // L3/L5 的 C 层 hook 需要 fishhook，探针这里先用 ObjC 可覆盖的部分 + dlsym 记录
     bfp_build_button();
 }

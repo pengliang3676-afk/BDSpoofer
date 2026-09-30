@@ -23,6 +23,7 @@ jobs:
               -framework Foundation -framework UIKit -framework CoreGraphics \
               -framework AdSupport -framework AppTrackingTransparency \
               -framework SystemConfiguration \
+              -framework CoreMotion -framework CoreLocation \
               BDSFullProbe.m -o "out/BDSFullProbe_$ARCH.dylib"
           done
           lipo -create out/BDSFullProbe_arm64.dylib out/BDSFullProbe_arm64e.dylib \
@@ -33,7 +34,7 @@ jobs:
           shasum -a 256 out/BDSFullProbe.dylib | tee out/SHA256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: BDSFullProbe-1.0
+          name: BDSFullProbe-1.1
           path: |
             out/BDSFullProbe.dylib
             out/SHA256.txt
