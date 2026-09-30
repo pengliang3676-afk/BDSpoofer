@@ -3757,6 +3757,11 @@ static void bds_ensure_primary_iface(void) {
 
 static int bds_my_getifaddrs(struct ifaddrs **ifap) {
     int result = orig_getifaddrs(ifap);
+    // 【9.30-28 修正】网卡纠正必须放在最前面。
+    // 原先放在下面两个提前返回之后，而本机 spoofLocalIP 关掉时会在第二个返回处
+    // 直接走人，纠正根本没执行过，g_primaryIfName 一直停在默认的 en0，
+    // 面板因此显示「(无地址) [网卡 en0]」。
+    bds_ensure_primary_iface();
     if (result != 0 || !ifap || !*ifap) {
         BDS_DIAG_RECORD(g_diagLocalIP, BDSDiagStatePassed);
         return result;
@@ -3770,8 +3775,6 @@ static int bds_my_getifaddrs(struct ifaddrs **ifap) {
     // 而且几十台设备全是“无地址”又是一个整齐特征。内网 IP 服务器永远看不到真的，
     // 所以填假值不泄露任何东西（详见 BDSRandomLanIP 注释）。
     // 调用方仍可按原约定 freeifaddrs() 释放完整链表。
-    // 每次进入都确认网卡仍然有效，避免插件装入后一直停在没地址的网卡上
-    bds_ensure_primary_iface();
     int modified = 0;
     for (struct ifaddrs *ifa = *ifap; ifa; ifa = ifa->ifa_next) {
         if (!ifa->ifa_name || !ifa->ifa_addr) continue;
@@ -5783,6 +5786,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
 
     // 本地 IP：真值直接问内核（绕过钩子），当前值走 getifaddrs（会被钩子改）
     NSString *realLocalIP = bds_real_lan_ip();
+    // 面板诊断自带纠正，保证「当前」一行用的是正确的网卡
     bds_ensure_primary_iface();
     NSString *currentLocalIP = bds_current_lan_ip();
     // 顺便标出当前认定的主网卡，便于判断钩子改的是哪张
