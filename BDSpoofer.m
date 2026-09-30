@@ -3628,8 +3628,9 @@ static CFDictionaryRef bds_my_IOPSGetPowerSourceDescription(CFTypeRef blob, CFTy
     // 剩余可用时间：按当前电量粗估，避免出现“满电却 0 分钟”这种矛盾
     d[@"Time to Empty"] = @(pct * 6 * 60);
     [d removeObjectForKey:@"Time to Full Charge"];
-    CFDictionaryRef out = CFDictionaryCreateCopy(kCFAllocatorDefault, (__bridge CFDictionaryRef)d);
-    return out ? (CFDictionaryRef)CFBridgingRelease(out) : orig;
+    // CFBridgingRelease 传走 +1 所有权，返回值是“不拥有”的引用，
+    // 正好符合 IOPSGetPowerSourceDescription 的 Get 规则（调用方不 release）。
+    return (CFDictionaryRef)CFBridgingRelease((__bridge CFTypeRef)d);
 }
 
 #pragma mark - P8: 代理/VPN 检测绕过（fishhook）
