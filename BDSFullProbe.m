@@ -53,14 +53,14 @@
 #import <CoreTelephony/CTTelephonyNetworkInfo.h>
 #import <CoreTelephony/CTCarrier.h>
 
-static NSString * const BFPVersion = @"1.2";
+static NSString * const BFPVersion = @"1.3";
 
 #pragma mark - 记录器（线程安全，只读）
 
 static NSMutableDictionary<NSString *, NSMutableDictionary *> *g_rec;
 static NSMutableArray<NSString *> *g_jbPaths;      // 越狱相关路径访问记录
 static NSMutableSet<NSString *> *g_images;         // 动态库快照
-static NSLock *g_lock;
+static NSRecursiveLock *g_lock;   // 递归锁：防止 hook 内部再入导致自死锁
 static CFAbsoluteTime g_startTime;
 static NSUInteger g_totalRecords = 0;
 static const NSUInteger kMaxPerKey = 300;          // 每项最多记 300 条，防爆
@@ -71,34 +71,50 @@ static void bfp_init(void) {
         g_rec = [NSMutableDictionary dictionary];
         g_jbPaths = [NSMutableArray array];
         g_images = [NSMutableSet set];
-        g_lock = [[NSLock alloc] init];
+        g_lock = [[NSRecursiveLock alloc] init];
         g_startTime = CFAbsoluteTimeGetCurrent();
     });
 }
 
 // 记录一次调用：key=API 名，value=本次返回值
+// 记录一次调用。
+//
+// 【致命陷阱，务必保持】这个函数绝不能调用任何「本探针 hook 过的函数」：
+//   之前这里写了 CFAbsoluteTimeGetCurrent() 来记首次时间，而探针自己也 hook 了它，
+//   且 g_lock 是非递归锁 -> 同线程二次加锁 -> 自死锁 -> 启动即崩。
+// 现在改为：首次时间先记 0，等生成报告时再统一换算。
+//
+// timeStart 由 bfp_report 填充；bfp_rec 内部只做常量时间操作。
+static int g_depth = 0;                      // 递归守卫（同线程）
+static CFAbsoluteTime g_reportNow = 0;       // 生成报告时的时间基准
+
 static void bfp_rec(NSString *key, NSString *value) {
     if (!key) return;
     bfp_init();
-    [g_lock lock];
+    // 递归守卫：任何被 hook 的函数在记录过程中再次进入，直接丢弃。
+    if (g_depth > 0) return;
+    g_depth++;
+    [g_lock lock];                            // g_lock 已改为 NSRecursiveLock（双保险）
     NSMutableDictionary *e = g_rec[key];
     if (!e) {
         e = [NSMutableDictionary dictionary];
         e[@"n"] = @0;
-        e[@"first"] = @(CFAbsoluteTimeGetCurrent() - g_startTime);
+        e[@"first"] = @0;                     // 占位，报告阶段换算
         e[@"samples"] = [NSMutableArray array];
         g_rec[key] = e;
     }
-    NSUInteger n = [e[@"n"] unsignedIntegerValue] + 1;
-    e[@"n"] = @(n);
-    NSMutableArray *s = e[@"samples"];
-    if (s.count < kMaxPerKey) {
-        NSString *v = value.length > 300 ? [[value substringToIndex:300] stringByAppendingString:@"…"] : (value ?: @"(nil)");
-        if (![s containsObject:v]) [s addObject:v];     // 去重，只留不同的值
+    e[@"n"] = @([e[@"n"] unsignedIntegerValue] + 1);
+    NSArray *s = e[@"samples"];
+    if (s.count < kMaxPerKey && value) {
+        // 只做长度截断，不做 substringToIndex/stringByAppendingString（更省，且少一层 objc 调用）
+        NSString *v = value.length > 300 ? [value substringToIndex:300] : value;
+        if (![s containsObject:v]) [(NSMutableArray *)s addObject:v];
     }
     g_totalRecords++;
     [g_lock unlock];
+    g_depth--;
 }
+
 
 // 判断调用方是不是百度自己的库（用于排除系统内部调用）
 static BOOL bfp_caller_is_baidu(void) {
@@ -248,33 +264,31 @@ static void bfp_install_L2(void) {
 
 static kern_return_t (*bfp_orig_task_info)(task_name_t, task_flavor_t, task_info_t, mach_msg_type_number_t *);
 static kern_return_t bfp_my_task_info(task_name_t task, task_flavor_t flavor, task_info_t info, mach_msg_type_number_t *cnt) {
+    if (!bfp_orig_task_info) return KERN_FAILURE;
     kern_return_t r = bfp_orig_task_info(task, flavor, info, cnt);
-    if (r == KERN_SUCCESS && info) {
-        if (flavor == TASK_BASIC_INFO && *cnt >= TASK_BASIC_INFO_COUNT) {
-            struct task_basic_info_64 *b = (struct task_basic_info_64 *)info;
-            bfp_rec(@"L2b task_info TASK_BASIC_INFO", [NSString stringWithFormat:@"virtual=%llu resident=%llu",
-                     (unsigned long long)b->virtual_size, (unsigned long long)b->resident_size]);
-        } else if (flavor == TASK_VM_INFO) {
-            bfp_rec(@"L2b task_info TASK_VM_INFO", [NSString stringWithFormat:@"cnt=%u", *cnt]);
-        } else {
-            bfp_rec([NSString stringWithFormat:@"L2b task_info flavor=%d", flavor], [NSString stringWithFormat:@"cnt=%u", *cnt]);
-        }
+    // 只记录「被调用了 + 哪个 flavor + 长度」，不解引用 info 指向的结构体。
+    // 原因：不同 flavor 对应不同结构体，尺寸/布局各不相同；按错的结构体读字段
+    //       会越界（例如把 TASK_BASIC_INFO 按 task_basic_info_64 理解）。
+    if (r == KERN_SUCCESS) {
+        bfp_rec([NSString stringWithFormat:@"L2b task_info flavor=%d", flavor],
+                [NSString stringWithFormat:@"cnt=%u", cnt ? *cnt : 0]);
     }
     return r;
 }
 
+
 static kern_return_t (*bfp_orig_host_statistics64)(host_t, int, host_info64_t, mach_msg_type_number_t *);
 static kern_return_t bfp_my_host_statistics64(host_t host, int flavor, host_info64_t info, mach_msg_type_number_t *cnt) {
+    if (!bfp_orig_host_statistics64) return KERN_FAILURE;
     kern_return_t r = bfp_orig_host_statistics64(host, flavor, info, cnt);
-    if (r == KERN_SUCCESS && info && flavor == HOST_VM_INFO64 && *cnt >= HOST_VM_INFO64_COUNT) {
-        vm_statistics64_data_t *s = (vm_statistics64_data_t *)info;
-        unsigned long long free_bytes = (unsigned long long)s->free_count * vm_page_size;
-        bfp_rec(@"L2b host_statistics64 HOST_VM_INFO64",
-                [NSString stringWithFormat:@"free_pages=%u free_bytes=%llu",
-                 s->free_count, free_bytes]);
+    // 同样只记录调用与 flavor，不解引用结构体（避免尺寸/页大小假设出错）
+    if (r == KERN_SUCCESS) {
+        bfp_rec([NSString stringWithFormat:@"L2b host_statistics64 flavor=%d", flavor],
+                [NSString stringWithFormat:@"cnt=%u", cnt ? *cnt : 0]);
     }
     return r;
 }
+
 
 static kern_return_t (*bfp_orig_host_statistics)(host_t, int, host_info_t, mach_msg_type_number_t *);
 static kern_return_t bfp_my_host_statistics(host_t host, int flavor, host_info_t info, mach_msg_type_number_t *cnt) {
@@ -330,17 +344,7 @@ static int bfp_my_clock_gettime(clockid_t id, struct timespec *ts) {
     return r;
 }
 static uint64_t (*bfp_orig_mach_absolute_time)(void);
-static uint64_t bfp_my_mach_absolute_time(void) {
-    uint64_t r = bfp_orig_mach_absolute_time();
-    bfp_rec(@"L6b mach_absolute_time", [NSString stringWithFormat:@"%llu", r]);
-    return r;
-}
 static uint64_t (*bfp_orig_mach_continuous_time)(void);
-static uint64_t bfp_my_mach_continuous_time(void) {
-    uint64_t r = bfp_orig_mach_continuous_time();
-    bfp_rec(@"L6b mach_continuous_time", [NSString stringWithFormat:@"%llu", r]);
-    return r;
-}
 
 #pragma mark - L3b 网络补充
 
@@ -745,8 +749,6 @@ static void bfp_install_c_hooks(void) {
         {"mktime", (void *)bfp_my_mktime, (void **)&bfp_orig_mktime},
         {"strftime", (void *)bfp_my_strftime, (void **)&bfp_orig_strftime},
         {"clock_gettime", (void *)bfp_my_clock_gettime, (void **)&bfp_orig_clock_gettime},
-        {"mach_absolute_time", (void *)bfp_my_mach_absolute_time, (void **)&bfp_orig_mach_absolute_time},
-        {"mach_continuous_time", (void *)bfp_my_mach_continuous_time, (void **)&bfp_orig_mach_continuous_time},
         // 本轮新增：网络补充
         {"getpeername", (void *)bfp_my_getpeername, (void **)&bfp_orig_getpeername},
         {"CNCopySupportedInterfaces", (void *)bfp_my_CNCopySupportedInterfaces, (void **)&bfp_orig_CNCopySupportedInterfaces},
@@ -823,6 +825,7 @@ static NSString *bfp_report(void) {
     [o appendFormat:@"进程=%@\n", NSProcessInfo.processInfo.processName];
     [o appendFormat:@"记录总条数=%lu  持续=%.1f 秒\n", (unsigned long)g_totalRecords,
                     CFAbsoluteTimeGetCurrent() - g_startTime];
+    g_reportNow = CFAbsoluteTimeGetCurrent();
 
     [o appendString:@"\n--- 本机原始值（探针自己读的）---\n"];
     [o appendFormat:@"UIDevice.systemVersion=%@\n", UIDevice.currentDevice.systemVersion];

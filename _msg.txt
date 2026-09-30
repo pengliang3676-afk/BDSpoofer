@@ -1,0 +1,32 @@
+FullProbe 1.3: 修启动闪退（bfp_rec 自死锁）
+
+【根因】用户反馈只装探针也闪退，定位到 bfp_rec：
+
+    static void bfp_rec(NSString *key, NSString *value) {
+        [g_lock lock];                                       // NSLock，非递归
+        ...
+        e[@"first"] = @(CFAbsoluteTimeGetCurrent() - g_startTime);   // ← 这里
+        ...
+        [g_lock unlock];
+    }
+
+  而探针自己也 hook 了 CFAbsoluteTimeGetCurrent。
+  于是每次 bfp_rec 都会调用被 hook 的 CFAbsoluteTimeGetCurrent ->
+  它内部又调用 bfp_rec -> 同线程第二次 [g_lock lock] ->
+  NSLock 非递归 -> 自死锁/崩溃。
+  因为每次记录都走这条路，所以表现为启动即崩。
+
+【修复】五处
+  1. bfp_rec 不再调用任何被 hook 的函数：首次时间改为占位 0，
+     等生成报告时统一换算（新增 g_reportNow 基准）
+  2. 加递归守卫 g_depth：任何被 hook 的函数在记录过程中再次进入，直接丢弃
+  3. g_lock 由 NSLock 改为 NSRecursiveLock（双保险）
+  4. 移除 mach_absolute_time / mach_continuous_time 的 hook ——
+     它们是全系统最热函数（dispatch 内部大量调用），且属单调时钟，
+     本就无观测必要（原设计原则即"单调时钟不碰"）
+  5. task_info / host_statistics64 不再解引用结果结构体 ——
+     不同 flavor 对应不同结构体，按错的结构体读字段会越界
+     （例如把 TASK_BASIC_INFO 按 task_basic_info_64 理解）。
+     改为只记录 flavor 与 cnt。
+
+已全量扫描确认：没有其它 hook 函数体调用本探针 hook 过的函数。
