@@ -52,7 +52,7 @@
 #import <stdlib.h>
 #import <time.h>
 
-static NSString * const BFPVersion = @"3.0";
+static NSString * const BFPVersion = @"3.1";
 
 #pragma mark - 记录器
 
@@ -752,9 +752,23 @@ static void bfp_show_panel(void);
 
 @interface UIButton (BFP)
 - (void)bfp_tap;
+- (void)bfp_drag:(UIPanGestureRecognizer *)g;
 @end
 @implementation UIButton (BFP)
 - (void)bfp_tap { bfp_show_panel(); }
+- (void)bfp_drag:(UIPanGestureRecognizer *)g {
+    UIView *sv = self.superview;
+    if (!sv) return;
+    CGPoint tr = [g translationInView:sv];
+    CGPoint c = self.center;
+    c.x += tr.x; c.y += tr.y;
+    // 夹在屏幕内
+    CGFloat hw = self.bounds.size.width / 2, hh = self.bounds.size.height / 2;
+    c.x = MAX(hw + 4, MIN(sv.bounds.size.width - hw - 4, c.x));
+    c.y = MAX(hh + 20, MIN(sv.bounds.size.height - hh - 4, c.y));
+    self.center = c;
+    [g setTranslation:CGPointZero inView:sv];
+}
 @end
 
 static void bfp_show_panel(void) {
@@ -786,24 +800,101 @@ static void bfp_show_panel(void) {
     [top presentViewController:a animated:YES completion:nil];
 }
 
+// 悬浮按钮：放在「自己的」UIWindow 上，而不是 keyWindow。
+//
+// 【为什么不能放 keyWindow】百度启动后会创建自己的窗口（开屏/广告/引导层），
+// 盖在 keyWindow 之上；按钮加在 keyWindow 上就会被覆盖、看不见。
+// 做法：新建一个 UIWindow，windowLevel 设得极高，并让它的 rootViewController
+//       不拦截触摸（只让按钮自身可点），这样既浮在最上层又不影响 App 操作。
+
+static UIWindow *g_probeWindow;
+static UIButton *g_probeButton;
+
+@interface BFPProbeVC : UIViewController
+@end
+
+@implementation BFPProbeVC
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = [UIColor clearColor];
+    self.view.userInteractionEnabled = YES;
+}
+// 只让按钮接收触摸，其余区域穿透到下面的 App
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *v = [super hitTest:point withEvent:event];
+    return (v == self.view) ? nil : v;
+}
+@end
+
+static void bfp_show_panel(void);
+@interface UIButton (BFP)
+- (void)bfp_tap;
+@end
+
 static void bfp_build_button(void) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        UIWindow *w = UIApplication.sharedApplication.keyWindow
-                    ?: UIApplication.sharedApplication.windows.firstObject;
-        if (!w) return;
+        if (g_probeWindow) return;
+
+        UIWindow *w = nil;
+        // iOS 13+ 优先用 windowScene 创建，避免 "window not associated with scene" 问题
+        if (@available(iOS 13.0, *)) {
+            UIWindowScene *scene = nil;
+            for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
+                if ([s isKindOfClass:[UIWindowScene class]] &&
+                    s.activationState == UISceneActivationStateForegroundActive) {
+                    scene = (UIWindowScene *)s;
+                    break;
+                }
+            }
+            if (!scene) {
+                for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
+                    if ([s isKindOfClass:[UIWindowScene class]]) { scene = (UIWindowScene *)s; break; }
+                }
+            }
+            if (scene) w = [[UIWindow alloc] initWithWindowScene:scene];
+        }
+        if (!w) w = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+
+        // 极高层级：压过百度自己的开屏/广告/引导窗口
+        w.windowLevel = 10000000.0;
+        w.backgroundColor = [UIColor clearColor];
+        w.rootViewController = [[BFPProbeVC alloc] init];
+        w.hidden = NO;
+
         UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
-        b.frame = CGRectMake(12, 140, 72, 72);
-        b.backgroundColor = [UIColor colorWithRed:0.1 green:0.55 blue:0.95 alpha:0.92];
-        b.layer.cornerRadius = 36;
-        b.titleLabel.font = [UIFont boldSystemFontOfSize:12];
+        b.frame = CGRectMake(8, 130, 64, 64);
+        b.backgroundColor = [UIColor colorWithRed:0.1 green:0.55 blue:0.95 alpha:0.9];
+        b.layer.cornerRadius = 32;
+        b.titleLabel.font = [UIFont boldSystemFontOfSize:11];
         b.titleLabel.numberOfLines = 3;
         b.titleLabel.textAlignment = NSTextAlignmentCenter;
-        [b setTitle:@"\u6700\u5c0f\n\u63a2\u9488\n\u70b9\u8fd9" forState:UIControlStateNormal];
+        [b setTitle:@"\u63a2\u9488\n\u70b9\u8fd9" forState:UIControlStateNormal];
         [b addTarget:b action:@selector(bfp_tap) forControlEvents:UIControlEventTouchUpInside];
-        [w addSubview:b];
+        // 允许拖动：万一还是被挡，用户能拖出来
+        UIPanGestureRecognizer *pan =
+            [[UIPanGestureRecognizer alloc] initWithTarget:b action:@selector(bfp_drag:)];
+        [b addGestureRecognizer:pan];
+
+        [w.rootViewController.view addSubview:b];
+
+        g_probeWindow = w;
+        g_probeButton = b;
+        bfp_marker("05_button_created");
+
+        // 心跳：每 2 秒把自己窗口重新提到最前。
+        // 百度可能在启动后新建更高层级的窗口把我们盖住；这里持续宣示层级，
+        // 用 makeKeyAndVisible 之外的轻量方式（只改 hidden/orderFront）。
+        [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer *tm) {
+            (void)tm;
+            UIWindow *pw = g_probeWindow;
+            if (!pw) return;
+            if (pw.windowLevel < 10000000.0) pw.windowLevel = 10000000.0;
+            if (pw.hidden) pw.hidden = NO;
+        }];
     });
 }
+
 
 #pragma mark - 入口
 
