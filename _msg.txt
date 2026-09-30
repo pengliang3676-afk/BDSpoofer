@@ -1,0 +1,26 @@
+Ship 9.30-27: 回到 9.30-19 基线，只加内网 IP 段
+
+【用户要求】9.30-19 + IP 段，其他一律不要。
+
+【背景】9.30-20 引入了导致「每次打开极速都闪退」的缺陷。
+用户用 11 个逐版构建实测确认：
+    9.30-19  不崩（最后一次好的）
+    9.30-20  崩
+9.30-20 到 9.30-26 之间的修复尝试（sysctl 透传、剪贴板竞态）均未解决。
+
+【本版做法】直接从 9.30-19（5d87cbb）拉分支，只做一处改动：
+  Shared/BDSConfigPolicy.h 的 BDSRandomLanIP() 网段池
+    - 段数 10 -> 17，总权重仍为 100
+    - 10.x 占比 11% -> 18%
+    - 192.168.1. 权重 40 -> 28（原分布过度集中）
+    - 新增 10.88.12.（探针实测段）/ 10.1.1. / 10.0.10. /
+           192.168.10. / 192.168.100. / 192.168.8. / 192.168.11.
+
+【明确不含】
+  - hideInjection 开关（9.30-23）
+  - 9.30-20 的 currentLocale / preferredLanguages / attributesOfItemAtPath:error:
+  - 9.30-21 的 sysctl / task_info / host_statistics64 / fstat / getenv / getppid / getpeername
+  - 9.30-22 的 currentRadioAccessTechnology
+  - 时间偏移、剪贴板抑制窗口等一切非需求项
+
+configVersion 保持 189（与 9.30-19 一致），不会触发任何配置迁移。
