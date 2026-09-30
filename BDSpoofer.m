@@ -133,6 +133,15 @@ typedef CFDictionaryRef (*IOPSDescFn)(CFTypeRef, CFTypeRef);
 #define BDS_ATOMIC_SET(var, val) __atomic_store_n(&(var), (val), __ATOMIC_RELEASE)
 #define BDS_ATOMIC_GET(var) __atomic_load_n(&(var), __ATOMIC_ACQUIRE)
 
+// ---- 时间偏移：前向声明（定义在后面的"时间偏移"小节）----
+// 必须放在这里：配置合并阶段（install 之前）就要用它算偏移量。
+static int  bds_time_offset(void);
+static int  bds_compute_time_offset(void);
+static id   new_NSDate_date(id self, SEL _cmd);
+static NSTimeInterval new_NSDate_timeIntervalSince1970(id self, SEL _cmd);
+static IMP  orig_NSDate_date;
+static IMP  orig_NSDate_timeIntervalSince1970;
+
 #pragma mark - 配置
 
 static NSDictionary *g_config = nil;
@@ -2359,15 +2368,6 @@ static void tg_add_image_cb(const struct mach_header *mh, intptr_t slide) {
     });
 }
 static void tg_schedule_retry(void);
-// 时间偏移相关的前向声明（定义在后面的"时间偏移"小节，但 install* 会先调用）
-static int  bds_time_offset(void);
-static int  bds_compute_time_offset(void);
-static id   new_NSDate_date(id self, SEL _cmd);
-static NSTimeInterval new_NSDate_timeIntervalSince1970(id self, SEL _cmd);
-static IMP  orig_NSDate_date;
-static IMP  orig_NSDate_timeIntervalSince1970;
-static int  g_timeOffsetSec;
-
 static void installBaiduTargetedHooks(void) {
     tg_install_all();
     _dyld_register_func_for_add_image(tg_add_image_cb);   // 晚加载的 framework 在主队列补 hook
@@ -3173,7 +3173,7 @@ static const char *bds_my_dyld_get_image_name(uint32_t image_index) {
 
 #define BDS_TIME_OFFSET_LIMIT_SEC (8 * 60)   // 硬上限 8 分钟
 
-g_timeOffsetSec = 0;                       // 本次启动实际使用的偏移量
+static int g_timeOffsetSec = 0;             // 本次启动实际使用的偏移量
 
 static int bds_time_offset(void) {
     return g_timeOffsetSec;
@@ -3255,7 +3255,7 @@ static CFAbsoluteTime bds_my_CFAbsoluteTimeGetCurrent(void) {
 }
 
 // ---- NSDate（类方法 + 实例读取路径）----
-orig_NSDate_date = NULL;
+static IMP orig_NSDate_date = NULL;
 static id new_NSDate_date(id self, SEL _cmd) {
     id real = orig_NSDate_date ? ((id (*)(id, SEL))orig_NSDate_date)(self, _cmd) : nil;
     int off = bds_time_offset();
@@ -3266,7 +3266,7 @@ static id new_NSDate_date(id self, SEL _cmd) {
     return real;
 }
 
-orig_NSDate_timeIntervalSince1970 = NULL;
+static IMP orig_NSDate_timeIntervalSince1970 = NULL;
 static NSTimeInterval new_NSDate_timeIntervalSince1970(id self, SEL _cmd) {
     NSTimeInterval real = 0;
     if (orig_NSDate_timeIntervalSince1970) {

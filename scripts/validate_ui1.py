@@ -351,7 +351,11 @@ assert 'CTRadioAccessTechnologyLTE' in plugin
 assert '@"key":@"spoofTimeOffset",@"name":@"时间偏移",@"off":@YES' in policy
 assert 'static int g_spoofTimeOffsetC = 0;' in plugin
 assert 'g_timeOffsetSec = 0;' in plugin
-assert 'static int  g_timeOffsetSec;' in plugin   # 前向声明（install* 会先调用）
+# 前向声明必须在首次使用之前（配置合并阶段就要算偏移量）
+assert 'static int  bds_compute_time_offset(void);' in plugin
+assert plugin.index('static int  bds_compute_time_offset(void);') \
+       < plugin.index('g_timeOffsetSec = BDS_ATOMIC_GET'), \
+       '时间偏移前向声明必须早于配置合并阶段的使用'
 assert 'BDS_TIME_OFFSET_LIMIT_SEC' in plugin
 assert 'bds_compute_time_offset' in plugin
 # 墙钟时间必须全部偏移
