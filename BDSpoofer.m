@@ -261,6 +261,41 @@ static BOOL bds_route_lookup_default_ifname(char *out, size_t outLen) {
     return found;
 }
 
+// ---- 兜底：按「谁真的持有 IPv4」挑主网卡 ----
+//
+// 实测：本机开着代理/VPN 时，默认路由表里查不到可用的接口名
+// （探测回退成了 en0，而 en0 此刻没有 IPv4），因此仅靠路由表不够。
+// 这里直接枚举所有网卡，按可信度排序取第一个持有 IPv4 的：
+//   1) en*      —— Wi-Fi / 有线，App 最常读的就是它
+//   2) pdp_ip*  —— 蜂窝
+//   3) utun*    —— 代理 / VPN 隧道
+//   4) ipsec*   —— 其他隧道
+// 回环与 0.0.0.0 一律跳过。
+static BOOL bds_pick_iface_by_ipv4(char *out, size_t outLen) {
+    if (!out || outLen < 2) return NO;
+    struct ifaddrs *list = NULL;
+    if (getifaddrs(&list) != 0 || !list) return NO;
+
+    const char *prefixes[] = {"en", "pdp_ip", "utun", "ipsec", NULL};
+    char best[IFNAMSIZ] = {0};
+    for (int pi = 0; prefixes[pi] && !best[0]; pi++) {
+        for (struct ifaddrs *ifa = list; ifa; ifa = ifa->ifa_next) {
+            if (!ifa->ifa_name || !ifa->ifa_addr) continue;
+            if (ifa->ifa_addr->sa_family != AF_INET) continue;
+            if (strncmp(ifa->ifa_name, prefixes[pi], strlen(prefixes[pi])) != 0) continue;
+            struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
+            if (sin->sin_addr.s_addr == 0) continue;
+            if (sin->sin_addr.s_addr == htonl(INADDR_LOOPBACK)) continue;
+            snprintf(best, sizeof(best), "%s", ifa->ifa_name);
+            break;
+        }
+    }
+    freeifaddrs(list);
+    if (!best[0]) return NO;
+    snprintf(out, outLen, "%s", best);
+    return YES;
+}
+
 static int g_spoofProxyC = 0;
 static int g_spoofBootTimeC = 0;
 static int g_spoofCPUC = 0;
@@ -444,9 +479,37 @@ static void bds_update_c_cache(void) {
     {
         char nm[IFNAMSIZ] = {0};
         if (bds_route_lookup_default_ifname(nm, sizeof(nm))) {
-            snprintf(g_primaryIfName, sizeof(g_primaryIfName), "%s", nm);
+            // 路由表给的名字也要验证它真的有 IPv4，否则继续往下兜底
+            BOOL hasV4 = NO;
+            struct ifaddrs *chk = NULL;
+            if (getifaddrs(&chk) == 0 && chk) {
+                for (struct ifaddrs *ifa = chk; ifa; ifa = ifa->ifa_next) {
+                    if (!ifa->ifa_name || !ifa->ifa_addr) continue;
+                    if (strcmp(ifa->ifa_name, nm) != 0) continue;
+                    if (ifa->ifa_addr->sa_family != AF_INET) continue;
+                    struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
+                    if (sin->sin_addr.s_addr != 0 &&
+                        sin->sin_addr.s_addr != htonl(INADDR_LOOPBACK)) { hasV4 = YES; break; }
+                }
+                freeifaddrs(chk);
+            }
+            if (hasV4) {
+                snprintf(g_primaryIfName, sizeof(g_primaryIfName), "%s", nm);
+            } else {
+                char nm2[IFNAMSIZ] = {0};
+                if (bds_pick_iface_by_ipv4(nm2, sizeof(nm2))) {
+                    snprintf(g_primaryIfName, sizeof(g_primaryIfName), "%s", nm2);
+                } else {
+                    snprintf(g_primaryIfName, sizeof(g_primaryIfName), "en0");
+                }
+            }
         } else {
-            snprintf(g_primaryIfName, sizeof(g_primaryIfName), "en0");
+            char nm2[IFNAMSIZ] = {0};
+            if (bds_pick_iface_by_ipv4(nm2, sizeof(nm2))) {
+                snprintf(g_primaryIfName, sizeof(g_primaryIfName), "%s", nm2);
+            } else {
+                snprintf(g_primaryIfName, sizeof(g_primaryIfName), "en0");
+            }
         }
     }
     bds_disk_size_set((long long)cfgInt(@"diskSize", 64) * 1024LL * 1024LL * 1024LL);
