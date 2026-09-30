@@ -53,7 +53,7 @@
 #import <stdlib.h>
 #import <time.h>
 
-static NSString * const BFPVersion = @"5.0";
+static NSString * const BFPVersion = @"5.1";
 
 #pragma mark - 记录器
 
@@ -759,6 +759,60 @@ static NSString *bfp_local_url(void) {
     return [NSString stringWithFormat:@"http://%@:%d/", ip, g_httpPort];
 }
 
+
+#pragma mark - 分享 TXT 文件（隔空投送 / 存储到文件 / 发微信都行）
+
+// 关键：UIActivityViewController 传「文件 URL」而不是「字符串」，
+// 这样隔空投送过去的是一个真正的 .txt 文件，电脑端直接能打开。
+// 文件放 tmp 目录：App 自己可写，且分享面板会把它当附件投送。
+static NSURL *bfp_make_share_txt(NSString *txt) {
+    NSString *name = [NSString stringWithFormat:@"bds_probe_%@.txt",
+                      [[NSDateFormatter new] stringFromDate:[NSDate date]]
+                          ?: @""];
+    // 文件名只保留安全字符
+    NSMutableString *safe = [NSMutableString string];
+    for (NSUInteger i = 0; i < name.length; i++) {
+        unichar c = [name characterAtIndex:i];
+        if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+            (c >= 'A' && c <= 'Z') || c == '.' || c == '_' || c == '-') {
+            [safe appendFormat:@"%C", c];
+        } else {
+            [safe appendString:@"_"];
+        }
+    }
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:safe];
+    NSError *err = nil;
+    if (![txt writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:&err]) {
+        return nil;
+    }
+    return [NSURL fileURLWithPath:path];
+}
+
+static void bfp_share_txt(NSString *txt, UIViewController *presenter, UIView *anchor) {
+    if (!presenter) return;
+    NSURL *u = bfp_make_share_txt(txt);
+    if (!u) {
+        UIAlertController *e = [UIAlertController
+            alertControllerWithTitle:@"\u751f\u6210\u6587\u4ef6\u5931\u8d25"
+                             message:@"\u65e0\u6cd5\u5199\u5165\u4e34\u65f6\u76ee\u5f55"
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [e addAction:[UIAlertAction actionWithTitle:@"\u597d"
+                                             style:UIAlertActionStyleCancel handler:nil]];
+        [presenter presentViewController:e animated:YES completion:nil];
+        return;
+    }
+    UIActivityViewController *av = [[UIActivityViewController alloc]
+        initWithActivityItems:@[u] applicationActivities:nil];
+    if (av.popoverPresentationController) {
+        av.popoverPresentationController.sourceView = anchor ?: presenter.view;
+        av.popoverPresentationController.sourceRect =
+            anchor ? anchor.bounds
+                   : CGRectMake(presenter.view.bounds.size.width / 2,
+                                presenter.view.bounds.size.height / 2, 1, 1);
+    }
+    [presenter presentViewController:av animated:YES completion:nil];
+}
+
 static NSArray<NSString *> *bfp_write_file(NSString *txt) {
     NSMutableArray *written = [NSMutableArray array];
     NSString *name = [NSString stringWithFormat:@"minprobe_%.0f.txt",
@@ -990,11 +1044,11 @@ static void bfp_show_panel(void) {
                                               style:UIAlertActionStyleCancel handler:nil]];
         [top presentViewController:b2 animated:YES completion:nil];
     }]];
-    [a addAction:[UIAlertAction actionWithTitle:@"\u5b58\u76f8\u518c" style:UIAlertActionStyleDefault
+    [a addAction:[UIAlertAction actionWithTitle:@"\u5206\u4eabTXT" style:UIAlertActionStyleDefault
                                        handler:^(UIAlertAction *x) {
         (void)x;
-        UIImage *img = bfp_render_text_image(txt);
-        bfp_save_image_to_photos(img, top);
+        // 隔空投送 / 存储到"文件" / 发微信 —— 投送的是真正的 .txt
+        bfp_share_txt(txt, top, nil);
     }]];
     [a addAction:[UIAlertAction actionWithTitle:@"\u590d\u5236" style:UIAlertActionStyleDefault
                                        handler:^(UIAlertAction *x) {
