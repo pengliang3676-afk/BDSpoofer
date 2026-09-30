@@ -53,7 +53,7 @@
 #import <CoreTelephony/CTTelephonyNetworkInfo.h>
 #import <CoreTelephony/CTCarrier.h>
 
-static NSString * const BFPVersion = @"1.1";
+static NSString * const BFPVersion = @"1.2";
 
 #pragma mark - 记录器（线程安全，只读）
 
@@ -755,6 +755,63 @@ static void bfp_install_c_hooks(void) {
     bfp_rebind_symbols(rb, sizeof(rb) / sizeof(rb[0]));
 }
 
+#pragma mark - L8 百度自有风控 / 校验方法（静态分析发现的关键点）
+//
+// 静态分析确证存在这些方法，但"存在"不等于"运行"。
+// 本层观察它们是否真的被调用。
+//
+// 【只读约束】只挂钩 0 参数方法 —— 有参数的方法无法在不破坏行为的前提下转发，
+// 因此一律跳过（宁可少观察，也不能改变百度行为）。
+// 需要观察的有参方法（如 checkLocalTimeIsValid:）后续用精确签名单独加。
+
+static void bfp_install_L8(void) {
+    NSArray<NSString *> *classes = @[
+        @"BDPanServerTimeHelper", @"BBADeviceScoreUtil", @"BBALaunchDeviceScoreManager",
+        @"BBASMRiskControl", @"BDPDeviceUtility", @"BDPDynamicParameters",
+        @"BBALaunchDeviceInfoDBHelper", @"BDSRhythmSimplePing",
+        @"TLSSystemPrivacyManager", @"BDPTalosSystemPrivacy",
+        @"ASSSecurityManager", @"APSecSecuritySDK",
+    ];
+    // 注意：全部是无参方法（有参的靠 0 参守卫过滤掉）
+    NSArray<NSString *> *selNames = @[
+        @"sharedInstance", @"serverTime", @"internalTime", @"currentServerTime",
+        @"checkBatteryState", @"hasCheckDatabaseIntegrity",
+        @"getRiskControlSystemInfoPubK", @"getRiskControlSystemASEI",
+        @"bba_deviceScore", @"deviceScore",
+        @"bba_isJailBreak", @"isDeviceJailBreak", @"isJailBreak",
+        @"bba_isSimulator", @"isSimulator",
+        @"bba_totalMemoryBytes", @"bbvp_totalMemoryBytes",
+        @"bba_cpuCount", @"bdvp_cpuCount",
+        @"bba_totalDiskSpaceBytes", @"bba_freeDiskSpaceBytes",
+        @"bba_getScreenResolution", @"bba_cachedSystemVersion",
+        @"eco_cachedSystemVersion", @"nad_cachedSystemVersion",
+        @"tryGetIDFAFromMapping", @"deviceMappingIDFA",
+        @"getMACAddress", @"tls_getMACAddress", @"totalDiskSpace", @"freeDiskSpace",
+    ];
+    NSUInteger hooked = 0;
+    for (NSString *cn in classes) {
+        Class c = objc_getClass(cn.UTF8String);
+        if (!c) continue;
+        for (NSString *sn in selNames) {
+            if ([sn containsString:@":"]) continue;   // 只读约束：跳过有参方法
+            SEL sel = NSSelectorFromString(sn);
+            Method m = class_getInstanceMethod(c, sel);
+            if (!m) m = class_getClassMethod(c, sel);
+            if (!m) continue;
+            IMP o = method_getImplementation(m);
+            NSString *label = [NSString stringWithFormat:@"L8 %@.%@", cn, sn];
+            IMP ni = imp_implementationWithBlock(^id(id self_) {
+                id r = ((id (*)(id, SEL))o)(self_, sel);
+                bfp_rec(label, r ? [r description] : @"(nil)");
+                return r;   // 原样返回，绝不改变行为
+            });
+            method_setImplementation(m, ni);
+            hooked++;
+        }
+    }
+    bfp_rec(@"L8 已挂钩的百度风控方法数", [NSString stringWithFormat:@"%lu", (unsigned long)hooked]);
+}
+
 #pragma mark - 报告生成
 
 static NSString *bfp_report(void) {
@@ -780,22 +837,22 @@ static NSString *bfp_report(void) {
 
     [g_lock lock];
     NSArray *keys = [[g_rec allKeys] sortedArrayUsingSelector:@selector(compare:)];
-    NSMutableArray *L[8];
-    for (int i = 0; i < 8; i++) L[i] = [NSMutableArray array];
+    NSMutableArray *L[9];
+    for (int i = 0; i < 9; i++) L[i] = [NSMutableArray array];
     for (NSString *k in keys) {
         if (![k hasPrefix:@"L"]) continue;
         int idx = [[k substringWithRange:NSMakeRange(1, 1)] intValue];
-        if (idx >= 1 && idx <= 7) [L[idx] addObject:k];
+        if (idx >= 1 && idx <= 8) [L[idx] addObject:k];
     }
     NSArray *titles = @[@"", @"L1 标识符", @"L2 硬件与系统", @"L3 网络",
                         @"L4 地区 / 时区 / 越狱路径", @"L5 动态库枚举（注入检测）",
-                        @"L6 时间", @"L7 传感器（行为指纹）"];
+                        @"L6 时间", @"L7 传感器（行为指纹）", @"L8 百度自有风控/校验方法"];
     NSMutableDictionary *snap = [g_rec copy];
     NSArray *jbSnap = [g_jbPaths copy];
     NSUInteger imgCount = g_images.count;
     [g_lock unlock];
 
-    for (int i = 1; i <= 7; i++) {
+    for (int i = 1; i <= 8; i++) {
         [o appendFormat:@"\n\n========== %@ ==========\n", titles[i]];
         if (i == 4 && jbSnap.count) {
             [o appendFormat:@"\n[百度查过的路径]  共 %lu 条（⚠️ = 命中越狱特征）\n", (unsigned long)jbSnap.count];
@@ -896,6 +953,7 @@ static void bfp_start(void) {
     bfp_install_L4();
     bfp_install_L6();
     bfp_install_L7();
+    bfp_install_L8();
     // L3/L5 的 C 层 hook 需要 fishhook，探针这里先用 ObjC 可覆盖的部分 + dlsym 记录
     bfp_build_button();
 }
