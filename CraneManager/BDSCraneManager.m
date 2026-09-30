@@ -612,7 +612,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"卍解 1.0.2 9.30-17";
+    self.title = @"卍解 1.0.2 9.30-18";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];

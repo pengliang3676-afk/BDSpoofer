@@ -107,6 +107,9 @@
 #import <mach/mach.h>
 #import <SystemConfiguration/CaptiveNetwork.h>
 #import <SystemConfiguration/SystemConfiguration.h>
+// IOKit 电源接口：电池的另一条读取路径（IOPSCopyPowerSourcesInfo 等）
+#import <IOKit/ps/IOPowerSources.h>
+#import <IOKit/ps/IOPSKeys.h>
 #import <CoreLocation/CoreLocation.h>
 #import <ifaddrs.h>
 #import <net/if_dl.h>
@@ -338,7 +341,7 @@ static void loadConfig() {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            // 9.30-17 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
+            // 9.30-18 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
             // （v189 迁移还会兜底强制关一次。）
             @"bypassJailbreakDetect": @NO
         }];
@@ -545,9 +548,9 @@ static void loadConfig() {
     BDSApplyInitialDefaults(merged, loaded);
     // 注意顺序：迁移必须放在 BDSApplyInitialDefaults 之后。
     // 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
-    // 写在它之前会被它设回 @YES（9.30-17 实测就是这个原因导致开关关不掉）。
+    // 写在它之前会被它设回 @YES（9.30-18 实测就是这个原因导致开关关不掉）。
     if (ver < 189) {
-        // 9.30-17：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
+        // 9.30-18：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
         // 老配置里这个键通常已存 @YES，光靠默认值救不了，必须强制写一次 @NO。
         // 用独立的版本号 189 是为了让已经处在 188 的配置也能被这次修正覆盖到，
         // 且只执行一次：之后用户在面板手动打开仍然有效。
@@ -1029,9 +1032,48 @@ static NSString *new_systemName(id self, SEL _cmd) {
 }
 
 #pragma mark - 电池电量伪装
-
+//
+// 用户要求：
+//   状态固定“未充电”（插着电但报未充电，用户明确选择）
+//   电量随时间缓慢下降，但**不能固定区间**
+//
+// 所以：起始值 40~95% 每台各自随机；
+// 下降速度也随机（每 1% 需 100~280 秒）；
+// 下限同样随机（起始值下方 15~45 个点，最低不低于 8%）。
+// 这样 70 台设备的电量轨迹各不相同，不会出现“全部从 85 掉到 65”
+// 这种一眼看得出来的整齐。
+//
+// 完全按“距起始时刻经过的时间”计算，
+// 不依赖定时器或后台线程，结果单调且可重复。
 static volatile float g_fakeBatteryLevel = -1.0f;
+static CFAbsoluteTime g_batteryStartTime = 0;
+static float g_batteryFloor = 0.0f;        // 本机的下限（随机）
+static double g_batterySecondsPerPct = 0;  // 本机的下降速度（随机）
 static dispatch_once_t g_batteryOnce;
+static float bds_battery_level(void) {
+    dispatch_once(&g_batteryOnce, ^{
+        // 起始 40~95%
+        NSUInteger startPct = 40 + arc4random_uniform(56);
+        // 下降速度：每 1% 需 100~280 秒（约 1.7~4.7 分钟）
+        g_batterySecondsPerPct = 100.0 + (double)arc4random_uniform(181);
+        // 下限：起始值下方 15~45 个点，且不低于 8%
+        NSUInteger span = 15 + arc4random_uniform(31);
+        NSInteger floorPct = (NSInteger)startPct - (NSInteger)span;
+        if (floorPct < 8) floorPct = 8;
+        g_batteryFloor = (float)floorPct / 100.0f;
+        g_fakeBatteryLevel = (float)startPct / 100.0f;
+        g_batteryStartTime = CFAbsoluteTimeGetCurrent();
+    });
+    float start = g_fakeBatteryLevel;
+    double elapsed = CFAbsoluteTimeGetCurrent() - g_batteryStartTime;
+    if (elapsed < 0) elapsed = 0;
+    if (g_batterySecondsPerPct <= 0) g_batterySecondsPerPct = 180.0;
+    float drop = (float)((NSUInteger)(elapsed / g_batterySecondsPerPct));
+    float level = start - drop / 100.0f;
+    if (level < g_batteryFloor) level = g_batteryFloor;
+    if (level > start) level = start;
+    return level;
+}
 static IMP orig_batteryLevel = NULL;
 static float new_batteryLevel(id self, SEL _cmd) {
     if (!cfgBool(@"spoofBattery", NO)) {
@@ -1040,10 +1082,7 @@ static float new_batteryLevel(id self, SEL _cmd) {
         return -1.0f;
     }
     BDS_DIAG_RECORD(g_diagBattery, BDSDiagStateChanged);
-    dispatch_once(&g_batteryOnce, ^{
-        g_fakeBatteryLevel = 0.30f + (float)(arc4random_uniform(56)) / 100.0f;
-    });
-    return g_fakeBatteryLevel;
+    return bds_battery_level();
 }
 
 static IMP orig_batteryState = NULL;
@@ -1054,7 +1093,21 @@ static NSInteger new_batteryState(id self, SEL _cmd) {
         return 0;
     }
     BDS_DIAG_RECORD(g_diagBattery, BDSDiagStateChanged);
-    return 1; // UIDeviceBatteryStateUnplugged
+    return 1; // UIDeviceBatteryStateUnplugged：用户明确要求固定“未充电”
+}
+
+// batteryMonitoringEnabled 是读 batteryLevel 的前置属性。
+// 不一起给“已启用”的话，有些代码会先判断它、未启用就直接跳过读取。
+static IMP orig_batteryMonitoringEnabled = NULL;
+static BOOL new_batteryMonitoringEnabled(id self, SEL _cmd) {
+    if (!cfgBool(@"spoofBattery", NO)) {
+        if (orig_batteryMonitoringEnabled) {
+            return ((BOOL (*)(id, SEL))orig_batteryMonitoringEnabled)(self, _cmd);
+        }
+        return NO;
+    }
+    BDS_DIAG_RECORD(g_diagBattery, BDSDiagStateChanged);
+    return YES;
 }
 
 static IMP orig_identifierForVendor = NULL;
@@ -3538,6 +3591,42 @@ static NSString *bds_current_lan_ip(void) {
     return @"(无地址)";
 }
 
+#pragma mark - IOKit 电源接口（电池的另一条读取路径）
+//
+// 部分代码不走 UIDevice.batteryLevel，而是直接问 IOKit 要电源信息。
+// 只改 UIDevice 而不改这里，会出现“两条路报不同电量”的矛盾，比不改还可疑。
+//
+// 只改描述字典里的容量与状态两个键，
+// 其余字段（电池健康度、审查状态等）原样保留。
+static CFDictionaryRef (*orig_IOPSGetPowerSourceDescription)(CFTypeRef, CFTypeRef);
+
+static CFDictionaryRef bds_my_IOPSGetPowerSourceDescription(CFTypeRef blob, CFTypeRef ps) {
+    CFDictionaryRef orig = orig_IOPSGetPowerSourceDescription
+        ? orig_IOPSGetPowerSourceDescription(blob, ps) : NULL;
+    if (!orig) return orig;
+    if (!cfgBool(@"spoofBattery", NO)) return orig;
+    BDS_DIAG_RECORD(g_diagBattery, BDSDiagStateChanged);
+    if (![(__bridge id)orig isKindOfClass:NSDictionary.class]) return orig;
+    // 严格遵守 CF 的 Get 规则：这个 API 返回的对象调用方不拥有。
+    // 直接把 NSMutableDictionary 桥接出去会带 +1 引用，可能导致泄漏或过度释放；
+    // 所以用 CFDictionaryCreateCopy 造一份新对象，再用 CFBridgingRelease 交给 ARC，
+    // 最终返回的是一个“不拥有”的引用，与 API 约定一致。
+    NSMutableDictionary *d = [(__bridge NSDictionary *)orig mutableCopy];
+    NSInteger pct = (NSInteger)lroundf(bds_battery_level() * 100.0f);
+    if (pct < 1) pct = 1;
+    if (pct > 100) pct = 100;
+    d[@"Current Capacity"] = @(pct);
+    d[@"Max Capacity"] = @100;
+    d[@"Is Charging"] = @NO;                 // 用户要求固定“未充电”
+    d[@"Is Charged"] = @NO;
+    d[@"Power Source State"] = @"Battery Power";   // 与未充电保持一致
+    // 剩余可用时间：按当前电量粗估，避免出现“满电却 0 分钟”这种矛盾
+    d[@"Time to Empty"] = @(pct * 6 * 60);
+    [d removeObjectForKey:@"Time to Full Charge"];
+    CFDictionaryRef out = CFDictionaryCreateCopy(kCFAllocatorDefault, (__bridge CFDictionaryRef)d);
+    return out ? (CFDictionaryRef)CFBridgingRelease(out) : orig;
+}
+
 #pragma mark - P8: 代理/VPN 检测绕过（fishhook）
 static CFDictionaryRef (*orig_CFNetworkCopySystemProxySettings)(void);
 static CFDictionaryRef (*orig_SCDynamicStoreCopyProxies)(SCDynamicStoreRef);
@@ -3681,6 +3770,7 @@ static void installCHooks(void) {
         {"CNCopyCurrentNetworkInfo", (void *)bds_my_CNCopyCurrentNetworkInfo, (void **)&orig_CNCopyCurrentNetworkInfo},
         {"getifaddrs", (void *)bds_my_getifaddrs, (void **)&orig_getifaddrs},
         {"getsockname", (void *)bds_my_getsockname, (void **)&orig_getsockname},
+        {"IOPSGetPowerSourceDescription", (void *)bds_my_IOPSGetPowerSourceDescription, (void **)&orig_IOPSGetPowerSourceDescription},
         {"CFNetworkCopySystemProxySettings", (void *)bds_my_CFNetworkCopySystemProxySettings, (void **)&orig_CFNetworkCopySystemProxySettings},
         {"SCDynamicStoreCopyProxies", (void *)bds_my_SCDynamicStoreCopyProxies, (void **)&orig_SCDynamicStoreCopyProxies},
         {"statfs", (void *)bds_my_statfs, (void **)&orig_statfs},
@@ -4436,7 +4526,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-17";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-18";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5498,13 +5588,11 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
     [advanced appendFormat:@"\nWebKit Cookie：%@", cfgBool(@"spoofWebKitCookie", NO) ? @"开" : @"关"];
     [advanced appendFormat:@"\n电池电量：%@", cfgBool(@"spoofBattery", NO) ? @"开" : @"关"];
     if (cfgBool(@"spoofBattery", NO)) {
-        // 用 dispatch_once 保证读取在初始化写入之后
-        dispatch_once(&g_batteryOnce, ^{
-            g_fakeBatteryLevel = 0.30f + (float)(arc4random_uniform(56)) / 100.0f;
-        });
-        float level = g_fakeBatteryLevel;
+        // 直接取当前值（随时间递减）。
+        // 不能在这里重复 dispatch_once 初始化，那会把已算好的起始值覆盖成固定值。
+        float level = bds_battery_level();
         if (level >= 0) {
-            [advanced appendFormat:@"\n  当前返回：%.0f%%", level * 100];
+            [advanced appendFormat:@"\n  当前返回：%.0f%%（开机起缓慢下降）", level * 100];
         }
     }
 
@@ -5641,6 +5729,7 @@ static void bds_initialize() {
         if (cfgBool(@"spoofBattery", NO)) {
             hookInst(cls, @selector(batteryLevel), (IMP)new_batteryLevel, &orig_batteryLevel);
             hookInst(cls, @selector(batteryState), (IMP)new_batteryState, &orig_batteryState);
+            hookInst(cls, @selector(batteryMonitoringEnabled), (IMP)new_batteryMonitoringEnabled, &orig_batteryMonitoringEnabled);
         }
 
         if (basicEnabled && cfgBool(@"spoofAdvertisingIdentifiers", NO)) {
