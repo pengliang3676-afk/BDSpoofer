@@ -25,6 +25,7 @@
 #import <mach/mach.h>
 #import <mach/vm_map.h>
 #import <dlfcn.h>
+#import <dirent.h>
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
 #import <sys/stat.h>
@@ -459,7 +460,7 @@ static void bfp_rebind_image(struct bfp_rebinding *rebindings, size_t nel,
     if (!symtab || !dysym || !linkedit) return;
 
     intptr_t slide_bias = slide - (intptr_t)linkedit->vmaddr;
-    nlist_64 *syms = (nlist_64 *)(symtab->symoff + slide_bias);
+    struct nlist_64 *syms = (struct nlist_64 *)(symtab->symoff + slide_bias);
     char *strs = (char *)(symtab->stroff + slide_bias);
     uint32_t *indirect = (uint32_t *)(dysym->indirectsymoff + slide_bias);
 
@@ -634,6 +635,8 @@ static NSString *bfp_report(void) {
 
 static UIWindow *g_win;
 static NSString *g_reportText;
+
+static void bfp_show_panel(void);   // 前向声明：下面的分类方法要用
 
 @interface UIButton (BFP)
 - (void)bfp_tap;
