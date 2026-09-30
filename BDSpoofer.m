@@ -239,6 +239,12 @@ static NSDictionary *BDSDefaultConfig(void) {
             // 时区固定按内地。默认开启，与“语言与地区”一起生效。
             @"spoofTimeZone": @YES,
             @"localTimeZone": @"Asia/Shanghai",
+            // 电池基准值：只有一键基础才换新，重开 App 不跳变。
+            // 0 表示尚未配置，运行时会自行随机一组并存档。
+            @"batteryBasePct": @0,
+            @"batteryFloorPct": @8,
+            @"batterySecondsPerPct": @180,
+            @"batteryBaseTime": @0,
             @"bootTimeOffsetSeconds": @0,
             @"deviceProfileName": @"iPhone SE (3rd generation)",
             @"systemVersion": @"15.4.1",
@@ -346,7 +352,7 @@ static void loadConfig() {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            // 9.30-18 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
+            // 9.30-19 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
             // （v189 迁移还会兜底强制关一次。）
             @"bypassJailbreakDetect": @NO
         }];
@@ -553,9 +559,9 @@ static void loadConfig() {
     BDSApplyInitialDefaults(merged, loaded);
     // 注意顺序：迁移必须放在 BDSApplyInitialDefaults 之后。
     // 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
-    // 写在它之前会被它设回 @YES（9.30-18 实测就是这个原因导致开关关不掉）。
+    // 写在它之前会被它设回 @YES（9.30-19 实测就是这个原因导致开关关不掉）。
     if (ver < 189) {
-        // 9.30-18：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
+        // 9.30-19：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
         // 老配置里这个键通常已存 @YES，光靠默认值救不了，必须强制写一次 @NO。
         // 用独立的版本号 189 是为了让已经处在 188 的配置也能被这次修正覆盖到，
         // 且只执行一次：之后用户在面板手动打开仍然有效。
@@ -1050,33 +1056,53 @@ static NSString *new_systemName(id self, SEL _cmd) {
 //
 // 完全按“距起始时刻经过的时间”计算，
 // 不依赖定时器或后台线程，结果单调且可重复。
-static volatile float g_fakeBatteryLevel = -1.0f;
-static CFAbsoluteTime g_batteryStartTime = 0;
-static float g_batteryFloor = 0.0f;        // 本机的下限（随机）
-static double g_batterySecondsPerPct = 0;  // 本机的下降速度（随机）
+// 用户要求：重开 App 时电量不能跳变，只有「一键基础」才换一组新参数。
+// 所以基准值（起始电量 / 下限 / 速度 / 基准时刻）都存进配置，
+// 运行时按“距基准时刻经过的时间”算出当前电量 —— 关掉 App 期间的时间同样计入，
+// 重开后接着往下走，不会跳回起始值。
+static volatile float g_fakeBatteryBasePct = -1.0f;   // 基准电量（0~1）
+static float g_batteryFloorPct = 0.08f;               // 下限（0~1）
+static double g_batterySecondsPerPct = 180.0;         // 每掉 1% 需要的秒数
+static CFAbsoluteTime g_batteryBaseTime = 0;          // 基准时刻
 static dispatch_once_t g_batteryOnce;
+
 static float bds_battery_level(void) {
     dispatch_once(&g_batteryOnce, ^{
-        // 起始 40~95%
-        NSUInteger startPct = 40 + arc4random_uniform(56);
-        // 下降速度：每 1% 需 100~280 秒（约 1.7~4.7 分钟）
-        g_batterySecondsPerPct = 100.0 + (double)arc4random_uniform(181);
-        // 下限：起始值下方 15~45 个点，且不低于 8%
-        NSUInteger span = 15 + arc4random_uniform(31);
-        NSInteger floorPct = (NSInteger)startPct - (NSInteger)span;
-        if (floorPct < 8) floorPct = 8;
-        g_batteryFloor = (float)floorPct / 100.0f;
-        g_fakeBatteryLevel = (float)startPct / 100.0f;
-        g_batteryStartTime = CFAbsoluteTimeGetCurrent();
+        double base = cfgInt(@"batteryBasePct", 0);
+        if (base <= 0) {
+            // 没配过（老配置或用户手填了 0）：给一组随机值并按当前时刻存档，
+            // 保证本次与后续重开都连续。
+            base = 40 + arc4random_uniform(56);
+            g_batteryFloorPct = (float)(MAX(8.0, base - (15 + arc4random_uniform(31)))) / 100.0f;
+            g_batterySecondsPerPct = 100.0 + (double)arc4random_uniform(181);
+            NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+            NSMutableDictionary *cfg = [g_config mutableCopy] ?: [NSMutableDictionary dictionary];
+            cfg[@"batteryBasePct"] = @((NSInteger)base);
+            cfg[@"batteryFloorPct"] = @((NSInteger)lroundf(g_batteryFloorPct * 100.0f));
+            cfg[@"batterySecondsPerPct"] = @((NSInteger)g_batterySecondsPerPct);
+            cfg[@"batteryBaseTime"] = @((long long)now);
+            if ([BDSConfigForPersistentStorage(cfg) writeToFile:configPath() atomically:YES]) {
+                g_config = [cfg copy];
+            }
+            g_fakeBatteryBasePct = (float)base / 100.0f;
+            g_batteryBaseTime = (CFAbsoluteTime)now - kCFAbsoluteTimeIntervalSince1970;
+        } else {
+            g_fakeBatteryBasePct = (float)base / 100.0f;
+            NSInteger fl = cfgInt(@"batteryFloorPct", 8);
+            g_batteryFloorPct = (float)MAX(1.0, MIN((double)fl, base)) / 100.0f;
+            NSInteger sp = cfgInt(@"batterySecondsPerPct", 180);
+            g_batterySecondsPerPct = (sp >= 20 && sp <= 3600) ? (double)sp : 180.0;
+            long long bt = (long long)cfgInt(@"batteryBaseTime", 0);
+            if (bt <= 0) bt = (long long)NSDate.date.timeIntervalSince1970;
+            g_batteryBaseTime = (CFAbsoluteTime)bt - kCFAbsoluteTimeIntervalSince1970;
+        }
     });
-    float start = g_fakeBatteryLevel;
-    double elapsed = CFAbsoluteTimeGetCurrent() - g_batteryStartTime;
+    double elapsed = CFAbsoluteTimeGetCurrent() - g_batteryBaseTime;
     if (elapsed < 0) elapsed = 0;
-    if (g_batterySecondsPerPct <= 0) g_batterySecondsPerPct = 180.0;
     float drop = (float)((NSUInteger)(elapsed / g_batterySecondsPerPct));
-    float level = start - drop / 100.0f;
-    if (level < g_batteryFloor) level = g_batteryFloor;
-    if (level > start) level = start;
+    float level = g_fakeBatteryBasePct - drop / 100.0f;
+    if (level < g_batteryFloorPct) level = g_batteryFloorPct;
+    if (level > g_fakeBatteryBasePct) level = g_fakeBatteryBasePct;
     return level;
 }
 static IMP orig_batteryLevel = NULL;
@@ -4251,6 +4277,18 @@ static NSMutableDictionary *BDSRandomBaseValuesForPair(NSDictionary *device,
     // “查不到本地 IP”比“查到 192.168.x.x”更可疑，且内网 IP 服务器看不到真的）。
     values[@"localIP"] = BDSRandomLanIP();
     [values addEntriesFromDictionary:BDSRandomCarrierValues()];
+    // 电池：只有一键基础才换新参数（用户要求重开 App 不跳变）。
+    // 起始 40~95%、下限在起始值下方 15~45 个点（不低于 8%）、每 1% 需 100~280 秒，
+    // 基准时刻取“现在”，所以换完就从这个电量开始往下走。
+    {
+        NSUInteger basePct = 40 + arc4random_uniform(56);
+        NSInteger floorPct = (NSInteger)basePct - (NSInteger)(15 + arc4random_uniform(31));
+        if (floorPct < 8) floorPct = 8;
+        values[@"batteryBasePct"] = @(basePct);
+        values[@"batteryFloorPct"] = @(floorPct);
+        values[@"batterySecondsPerPct"] = @(100 + arc4random_uniform(181));
+        values[@"batteryBaseTime"] = @((long long)NSDate.date.timeIntervalSince1970);
+    }
     return values;
 }
 
@@ -4541,7 +4579,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-18";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-19";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
