@@ -107,9 +107,14 @@
 #import <mach/mach.h>
 #import <SystemConfiguration/CaptiveNetwork.h>
 #import <SystemConfiguration/SystemConfiguration.h>
-// IOKit 电源接口：电池的另一条读取路径（IOPSCopyPowerSourcesInfo 等）
-#import <IOKit/ps/IOPowerSources.h>
-#import <IOKit/ps/IOPSKeys.h>
+// IOKit 电源接口：电池的另一条读取路径。
+// 注意：iOS SDK 里没有 IOKit/ps/IOPowerSources.h（那是 macOS 的头文件），
+// 所以这里手写函数类型声明，并在下面用 dlsym 现取函数地址（类似 fishhook 的做法）。
+// 字典键名直接用字面字符串，字面值与 IOPSKeys.h 的定义一致
+// （"Current Capacity" / "Is Charging" / "Power Source State" 等）。
+typedef CFTypeRef (*IOPSCopyFn)(void);
+typedef CFArrayRef (*IOPSListFn)(CFTypeRef);
+typedef CFDictionaryRef (*IOPSDescFn)(CFTypeRef, CFTypeRef);
 #import <CoreLocation/CoreLocation.h>
 #import <ifaddrs.h>
 #import <net/if_dl.h>
@@ -3596,9 +3601,9 @@ static NSString *bds_current_lan_ip(void) {
 // 部分代码不走 UIDevice.batteryLevel，而是直接问 IOKit 要电源信息。
 // 只改 UIDevice 而不改这里，会出现“两条路报不同电量”的矛盾，比不改还可疑。
 //
-// 只改描述字典里的容量与状态两个键，
+// 只改描述字典里的容量与状态几个键，
 // 其余字段（电池健康度、审查状态等）原样保留。
-static CFDictionaryRef (*orig_IOPSGetPowerSourceDescription)(CFTypeRef, CFTypeRef);
+static IOPSDescFn orig_IOPSGetPowerSourceDescription = NULL;
 
 static CFDictionaryRef bds_my_IOPSGetPowerSourceDescription(CFTypeRef blob, CFTypeRef ps) {
     CFDictionaryRef orig = orig_IOPSGetPowerSourceDescription
@@ -3757,6 +3762,10 @@ static int bds_my_dlopen_preflight(const char *path) {
 #pragma mark - C 函数 hook 安装（fishhook）
 
 static void installCHooks(void) {
+    // IOKit 的电源接口只有在 IOKit.framework 已加载时才存在于符号表里。
+    // 显式加载一次，保证下面的 rebinding 一定能找到它（否则钩子会静默失效）。
+    // 此时我们自己的 dlopen 钩子还没装好，所以这里就是系统实现。
+    dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
     struct bds_rebinding rebindings[] = {
         {"sysctlbyname", (void *)bds_my_sysctlbyname, (void **)&orig_sysctlbyname},
         {"uname", (void *)bds_my_uname, (void **)&orig_uname},
