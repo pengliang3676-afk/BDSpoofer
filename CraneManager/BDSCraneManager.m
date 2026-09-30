@@ -341,6 +341,20 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
         config[@"wifiSSID"] = BDSRandomCommonSSID();
         // 本地 IP 伪造一个常见内网地址（“查不到本地 IP”比“查到 192.168.x.x”更可疑）
         config[@"localIP"] = BDSRandomLanIP();
+        // 电池基准参数：与卐解规则一致 —— 只有一键基础才换新，重开 App 不跳变。
+        // 起始 40~95%、下限在起始值下方 15~45 个点（不低于 8%）、每 1% 需 100~280 秒。
+        {
+            NSUInteger basePct = 40 + arc4random_uniform(56);
+            NSInteger floorPct = (NSInteger)basePct - (NSInteger)(15 + arc4random_uniform(31));
+            if (floorPct < 8) floorPct = 8;
+            config[@"batteryBasePct"] = @(basePct);
+            config[@"batteryFloorPct"] = @(floorPct);
+            config[@"batterySecondsPerPct"] = @(100 + arc4random_uniform(181));
+            config[@"batteryBaseTime"] = @((long long)[NSDate date].timeIntervalSince1970);
+        }
+        // 时区固定内地（卐解侧的钩子读这两个键）
+        config[@"spoofTimeZone"] = @YES;
+        config[@"localTimeZone"] = @"Asia/Shanghai";
         NSArray<NSArray<NSDictionary *> *> *groups = BDSSettingGroups();
         for (NSString *key in BDSFirstEnabledKeys(groups[0], 6)) config[key] = @YES;
         for (NSString *key in BDSFirstEnabledKeys(groups[1], 3)) config[key] = @YES;
@@ -612,7 +626,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"卍解 1.0.2 9.30-19";
+    self.title = @"卍解 1.0.2 9.30-20";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];

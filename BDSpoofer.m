@@ -352,7 +352,7 @@ static void loadConfig() {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            // 9.30-19 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
+            // 9.30-20 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
             // （v189 迁移还会兜底强制关一次。）
             @"bypassJailbreakDetect": @NO
         }];
@@ -559,9 +559,9 @@ static void loadConfig() {
     BDSApplyInitialDefaults(merged, loaded);
     // 注意顺序：迁移必须放在 BDSApplyInitialDefaults 之后。
     // 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
-    // 写在它之前会被它设回 @YES（9.30-19 实测就是这个原因导致开关关不掉）。
+    // 写在它之前会被它设回 @YES（9.30-20 实测就是这个原因导致开关关不掉）。
     if (ver < 189) {
-        // 9.30-19：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
+        // 9.30-20：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
         // 老配置里这个键通常已存 @YES，光靠默认值救不了，必须强制写一次 @NO。
         // 用独立的版本号 189 是为了让已经处在 188 的配置也能被这次修正覆盖到，
         // 且只执行一次：之后用户在面板手动打开仍然有效。
@@ -1248,6 +1248,37 @@ static NSString *new_localeIdentifier(id self, SEL _cmd) {
     return cfgStr(@"localeIdentifier", @"zh_CN");
 }
 
+// preferredLanguages / currentLocale 之前没处理。
+// localeIdentifier 改了而 preferredLanguages 没改，会出现矛盾：
+// 地区自称 zh_CN，语言列表却是 ["en-US"] 之类。
+// 用户要求地区只用内地，所以这里统一返回简体中文。
+static IMP orig_preferredLanguages = NULL;
+static NSArray<NSString *> *new_preferredLanguages(id self, SEL _cmd) {
+    if (!cfgBool(@"spoofLocale", NO)) {
+        if (orig_preferredLanguages) {
+            return ((NSArray<NSString *> *(*)(id, SEL))orig_preferredLanguages)(self, _cmd);
+        }
+        return @[@"zh-Hans-CN"];
+    }
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
+    return @[@"zh-Hans-CN"];
+}
+
+static IMP orig_currentLocale = NULL;
+static NSLocale *new_currentLocale(id self, SEL _cmd) {
+    if (!cfgBool(@"spoofLocale", NO)) {
+        if (orig_currentLocale) {
+            return ((NSLocale *(*)(id, SEL))orig_currentLocale)(self, _cmd);
+        }
+        return nil;
+    }
+    BDS_DIAG_RECORD(g_diagLocaleCarrier, BDSDiagStateChanged);
+    // 用配置里的 localeIdentifier 构造，保证与 localeIdentifier 返回值一致
+    NSString *ident = cfgStr(@"localeIdentifier", @"zh_CN");
+    NSLocale *loc = [NSLocale localeWithLocaleIdentifier:ident];
+    return loc ?: [NSLocale localeWithLocaleIdentifier:@"zh_CN"];
+}
+
 #pragma mark - NSTimeZone Hook
 //
 // 之前完全没有处理时区：地区伪装了，时区还是真机的，两者会矛盾
@@ -1387,6 +1418,35 @@ static NSDictionary *new_attributesOfFileSystemForPath(id self, SEL _cmd, id pat
         ? ((FileSystemAttributesIMP)orig_attributesOfFileSystemForPath)(self, _cmd, path, error)
         : nil;
     if (!orig) {
+        BDS_DIAG_RECORD(g_diagScreenStorage, BDSDiagStatePassed);
+        return orig;
+    }
+    BDS_DIAG_RECORD(g_diagScreenStorage, BDSDiagStateChanged);
+    NSMutableDictionary *m = [orig mutableCopy];
+    long long diskSize = cfgInt(@"diskSize", 64) * 1024LL * 1024LL * 1024LL;
+    m[NSFileSystemSize] = @(diskSize);
+    m[NSFileSystemFreeSize] = @(diskSize / 2);
+    return m;
+}
+
+// attributesOfItemAtPath: 在指定路径是卷根目录时，也会带上容量键
+// （NSFileSystemSize / NSFileSystemFreeSize）。statfs 钩子覆盖不到这条，
+// 不补的话同一台设备会出现“两个磁盘总量”。
+static IMP orig_attributesOfItemAtPath = NULL;
+static NSDictionary *new_attributesOfItemAtPath(id self, SEL _cmd, id path, NSError **error) {
+    typedef NSDictionary *(*AttrsIMP)(id, SEL, NSString *, NSError **);
+    NSDictionary *orig = orig_attributesOfItemAtPath
+        ? ((AttrsIMP)orig_attributesOfItemAtPath)(self, _cmd, path, error) : nil;
+    if (!orig) {
+        BDS_DIAG_RECORD(g_diagScreenStorage, BDSDiagStatePassed);
+        return orig;
+    }
+    if (!cfgBool(@"spoofStorage", NO)) {
+        BDS_DIAG_RECORD(g_diagScreenStorage, BDSDiagStatePassed);
+        return orig;
+    }
+    // 只有卷级属性字典里才会出现这两个键；没有就说明不是卷查询，原样返回
+    if (!orig[NSFileSystemSize] && !orig[NSFileSystemFreeSize]) {
         BDS_DIAG_RECORD(g_diagScreenStorage, BDSDiagStatePassed);
         return orig;
     }
@@ -2772,6 +2832,27 @@ static int bds_my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
         }
     }
 
+    // 内存总量（hw.memsize，uint64）。
+    // NSProcessInfo.physicalMemory 已经被钩了，这条路不补的话，
+    // 同一台设备会出现“两个内存值”，比不改还显眼。
+    if (BDS_ATOMIC_GET(g_spoofSysctlC) && strcmp(name, "hw.memsize") == 0) {
+        BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStateChanged);
+        uint64_t fakeMem = (uint64_t)cfgInt(@"memorySize", 4096) * 1024ULL * 1024ULL;
+        size_t fakeLen = sizeof(uint64_t);
+        if (oldp == NULL) {
+            if (oldlenp) *oldlenp = fakeLen;
+            return 0;
+        }
+        if (*oldlenp < fakeLen) {
+            *oldlenp = fakeLen;
+            errno = ENOMEM;
+            return -1;
+        }
+        *(uint64_t *)oldp = fakeMem;
+        *oldlenp = fakeLen;
+        return 0;
+    }
+
     BDS_DIAG_RECORD(g_diagSysctl, BDSDiagStatePassed);
     return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
 }
@@ -3170,13 +3251,41 @@ static NSURL *new_containerURL(id self, SEL _cmd, NSString *groupIdentifier) {
 }
 
 #pragma mark - P4: 剪贴板保护
+//
+// 原来只在 App「非活动」状态才拦，等于没生效 —— 百度正常运行时就是活动状态，
+// 前台读取照样拿到内容。剪贴板是跨账号关联的经典手段，所以这里必须补上。
+//
+// 但也不能全拦：用户自己点粘贴会读不到内容。区分办法是「时间窗」：
+//   - App 刚进入前台的头几秒：几乎不可能是用户手点粘贴，一律返回空
+//     （自动化的剪贴板采集通常发生在启动/回到前台时）
+//   - 之后：放行，保证手动粘贴可用
+static const NSTimeInterval kBDSPasteboardSuppressWindow = 6.0;
 
 static BOOL bds_shouldBlockPasteboardRead(id pasteboard) {
     if (!cfgBool(@"spoofPasteboard", NO)) return NO;
     UIPasteboard *general = [UIPasteboard generalPasteboard];
     if (pasteboard != general) return NO;
-    // 前台读取通常来自用户主动粘贴；只阻止 App 非活动状态下读取通用剪贴板。
-    return UIApplication.sharedApplication.applicationState != UIApplicationStateActive;
+
+    UIApplication *app = UIApplication.sharedApplication;
+    // 非活动状态：一律拦（后台读取没有正当理由）
+    if (app.applicationState != UIApplicationStateActive) return YES;
+
+    // 活动状态但刚回到前台：在抑制窗口内也拦
+    static CFAbsoluteTime activeSince = 0;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        activeSince = CFAbsoluteTimeGetCurrent();
+        [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                       object:nil
+                                                        queue:NSOperationQueue.mainQueue
+                                                   usingBlock:^(NSNotification *n) {
+            (void)n;
+            activeSince = CFAbsoluteTimeGetCurrent();
+        }];
+    });
+    // 理论上只增不减，但保险起见不允许负值
+    if (activeSince <= 0) return NO;
+    return (CFAbsoluteTimeGetCurrent() - activeSince) < kBDSPasteboardSuppressWindow;
 }
 
 static IMP orig_pb_string = NULL;
@@ -3527,39 +3636,74 @@ static int bds_my_getifaddrs(struct ifaddrs **ifap) {
         BDS_DIAG_RECORD(g_diagLocalIP, BDSDiagStatePassed);
         return result;
     }
-    // 不再把地址标记为“不存在”，而是填入一个常见内网 IP。
+    // 不再把地址标记为“不存在”，而是填入常见内网 IP。
     // 理由：连上 Wi-Fi 的真实设备永远有本地 IP，“查不到”本身就不自然，
     // 而且几十台设备全是“无地址”又是一个整齐特征。内网 IP 服务器永远看不到真的，
     // 所以填假值不泄露任何东西（详见 BDSRandomLanIP 注释）。
     // 调用方仍可按原约定 freeifaddrs() 释放完整链表。
+    //
+    // 覆盖范围不只看 Wi-Fi（en0）：原来只处理 en0，导致 pdp_ip0（蜂窝）和
+    // utun*（VPN/代理隧道）仍返回真实地址 —— 百度枚举接口时会看到
+    // “en0 是内网 A、pdp_ip0 是内网 B、utun1 是隧道 C”，三个网段本身就是
+    // “这台设备在走代理”的特征。所以下面按接口类型分别处理。
     int modified = 0;
     for (struct ifaddrs *ifa = *ifap; ifa; ifa = ifa->ifa_next) {
         if (!ifa->ifa_name || !ifa->ifa_addr) continue;
-        if (strcmp(ifa->ifa_name, "en0") != 0) continue;
+        const char *n = ifa->ifa_name;
         sa_family_t family = ifa->ifa_addr->sa_family;
+        if (family != AF_INET && family != AF_INET6) continue;
+
+        // 回环（lo0）真实存在于每台设备，置空反而异常，保持原样。
+        if (strcmp(n, "lo0") == 0) continue;
+
+        BOOL isWiFi     = (strcmp(n, "en0") == 0);
+        BOOL isCellular = (strncmp(n, "pdp_ip", 6) == 0);
+        BOOL isTunnel   = (strncmp(n, "utun", 4) == 0) || (strncmp(n, "ipsec", 5) == 0);
+        BOOL isBridge   = (strncmp(n, "bridge", 6) == 0);
+        BOOL isAwdl     = (strncmp(n, "awdl", 4) == 0) || (strncmp(n, "llw", 3) == 0);
+        BOOL isHotspot  = (strncmp(n, "ap", 2) == 0 && strlen(n) > 2);
+
         if (family == AF_INET) {
-            struct sockaddr_in fake;
-            memset(&fake, 0, sizeof(fake));
-            fake.sin_len = sizeof(fake);
-            fake.sin_family = AF_INET;
-            fake.sin_addr.s_addr = g_localIPC;
-            memcpy(ifa->ifa_addr, &fake, sizeof(fake));
-            if (ifa->ifa_netmask && ifa->ifa_netmask->sa_family == AF_INET) {
-                struct sockaddr_in mask;
-                memset(&mask, 0, sizeof(mask));
-                mask.sin_len = sizeof(mask);
-                mask.sin_family = AF_INET;
-                mask.sin_addr.s_addr = htonl(0xFFFFFF00u);   // 255.255.255.0，家庭网段标准值
-                memcpy(ifa->ifa_netmask, &mask, sizeof(mask));
+            if (isWiFi) {
+                // Wi-Fi：填配置里的伪造地址
+                struct sockaddr_in fake;
+                memset(&fake, 0, sizeof(fake));
+                fake.sin_len = sizeof(fake);
+                fake.sin_family = AF_INET;
+                fake.sin_addr.s_addr = g_localIPC;
+                memcpy(ifa->ifa_addr, &fake, sizeof(fake));
+                if (ifa->ifa_netmask && ifa->ifa_netmask->sa_family == AF_INET) {
+                    struct sockaddr_in mask;
+                    memset(&mask, 0, sizeof(mask));
+                    mask.sin_len = sizeof(mask);
+                    mask.sin_family = AF_INET;
+                    mask.sin_addr.s_addr = htonl(0xFFFFFF00u);   // 255.255.255.0
+                    memcpy(ifa->ifa_netmask, &mask, sizeof(mask));
+                }
+                modified = 1;
+            } else if (isCellular || isTunnel || isBridge || isHotspot) {
+                // 蜂窝/隧道/热点：真实地址会暴露“在用流量或代理”，
+                // 而这些接口在只用 Wi-Fi 的普通设备上通常没有地址（未激活）。
+                // 置为未指定最接近“没在用”的真实状态。
+                ifa->ifa_addr->sa_family = AF_UNSPEC;
+                if (ifa->ifa_netmask) ifa->ifa_netmask->sa_family = AF_UNSPEC;
+                if (ifa->ifa_dstaddr) ifa->ifa_dstaddr->sa_family = AF_UNSPEC;
+                modified = 1;
+            } else if (isAwdl) {
+                // awdl/llw 是 Apple 私有链路（AirDrop/AirPlay），地址本来就无意义
+                ifa->ifa_addr->sa_family = AF_UNSPEC;
+                if (ifa->ifa_netmask) ifa->ifa_netmask->sa_family = AF_UNSPEC;
+                modified = 1;
             }
-            modified = 1;
-        } else if (family == AF_INET6) {
-            // IPv6 无法凭一个 v4 值伪造，保持“不可见”。
-            // 只有 IPv4、没有 IPv6，在双栈家庭网络里很常见，不算矛盾。
-            ifa->ifa_addr->sa_family = AF_UNSPEC;
-            if (ifa->ifa_netmask) ifa->ifa_netmask->sa_family = AF_UNSPEC;
-            if (ifa->ifa_dstaddr) ifa->ifa_dstaddr->sa_family = AF_UNSPEC;
-            modified = 1;
+        } else {   // AF_INET6
+            // IPv6 无法凭一个 v4 值伪造；一律置为未指定。
+            // 只有 IPv4、没有 IPv6，在家庭宽带里很常见，不算矛盾。
+            if (ifa->ifa_addr->sa_family == AF_INET6) {
+                ifa->ifa_addr->sa_family = AF_UNSPEC;
+                if (ifa->ifa_netmask) ifa->ifa_netmask->sa_family = AF_UNSPEC;
+                if (ifa->ifa_dstaddr) ifa->ifa_dstaddr->sa_family = AF_UNSPEC;
+                modified = 1;
+            }
         }
     }
     BDS_DIAG_RECORD(g_diagLocalIP, modified ? BDSDiagStateChanged : BDSDiagStatePassed);
@@ -3668,6 +3812,22 @@ static CFDictionaryRef bds_my_IOPSGetPowerSourceDescription(CFTypeRef blob, CFTy
 static CFDictionaryRef (*orig_CFNetworkCopySystemProxySettings)(void);
 static CFDictionaryRef (*orig_SCDynamicStoreCopyProxies)(SCDynamicStoreRef);
 
+// 代理姆指：这两个 API 按 CF 命名规则属于 Copy 系列，
+// 调用方会按“拥有 +1”处理并负责 release。
+// 所以必须返回一个 +1 的对象。
+// 用静态单例做到一次创建、永不释放，
+// 避免每次调用都漏一份字典。
+static CFDictionaryRef bds_empty_proxy_dict(void) {
+    static CFDictionaryRef empty;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        empty = CFDictionaryCreate(kCFAllocatorDefault, NULL, NULL, 0,
+                                   &kCFTypeDictionaryKeyCallBacks,
+                                   &kCFTypeDictionaryValueCallBacks);
+    });
+    return empty;
+}
+
 static CFDictionaryRef bds_my_CFNetworkCopySystemProxySettings(void) {
     if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofProxyC)) {
         BDS_DIAG_RECORD(g_diagProxy, BDSDiagStatePassed);
@@ -3675,9 +3835,7 @@ static CFDictionaryRef bds_my_CFNetworkCopySystemProxySettings(void) {
     }
     BDS_DIAG_RECORD(g_diagProxy, BDSDiagStateChanged);
     // 返回空字典，表示没有代理
-    return CFDictionaryCreate(NULL, NULL, NULL, 0,
-                              &kCFTypeDictionaryKeyCallBacks,
-                              &kCFTypeDictionaryValueCallBacks);
+    return bds_empty_proxy_dict();
 }
 
 static CFDictionaryRef bds_my_SCDynamicStoreCopyProxies(SCDynamicStoreRef store) {
@@ -3686,9 +3844,8 @@ static CFDictionaryRef bds_my_SCDynamicStoreCopyProxies(SCDynamicStoreRef store)
         return orig_SCDynamicStoreCopyProxies(store);
     }
     BDS_DIAG_RECORD(g_diagProxy, BDSDiagStateChanged);
-    return CFDictionaryCreate(NULL, NULL, NULL, 0,
-                              &kCFTypeDictionaryKeyCallBacks,
-                              &kCFTypeDictionaryValueCallBacks);
+    // 与上面同一个静态单例：Copy 系列要求 +1，但静态对象只创建一次，不会泄漏。
+    return bds_empty_proxy_dict();
 }
 
 #pragma mark - Q1: statfs/statvfs 磁盘剩余空间 Hook（fishhook）
@@ -4579,7 +4736,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-19";
+    page.title=@"卐解 1.8.1 UI1.3 9.30-20";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5804,6 +5961,9 @@ static void bds_initialize() {
         if (basicEnabled && cfgBool(@"spoofLocale", NO)) {
             cls = objc_getClass("NSLocale");
             hookInst(cls, @selector(localeIdentifier), (IMP)new_localeIdentifier, &orig_localeIdentifier);
+            // 语言列表与当前地区也要一起改，否则“地区 zh_CN、语言 en-US”自相矛盾
+            hookInst(cls, @selector(preferredLanguages), (IMP)new_preferredLanguages, &orig_preferredLanguages);
+            hookInst(cls, @selector(currentLocale), (IMP)new_currentLocale, &orig_currentLocale);
 
             // 时区跟随“语言与地区”一起开：地区伪装了而时区还是真机的，会自相矛盾。
             // 固定按内地（Asia/Shanghai），不做与伪装地区的联动（用户明确要求）。
@@ -5836,6 +5996,8 @@ static void bds_initialize() {
         if (basicEnabled && cfgBool(@"spoofStorage", NO)) {
             cls = objc_getClass("NSFileManager");
             hookInst(cls, @selector(attributesOfFileSystemForPath:error:), (IMP)new_attributesOfFileSystemForPath, &orig_attributesOfFileSystemForPath);
+            // 卷根目录的 attributesOfItemAtPath: 也会带容量键，一起处理避免两个磁盘值
+            hookInst(cls, @selector(attributesOfItemAtPath:error:), (IMP)new_attributesOfItemAtPath, &orig_attributesOfItemAtPath);
         }
 
         // 百度 SDK 设备标识 hook
