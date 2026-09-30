@@ -1,0 +1,38 @@
+name: Build Min Probe
+
+on:
+  push:
+    branches: ["diag/min-probe"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build min probe dylib
+        run: |
+          set -euo pipefail
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p out
+          for ARCH in arm64 arm64e; do
+            xcrun --sdk iphoneos clang -arch "$ARCH" -isysroot "$SDK" \
+              -miphoneos-version-min=15.0 -fobjc-arc -fblocks \
+              -Werror=return-type -Werror=implicit-function-declaration \
+              -dynamiclib -install_name @rpath/BDSMinProbe.dylib \
+              -framework Foundation -framework UIKit -framework CoreFoundation \
+              -framework CoreGraphics \
+              BDSMinProbe.m -o "out/BDSMinProbe_$ARCH.dylib"
+          done
+          lipo -create out/BDSMinProbe_arm64.dylib out/BDSMinProbe_arm64e.dylib \
+            -output out/BDSMinProbe.dylib
+          codesign --force --sign - --timestamp=none out/BDSMinProbe.dylib
+          lipo -info out/BDSMinProbe.dylib
+          codesign --verify --strict out/BDSMinProbe.dylib
+          shasum -a 256 out/BDSMinProbe.dylib | tee out/SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BDSMinProbe-2.0
+          path: |
+            out/BDSMinProbe.dylib
+            out/SHA256.txt
