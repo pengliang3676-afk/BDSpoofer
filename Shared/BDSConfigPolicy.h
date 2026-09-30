@@ -14,7 +14,11 @@ static NSArray<NSArray<NSDictionary *> *> *BDSSettingGroups(void) {
           @{@"key":@"spoofKeychain",@"name":@"Keychain 拦截",@"off":@YES},
           @{@"key":@"spoofAppGroup",@"name":@"App Group 隔离",@"off":@YES},
           @{@"key":@"spoofWebKitCookie",@"name":@"WebKit Cookie 过滤",@"off":@YES},
-          @{@"key":@"spoofUserAgent",@"name":@"自定义 User-Agent",@"off":@YES}],
+          @{@"key":@"spoofUserAgent",@"name":@"自定义 User-Agent",@"off":@YES},
+          // 9.30-23：反注入与防越狱检测性质不同，拆成独立开关。
+          // 前者防的是“发现你在改我”，后者是“伪装越狱状态”。
+          // 放在组末尾：避免被“一键基础打开前 3 项”的逻辑当成常规项而打开。
+          @{@"key":@"hideInjection",@"name":@"隐藏插件注入",@"off":@NO}],
         @[@{@"key":@"spoofWiFi",@"name":@"Wi-Fi 参数"},
           @{@"key":@"spoofLocalIP",@"name":@"本地 IP 参数"},
           @{@"key":@"spoofPasteboard",@"name":@"剪贴板保护"},
