@@ -52,7 +52,7 @@
 #import <stdlib.h>
 #import <time.h>
 
-static NSString * const BFPVersion = @"2.0";
+static NSString * const BFPVersion = @"2.2";
 
 #pragma mark - 记录器
 
@@ -167,12 +167,33 @@ static vm_address_t bfp_page_mask(void) {
     return (vm_address_t)(page - 1);
 }
 
+
+// 校验一个地址范围确实落在可读内存里。
+// 用途：strtab 位于 __LINKEDIT 内，n_strx 是未经校验的 32 位偏移，
+// 越界时 strcmp 会直接读到未映射内存并崩溃（实测崩在 _platform_strcmp）。
+static BOOL bfp_range_readable(const void *p, size_t len) {
+    if (!p || len == 0) return NO;
+    vm_address_t addr = (vm_address_t)p;
+    vm_size_t size = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object = MACH_PORT_NULL;
+    kern_return_t kr = vm_region_64(mach_task_self(), &addr, &size,
+                                    VM_REGION_BASIC_INFO_64,
+                                    (vm_region_info_t)&info, &count, &object);
+    if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+    if (kr != KERN_SUCCESS) return NO;
+    if (!(info.protection & VM_PROT_READ)) return NO;
+    return ((vm_address_t)p >= addr) && ((vm_address_t)p + len <= addr + size);
+}
+
 static void bfp_perform_rebinding_with_section(struct bfp_rebindings_entry *rebindings,
                                                bfp_section_t *section,
                                                intptr_t slide,
                                                bfp_nlist_t *symtab,
                                                uint32_t nsyms,
                                                char *strtab,
+                                               uint32_t strsize,
                                                uint32_t *indirect_symtab,
                                                uint32_t nindirectsyms) {
     uint32_t *indirect_symbol_indices = indirect_symtab + section->reserved1;
@@ -183,6 +204,8 @@ static void bfp_perform_rebinding_with_section(struct bfp_rebindings_entry *rebi
         pointer_count > nindirectsyms - section->reserved1) {
         return;
     }
+    // 间接符号表这一段的可读性：已在 bfp_rebind_symbols_for_image 入口整表校验过，
+    // 且上面已确认 reserved1 + pointer_count 不越界，这里无需再查（避免系统调用开销）。
 
     int protected_region = 0;
     for (uint32_t i = 0; i < pointer_count; i++) {
@@ -191,6 +214,13 @@ static void bfp_perform_rebinding_with_section(struct bfp_rebindings_entry *rebi
             symtab_index == (INDIRECT_SYMBOL_LOCAL | INDIRECT_SYMBOL_ABS)) continue;
         if (symtab_index >= nsyms) continue;
         uint32_t strtab_offset = symtab[symtab_index].n_un.n_strx;
+        // 关键保护（本次闪退的直接原因）：
+        // n_strx 是未经校验的 32 位偏移，越界会让 strcmp 读到未映射内存，
+        // 实测崩溃栈就是 _platform_strcmp -> 本函数。
+        // 用整数边界判断即可 —— strtab[0, strsize) 已在入口整体校验过可读，
+        // 这里不能再用 vm_region（那是系统调用，每符号一次会让 App 卡死）。
+        if (strtab_offset >= strsize) continue;
+        if (strsize - strtab_offset < 2) continue;
         char *symbol_name = strtab + strtab_offset;
         if (!symbol_name[0] || !symbol_name[1]) continue;
         for (struct bfp_rebindings_entry *cur = rebindings; cur; cur = cur->next) {
@@ -251,6 +281,12 @@ static void bfp_rebind_symbols_for_image(struct bfp_rebindings_entry *rebindings
     char *strtab = (char *)(linkedit_base + symtab_cmd->stroff);
     uint32_t *indirect_symtab = (uint32_t *)(linkedit_base + dysymtab_cmd->indirectsymoff);
 
+    // 整表范围先校验一次：任何一张表整体不可读，这个镜像直接跳过。
+    if (!bfp_range_readable(symtab, (size_t)symtab_cmd->nsyms * sizeof(bfp_nlist_t))) return;
+    if (!bfp_range_readable(strtab, symtab_cmd->strsize)) return;
+    if (!bfp_range_readable(indirect_symtab,
+                            (size_t)dysymtab_cmd->nindirectsyms * sizeof(uint32_t))) return;
+
     cur = (uintptr_t)header + sizeof(bfp_mach_header_t);
     for (uint32_t i = 0; i < header->ncmds; i++, cur += cur_seg_cmd->cmdsize) {
         cur_seg_cmd = (bfp_segment_command_t *)cur;
@@ -266,6 +302,7 @@ static void bfp_rebind_symbols_for_image(struct bfp_rebindings_entry *rebindings
             if (t == S_LAZY_SYMBOL_POINTERS || t == S_NON_LAZY_SYMBOL_POINTERS) {
                 bfp_perform_rebinding_with_section(rebindings, sect, slide, symtab,
                                                    symtab_cmd->nsyms, strtab,
+                                                   symtab_cmd->strsize,
                                                    indirect_symtab, dysymtab_cmd->nindirectsyms);
             }
         }

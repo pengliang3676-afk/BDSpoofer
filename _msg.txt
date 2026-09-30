@@ -1,29 +1,29 @@
-BDSMinProbe 2.0: 推倒重来 —— 最小可用只读探针
+BDSMinProbe 2.2: 修 strcmp 崩溃（符号名偏移越界）
 
-【背景】FullProbe 1.2~1.5 连续闪退。两次崩溃日志（用 pymobiledevice3 从设备
-直接拉取）分别指向两个不同缺陷：
-  1. 自写 fishhook 遍历了 __AUTH/__AUTH_CONST —— arm64e 上这些段的 GOT 指针
-     带 PAC 签名，写入未签名指针导致认证失败崩溃
-  2. 通用 hook 对返回值调 description/isKindOfClass —— 指针可能已失效或被 PAC，
-     任何 objc_msgSend 都会先 retain，一步就炸（objc_retain SIGSEGV）
-根因是功能堆到 8 层，每层都埋了隐患。
+第三次崩溃日志（pymobiledevice3 拉取）：
+  EXC_BAD_ACCESS KERN_INVALID_ADDRESS at 0x000000000000002f
+  #0 _platform_strcmp
+  #1 bfp_perform_rebinding_with_section
+  #2 bfp_rebind_symbols_for_image
+  #3 bfp_rebind_cb
+  #7 dlopen_from <- NSBundle 加载无障碍设置包时触发
 
-【本版原则】只做不会出错的操作，先确保能稳定运行。
-  A. fishhook 直接复用主插件验证过的实现，不自己写
-  B. 对象返回值先用 vm_region_64 验证地址可读，再 CFRetain，再取描述；
-     校验不通过只记录「指针不可读」，绝不触碰
-  C. 所有 C hook 都判空原函数指针
-  D. bfp_rec 内部不调用任何被 hook 的函数；递归锁 + 递归守卫
-  E. 启动进度标记写到 Documents/probe_marker/，万一再崩可定位阶段
+即 strcmp 拿到了坏指针。对照主插件同函数逐行比对，逻辑等价 ——
+说明这是两边共有的一个未防护点，只是触发条件不同：
 
-【覆盖】只保留回答关键问题的最小集合（6 项，原为 8 层）
-  L1 硬件     sysctlbyname / uname（机型、内存、OS 版本、CPU）
-  L2 文件     stat/lstat/access/fopen/opendir（越狱路径探测，标记命中项）
-  L3 网络     getifaddrs（接口、本地 IP、MAC）
-  L4 动态库   _dyld_image_count / _dyld_get_image_name（注入检测）
-  L5 时间     time / gettimeofday / CFAbsoluteTimeGetCurrent
-  L6 getter   UIDevice / NSProcessInfo / NSLocale / NSTimeZone 关键项
+  char *symbol_name = strtab + strtab_offset;
+  strcmp(&symbol_name[1], ...)
 
-【本版不做】传感器、百度自有风控方法、task_info/host_statistics、
-mach_absolute_time —— 这些是之前崩溃的嫌疑或与核心问题无关，
-等最小版稳定运行后再按需加回。
+strtab 位于 __LINKEDIT 内，而 n_strx 是**未经校验的 32 位偏移**。
+越界时 strcmp 直接读未映射内存 -> 崩。主插件在 BaiduLiteApp 主二进制上
+没触发（符号表布局规整），而探针在 dlopen 无障碍包时触发了。
+
+修法：
+  1. 入口处对 symtab / strtab / indirect_symtab 三张表各做一次
+     vm_region_64 可读性校验（整表一次性，不是每符号）
+  2. 每符号改为纯整数边界判断：strtab_offset >= strsize 跳过；
+     strsize - strtab_offset < 2 跳过
+     —— 不能用 vm_region，那是系统调用，几十万次会让 App 卡死
+  3. bfp_perform_rebinding_with_section 增加 strsize 参数
+
+版本 2.0 -> 2.2（2.1 是中间态，已就地修正）。
