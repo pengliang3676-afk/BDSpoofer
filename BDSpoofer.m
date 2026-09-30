@@ -271,10 +271,15 @@ static BOOL bds_route_lookup_default_ifname(char *out, size_t outLen) {
 //   3) utun*    —— 代理 / VPN 隧道
 //   4) ipsec*   —— 其他隧道
 // 回环与 0.0.0.0 一律跳过。
+// getifaddrs 原函数指针：定义在文件后部的 fishhook 段，此处前向声明。
+// 网卡挑选等辅助函数必须走原函数，否则会被自己的钩子拦到（套娃）。
+static int (*orig_getifaddrs)(struct ifaddrs **);
+
 static BOOL bds_pick_iface_by_ipv4(char *out, size_t outLen) {
     if (!out || outLen < 2) return NO;
+    int (*fn)(struct ifaddrs **) = orig_getifaddrs ? orig_getifaddrs : getifaddrs;
     struct ifaddrs *list = NULL;
-    if (getifaddrs(&list) != 0 || !list) return NO;
+    if (fn(&list) != 0 || !list) return NO;
 
     const char *prefixes[] = {"en", "pdp_ip", "utun", "ipsec", NULL};
     char best[IFNAMSIZ] = {0};
@@ -483,7 +488,8 @@ static void bds_update_c_cache(void) {
             // 路由表给的名字也要验证它真的有 IPv4，否则继续往下兜底
             BOOL hasV4 = NO;
             struct ifaddrs *chk = NULL;
-            if (getifaddrs(&chk) == 0 && chk) {
+            int (*cfn)(struct ifaddrs **) = orig_getifaddrs ? orig_getifaddrs : getifaddrs;
+            if (cfn(&chk) == 0 && chk) {
                 for (struct ifaddrs *ifa = chk; ifa; ifa = ifa->ifa_next) {
                     if (!ifa->ifa_name || !ifa->ifa_addr) continue;
                     if (strcmp(ifa->ifa_name, nm) != 0) continue;
@@ -3705,7 +3711,49 @@ static CFDictionaryRef bds_my_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 
 #pragma mark - P2: 本地 IP Hook（fishhook）
 
-static int (*orig_getifaddrs)(struct ifaddrs **);
+// getifaddrs 原函数指针。定义在下面的 fishhook 段，此处前向声明，
+
+// ---- 网卡自动纠正 ----
+//
+// 实测这台机器（开代理）的实际接口分布：
+//     lo0      127.0.0.1
+//     pdp_ip0  10.81.85.2      <-- 全机唯一持有 IPv4 的网卡
+//     en0      只有链路层(fam18)，没有 IPv4
+//     utun0/1/2 只有 IPv6
+// 原先只在配置重载时挑一次网卡，装入插件后没重载就会一直停在 en0。
+// 这里改成"每次调用都校验"：当前认定的网卡若没有 IPv4，立刻重挑一张。
+
+static BOOL bds_iface_has_ipv4(const char *name) {
+    if (!name || !name[0]) return NO;
+    // 用原函数直连：本函数会被 getifaddrs 钩子间接调用，再走钩子就成了套娃
+    int (*fn)(struct ifaddrs **) = orig_getifaddrs ? orig_getifaddrs : getifaddrs;
+    struct ifaddrs *list = NULL;
+    if (fn(&list) != 0 || !list) return NO;
+    BOOL ok = NO;
+    for (struct ifaddrs *ifa = list; ifa; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_name || !ifa->ifa_addr) continue;
+        if (strcmp(ifa->ifa_name, name) != 0) continue;
+        if (ifa->ifa_addr->sa_family != AF_INET) continue;
+        struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
+        if (sin->sin_addr.s_addr != 0 &&
+            sin->sin_addr.s_addr != htonl(INADDR_LOOPBACK)) { ok = YES; break; }
+    }
+    freeifaddrs(list);
+    return ok;
+}
+
+static void bds_ensure_primary_iface(void) {
+    if (bds_iface_has_ipv4(g_primaryIfName)) return;      // 当前这张还有效，不动
+    char nm[IFNAMSIZ] = {0};
+    if (bds_pick_iface_by_ipv4(nm, sizeof(nm))) {          // 枚举找一张有 IPv4 的
+        snprintf(g_primaryIfName, sizeof(g_primaryIfName), "%s", nm);
+        return;
+    }
+    if (bds_route_lookup_default_ifname(nm, sizeof(nm))) { // 再退回路由表
+        snprintf(g_primaryIfName, sizeof(g_primaryIfName), "%s", nm);
+    }
+}
+
 
 static int bds_my_getifaddrs(struct ifaddrs **ifap) {
     int result = orig_getifaddrs(ifap);
@@ -3722,6 +3770,8 @@ static int bds_my_getifaddrs(struct ifaddrs **ifap) {
     // 而且几十台设备全是“无地址”又是一个整齐特征。内网 IP 服务器永远看不到真的，
     // 所以填假值不泄露任何东西（详见 BDSRandomLanIP 注释）。
     // 调用方仍可按原约定 freeifaddrs() 释放完整链表。
+    // 每次进入都确认网卡仍然有效，避免插件装入后一直停在没地址的网卡上
+    bds_ensure_primary_iface();
     int modified = 0;
     for (struct ifaddrs *ifa = *ifap; ifa; ifa = ifa->ifa_next) {
         if (!ifa->ifa_name || !ifa->ifa_addr) continue;
@@ -5733,6 +5783,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
 
     // 本地 IP：真值直接问内核（绕过钩子），当前值走 getifaddrs（会被钩子改）
     NSString *realLocalIP = bds_real_lan_ip();
+    bds_ensure_primary_iface();
     NSString *currentLocalIP = bds_current_lan_ip();
     // 顺便标出当前认定的主网卡，便于判断钩子改的是哪张
     if (g_primaryIfName[0]) {
