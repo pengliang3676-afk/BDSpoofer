@@ -28,6 +28,8 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
+#import <Photos/Photos.h>
+#import <PhotosUI/PhotosUI.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <mach-o/dyld.h>
@@ -51,7 +53,7 @@
 #import <stdlib.h>
 #import <time.h>
 
-static NSString * const BFPVersion = @"4.1";
+static NSString * const BFPVersion = @"4.3";
 
 #pragma mark - 记录器
 
@@ -630,6 +632,61 @@ static void bfp_install_getters(void) {
 // 【为什么写多份】App 沙盒 Documents 需要 Filza 才能取；
 // 而 /var/mobile/Media/ 是 AFC 可访问区（pymobiledevice3 afc pull 直接能拉），
 // 越狱设备上 App 通常有权限写那里。多写几处，取到一份即可。
+
+#pragma mark - 把报告存进相册（免 Filza、免手工转发）
+
+// 为什么走相册：AFC 的根是 /var/mobile/Media，App 沙盒不在里面，
+// 沙盒里的 txt 我在电脑端读不到。而「照片」就在 /var/mobile/Media/DCIM/ 下，
+// AFC 能读 —— 把报告做成图片存进相册，我就能直接拉走。
+static UIImage *bfp_render_text_image(NSString *txt) {
+    UIFont *font = [UIFont monospacedSystemFontOfSize:9 weight:UIFontWeightRegular];
+    CGFloat w = 1400.0, pad = 12.0;
+    NSDictionary *attrs = @{ NSFontAttributeName: font,
+                             NSForegroundColorAttributeName: UIColor.blackColor };
+
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    for (NSString *ln in [txt componentsSeparatedByString:@"\n"]) {
+        if (ln.length <= 150) { [lines addObject:ln]; continue; }
+        NSUInteger i = 0;
+        while (i < ln.length) {
+            NSUInteger n = MIN((NSUInteger)150, ln.length - i);
+            [lines addObject:[ln substringWithRange:NSMakeRange(i, n)]];
+            i += n;
+        }
+    }
+    CGFloat lh = ceil(font.lineHeight) + 1;
+    CGFloat h = pad * 2 + lh * lines.count;
+    if (h > 7000) h = 7000;
+    if (h < 300) h = 300;
+
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(w, h), YES, 1.0);
+    [[UIColor whiteColor] setFill];
+    UIRectFill(CGRectMake(0, 0, w, h));
+    CGFloat y = pad;
+    for (NSString *ln in lines) {
+        if (y + lh > h - pad) break;
+        [ln drawAtPoint:CGPointMake(pad, y) withAttributes:attrs];
+        y += lh;
+    }
+    UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return img;
+}
+
+// 用 UIActivityViewController 保存到相册。
+// 选「存储图像」即可写入 /var/mobile/Media/DCIM/，AFC 能读到。
+static void bfp_save_image_to_photos(UIImage *img, UIViewController *presenter) {
+    if (!img || !presenter) return;
+    UIActivityViewController *av =
+        [[UIActivityViewController alloc] initWithActivityItems:@[img] applicationActivities:nil];
+    // iPad 需要 popover 锚点
+    av.popoverPresentationController.sourceView = presenter.view;
+    av.popoverPresentationController.sourceRect =
+        CGRectMake(presenter.view.bounds.size.width / 2,
+                   presenter.view.bounds.size.height / 2, 1, 1);
+    [presenter presentViewController:av animated:YES completion:nil];
+}
+
 static NSArray<NSString *> *bfp_write_file(NSString *txt) {
     NSMutableArray *written = [NSMutableArray array];
     NSString *name = [NSString stringWithFormat:@"minprobe_%.0f.txt",
@@ -639,10 +696,15 @@ static NSArray<NSString *> *bfp_write_file(NSString *txt) {
     NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
                                                          NSUserDomainMask, YES).firstObject;
     if (docs) [dirs addObject:docs];
-    // AFC 可读区（AFC 根就是 /var/mobile/Media）
+    // AFC 可读区候选。App 沙盒通常写不进去，所以多试几个位置：
+    //   /tmp 与 /var/tmp 在越狱设备上常与 AFC 区互通（/var 是 /private/var 的符号链接）
+    [dirs addObject:@"/tmp"];
+    [dirs addObject:@"/var/tmp"];
     [dirs addObject:@"/var/mobile/Media/DCIM"];
     [dirs addObject:@"/var/mobile/Media/Books"];
     [dirs addObject:@"/var/mobile/Media"];
+    [dirs addObject:@"/var/mobile/Documents"];
+    [dirs addObject:NSHomeDirectory()];
 
     NSFileManager *fm = [NSFileManager defaultManager];
     for (NSString *d in dirs) {
@@ -855,6 +917,12 @@ static void bfp_show_panel(void) {
         [b2 addAction:[UIAlertAction actionWithTitle:@"\u597d"
                                               style:UIAlertActionStyleCancel handler:nil]];
         [top presentViewController:b2 animated:YES completion:nil];
+    }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"\u5b58\u76f8\u518c" style:UIAlertActionStyleDefault
+                                       handler:^(UIAlertAction *x) {
+        (void)x;
+        UIImage *img = bfp_render_text_image(txt);
+        bfp_save_image_to_photos(img, top);
     }]];
     [a addAction:[UIAlertAction actionWithTitle:@"\u590d\u5236" style:UIAlertActionStyleDefault
                                        handler:^(UIAlertAction *x) {

@@ -1,30 +1,14 @@
-BDSMinProbe 4.0: 一次性到位 —— 把此前确认的全部缺陷一次修完
+BDSMinProbe 4.3: 报告可存相册（免 Filza、免手工转发）
 
-不再逐版试错。以下每一项都有实测或崩溃日志依据：
+问题：AFC 服务的根固定在 /var/mobile/Media，App 沙盒不在其中，
+沙盒里的 txt 在电脑端读不到。实测 AFC 递归搜遍全区 174 项，0 条命中，
+确认 App 写不进 /var/mobile/Media（沙盒限制）。
 
-【崩溃类】
- 1. fishhook 只扫 __DATA / __DATA_CONST。
-    __AUTH/__AUTH_CONST 的 GOT 指针在 arm64e 上带 PAC 签名，
-    写入未签名指针会在调用时认证失败崩溃。（第 1 次崩溃）
- 2. 不注册 _dyld_register_func_for_add_image 回调。
-    该回调在 dlopen 执行中、dyld 持锁时触发；在那里做系统调用会崩
-    （第 3、4 次崩溃同栈：_platform_strcmp <- bfp_perform_rebinding_with_section
-     <- bfp_rebind_cb <- dlopen_from）。要 hook 的 libsystem 函数启动时
-    已全部加载，构造阶段扫一遍已加载镜像即可。
- 3. 符号名偏移做纯算术边界校验：strsize 边界 + __LINKEDIT 运行区间，
-    零系统调用。（第 3、4 次崩溃的直接原因）
- 4. C hook 全部判空原函数指针。
- 5. 对象返回值先 vm_region 验证地址可读，再 CFRetain，再取描述。
-    绝不对可能失效/被 PAC 的指针发消息。（第 2 次崩溃：objc_retain）
- 6. bfp_rec 内不调用任何被 hook 的函数；递归锁 + 递归守卫。
-    （第 1 版的自死锁）
+解法：报告做成图片存进相册 —— 照片就在 /var/mobile/Media/DCIM/ 下，AFC 能读。
+  - 新增 bfp_render_text_image：把报告文本渲染成 PNG（等宽字体，自动折行）
+  - 新增 bfp_save_image_to_photos：用 UIActivityViewController 保存到相册
+    （选「存储图像」即写入 DCIM，之后电脑端 afc pull 直接取走）
+  - 面板新增「存相册」按钮
+  - 写入目标也扩展为多个候选目录，哪个成功算哪个
 
-【UI 类】
- 7. 悬浮按钮用「只有按钮大小」的独立 UIWindow（72x72）—— 关键改动。
-    前几版用全屏窗口，无论怎么写 hitTest 都会吞掉整屏触摸
-    （3.1 实测：悬浮窗在，但 App 完全点不动）。
-    窗口只覆盖按钮那一小块，窗口外的触摸根本不会命中它，天然穿透。
- 8. 拖动 = 移动窗口本身（标准做法），不再移动按钮。
- 9. 窗口层级 10000000 压过百度开屏/广告窗口，2 秒心跳维持。
-
-自检 16 项全通过（含反向检查：无 add_image 注册、无 hitTest 依赖）。
+版本 4.1 -> 4.3（4.2 为中间态）。
