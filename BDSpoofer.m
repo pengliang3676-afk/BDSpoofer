@@ -3073,24 +3073,20 @@ static BOOL bds_dyld_hide_on(void) {
 }
 
 static uint32_t bds_my_dyld_image_count(void) {
-    uint32_t real = orig_dyld_image_count ? orig_dyld_image_count() : 0;
+    if (!orig_dyld_image_count) return _dyld_image_count();
+    uint32_t real = orig_dyld_image_count();
     if (!bds_dyld_hide_on()) return real;
     bds_build_hide_table();
-    if (g_hideCount <= 0) return real;
+    if (g_hideCount <= 0 || (uint32_t)g_hideCount >= real) return real;
     BDS_DIAG_RECORD(g_diagDyld, BDSDiagStateChanged);
     return real - (uint32_t)g_hideCount;
 }
 
 static const char *bds_my_dyld_get_image_name(uint32_t image_index) {
-    if (!bds_dyld_hide_on()) {
-        BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
-        return orig_dyld_get_image_name(image_index);
-    }
+    if (!orig_dyld_get_image_name) return NULL;
+    if (!bds_dyld_hide_on()) return orig_dyld_get_image_name(image_index);
     bds_build_hide_table();
-    if (g_hideCount <= 0) {
-        BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
-        return orig_dyld_get_image_name(image_index);
-    }
+    if (g_hideCount <= 0) return orig_dyld_get_image_name(image_index);
     BDS_DIAG_RECORD(g_diagDyld, BDSDiagStateChanged);
     return orig_dyld_get_image_name((uint32_t)bds_visible_to_real((int)image_index));
 }
@@ -3109,9 +3105,11 @@ static void bds_dyld_diag(uint32_t *rawCount, uint32_t *shownCount,
     uint32_t raw = orig_dyld_image_count ? orig_dyld_image_count() : _dyld_image_count();
     if (rawCount) *rawCount = raw;
     BOOL inRaw = NO;
-    for (uint32_t i = 0; i < raw; i++) {
-        const char *nm = _dyld_get_image_name(i);
-        if (bds_should_hide_image(nm)) { inRaw = YES; break; }
+    if (orig_dyld_get_image_name) {
+        for (uint32_t i = 0; i < raw; i++) {
+            const char *nm = orig_dyld_get_image_name(i);   // 用原函数，绕开钩子
+            if (bds_should_hide_image(nm)) { inRaw = YES; break; }
+        }
     }
     if (seenRaw) *seenRaw = inRaw;
     uint32_t shown = _dyld_image_count();
@@ -5801,8 +5799,8 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
     [advanced appendFormat:@"\n越狱绕过：%@", cfgBool(@"bypassJailbreakDetect", NO) ? @"开" : @"关"];
     if (cfgBool(@"bypassJailbreakDetect", NO)) {
         // B: 镜像名过滤自检
-        if (orig_dyld_get_image_name) {
-            uint32_t count = _dyld_image_count();
+        if (orig_dyld_get_image_name && orig_dyld_image_count) {
+            uint32_t count = orig_dyld_image_count();   // 用真实数量，避免与钩子后的下标混淆
             int suspicious = 0;
             for (uint32_t i = 0; i < count; i++) {
                 const char *orig = orig_dyld_get_image_name(i);
