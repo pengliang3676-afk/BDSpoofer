@@ -330,9 +330,26 @@ static BOOL BDSBootOffsetSane(NSInteger v) {
     return v >= 86400 && v <= 365 * 86400;
 }
 
-// 开机时间伪装：偏移量缓存。钩子函数里只做加法，不读配置、不加锁。
-static double g_bootOffsetSeconds = 0;
-static double g_lastRealUptime = 0;
+// 开机时间伪装：缓存。钩子函数里只做加法，不读配置、不加锁。
+static double g_bootOffsetSeconds = 0;    // 配置里的偏移（天→秒）
+static double g_lastRealUptime = 0;       // 最近一次真实 systemUptime
+static double g_realSystemUptime = 0;     // 真实"清醒时长"，启动时取一次
+static double g_uptimeAddOffset = 0;      // 加到清醒时长上的偏移，使两条路一致
+
+// NSProcessInfo.systemUptime 用的是 mach_absolute_time，语义是"设备清醒时长"，
+// 设备休眠时不走；而 (当前时间 − 开机时刻) 是"墙钟时长"。两者天然差一个累计休眠时长。
+// 自检面板实测：墙钟 58 天 21 小时，清醒 37 天 17 小时，差 21 天 4 小时 —— 就是休眠时间。
+// 因此不能用同一个 offset 同时套两条路，必须按清醒时长的口径反推。
+static double bds_wall_uptime_now(void) {
+    struct timeval bt = {0, 0};
+    size_t len = sizeof(bt);
+    int (*rawSysctl)(const char *, void *, size_t *, void *, size_t) =
+        orig_sysctlbyname ? orig_sysctlbyname : sysctlbyname;
+    if (rawSysctl("kern.boottime", &bt, &len, NULL, 0) == 0 && bt.tv_sec > 0) {
+        return NSDate.date.timeIntervalSince1970 - (NSTimeInterval)bt.tv_sec;
+    }
+    return 0;
+}
 
 static void bds_update_c_cache(void) {
     NSString *v;
@@ -1287,7 +1304,8 @@ static NSTimeInterval new_systemUptime(id self, SEL _cmd) {
         return real;
     }
     BDS_DIAG_RECORD(g_diagProcess, BDSDiagStateChanged);
-    return real + g_bootOffsetSeconds;
+    // 目标：与 kern.boottime 那条路一致（真清醒时长 + 偏移）。
+    return real + g_uptimeAddOffset;
 }
 
 #pragma mark - NSLocale Hook
@@ -5529,27 +5547,29 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
     //   路A sysctl  kern.boottime   -> 开机时刻（绝对时间）
     //   路B NSProcessInfo.systemUptime -> 已运行秒数（相对时长）
     // 两者本质是同一事实：当前时间 − 开机时刻 = 已运行秒数。
-    NSString *realUptimeText = @"(未取到)";
-    NSString *fakeUptimeText = @"(未启用)";
+    NSString *bootRealText = @"(未取到)";
+    NSString *bootFakeText = @"(未启用)";
     NSString *bootConsistent = @"—";
     {
-        // 真值：绕过钩子直接问内核
-        NSTimeInterval realUp = 0;
-        struct timeval bt = {0, 0};
-        size_t btLen = sizeof(bt);
-        int (*rawSysctl)(const char *, void *, size_t *, void *, size_t) =
-            orig_sysctlbyname ? orig_sysctlbyname : sysctlbyname;
-        if (rawSysctl("kern.boottime", &bt, &btLen, NULL, 0) == 0 && bt.tv_sec > 0) {
-            realUp = NSDate.date.timeIntervalSince1970 - (NSTimeInterval)bt.tv_sec;
+        // 两条路各自的口径要分清：
+        //   墙钟时长 = 当前时间 − 开机时刻            （kern.boottime 那条路）
+        //   清醒时长 = systemUptime                   （休眠不走）
+        // 二者天然差一个累计休眠时长，所以不能用同一个数值比较。
+        // 正确的比较对象：App 从 systemUptime 读到的值，应当等于
+        //                 真实清醒时长 + g_uptimeAddOffset
+        NSTimeInterval wallUp = bds_wall_uptime_now();
+        NSTimeInterval realSysUp = 0;
+        if (orig_systemUptime) {
+            realSysUp = ((NSTimeInterval (*)(id, SEL))orig_systemUptime)(
+                NSProcessInfo.processInfo, @selector(systemUptime));
         }
-        realUptimeText = bds_format_duration(realUp);
+        bootRealText = [NSString stringWithFormat:@"墙钟 %@ / 清醒 %@",
+                        bds_format_duration(wallUp), bds_format_duration(realSysUp)];
 
         if (cfgBool(@"spoofBootTime", NO)) {
-            // 假值：走正常路径（会被钩子改）
-            NSTimeInterval fakeUp = NSProcessInfo.processInfo.systemUptime;
-            fakeUptimeText = bds_format_duration(fakeUp);
-            // 一致性：路B（假运行时长）应当约等于 路A 推导出的运行时长 + 偏移
-            NSTimeInterval expect = realUp + (NSTimeInterval)cfgInt(@"bootTimeOffsetSeconds", 0);
+            NSTimeInterval fakeUp = NSProcessInfo.processInfo.systemUptime;   // 会被钩子改
+            bootFakeText = bds_format_duration(fakeUp);
+            NSTimeInterval expect = realSysUp + g_uptimeAddOffset;
             bootConsistent = (fabs(fakeUp - expect) < 120) ? @"是" : @"否（两条路对不上）";
         }
     }
@@ -5571,7 +5591,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
          @"时区\n原始 %@\n配置 %@\n当前 %@\n\n"
          @"Wi-Fi SSID\n原始 %@\n配置 %@\n当前 %@\n\n"
          @"本地 IP\n原始 %@\n配置 %@\n当前 %@\n\n"
-         @"开机时间\n真机已运行 %@\n配置偏移 %@\nApp 实际读到 %@\n两条路一致 %@",
+         @"开机时间\n真机 %@\n配置偏移 %@\nApp 实际读到 %@\n两条路一致 %@",
         cfgBool(@"enabled", NO) ? @"基础功能已开启" : @"基础功能已关闭",
         realVersion, cfgStr(@"systemVersion", @"15.4.1"), cfgStr(@"systemBuild", @"19E258"), currentVersion,
         realName, cfgStr(@"deviceName", @"iPhone"), currentName,
@@ -5585,7 +5605,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
         realTimeZone, cfgStr(@"localTimeZone", @"Asia/Shanghai"), currentTimeZone,
         realSSID, (cfgStr(@"wifiSSID", @"").length ? cfgStr(@"wifiSSID", @"") : @"(未配置，返回空)"), currentSSID,
         realLocalIP, (cfgBool(@"spoofLocalIP", NO) ? @"已拦截" : @"未拦截"), currentLocalIP,
-        realUptimeText,
+        bootRealText,
         bds_format_duration((NSTimeInterval)cfgInt(@"bootTimeOffsetSeconds", 0)),
         fakeUptimeText,
         bootConsistent];
@@ -5810,6 +5830,13 @@ static void bds_initialize() {
             NSInteger ov = cfgInt(@"bootTimeOffsetSeconds", 0);
             if (BDSBootOffsetSane(ov)) g_bootOffsetSeconds = (double)ov;
         }
+        if (g_bootOffsetSeconds > 0 && g_uptimeAddOffset == 0) {
+            NSTimeInterval realSys = orig_systemUptime
+                ? ((NSTimeInterval (*)(id, SEL))orig_systemUptime)(
+                      NSProcessInfo.processInfo, @selector(systemUptime)) : 0;
+            g_realSystemUptime = realSys;
+            g_uptimeAddOffset = (bds_wall_uptime_now() + g_bootOffsetSeconds) - realSys;
+        }
         if (BDS_ATOMIC_GET(g_spoofBootTimeC) && g_fakeBootTime.tv_sec == 0) {
             NSInteger offsetSeconds = cfgInt(@"bootTimeOffsetSeconds", 0);
             if (!BDSBootOffsetSane(offsetSeconds)) {
@@ -5819,6 +5846,16 @@ static void bds_initialize() {
                 saveConfigValues(@{@"bootTimeOffsetSeconds": @(offsetSeconds)});
             }
             g_bootOffsetSeconds = (double)offsetSeconds;
+            // 反推一个加到"清醒时长"上的偏移，使 systemUptime 那条路
+            // 与 kern.boottime 那条路给出同一个运行时长。
+            {
+                NSTimeInterval realSys = orig_systemUptime
+                    ? ((NSTimeInterval (*)(id, SEL))orig_systemUptime)(
+                          NSProcessInfo.processInfo, @selector(systemUptime)) : 0;
+                g_realSystemUptime = realSys;
+                NSTimeInterval wantFake = bds_wall_uptime_now() + (double)offsetSeconds;
+                g_uptimeAddOffset = wantFake - realSys;
+            }
             struct timeval realBootTime = {0, 0};
             size_t realBootTimeLength = sizeof(realBootTime);
             if (!orig_sysctlbyname ||
