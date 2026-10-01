@@ -761,6 +761,7 @@ static BDSDiagCounter g_diagPrivacy;
 static BDSDiagCounter g_diagWebKitCookie;
 static BDSDiagCounter g_diagBattery;
 static BDSDiagCounter g_diagBaiduTargeted;
+static BDSDiagCounter g_diagBlockLaunchTime;
 
 #define BDS_DIAG_RECORD(counter, state) do { \
     __atomic_fetch_add(&(counter).hits, 1, __ATOMIC_RELAXED); \
@@ -800,7 +801,7 @@ static void bds_diag_reset_all(void) {
         &g_diagBootTime, &g_diagCPU, &g_diagLocation, &g_diagProxy,
         &g_diagStatfs, &g_diagDlopen, &g_diagUbiquity, &g_diagPrivacy,
         &g_diagWebKitCookie,
-        &g_diagBattery, &g_diagBaiduTargeted
+        &g_diagBattery, &g_diagBaiduTargeted, &g_diagBlockLaunchTime
     };
     for (size_t i = 0; i < sizeof(counters) / sizeof(counters[0]); i++) {
         bds_diag_reset_counter(counters[i]);
@@ -836,12 +837,18 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 // 每次都读开关：运行期关掉立即放行，不重启也能停。
 static NSArray *(*g_bdsOrigSelRecent)(id, SEL, long long) = NULL;
 static NSArray *BDSNewSelRecent(id self, SEL _cmd, long long limit) {
-    if (cfgBool(@"blockLaunchTimeUpload", YES)) return @[];
+    if (cfgBool(@"blockLaunchTimeUpload", YES)) {
+        BDS_DIAG_RECORD(g_diagBlockLaunchTime, BDSDiagStateBlocked);
+        return @[];
+    }
     return g_bdsOrigSelRecent ? g_bdsOrigSelRecent(self, _cmd, limit) : @[];
 }
 static NSArray *(*g_bdsOrigSelAll)(id, SEL) = NULL;
 static NSArray *BDSNewSelAll(id self, SEL _cmd) {
-    if (cfgBool(@"blockLaunchTimeUpload", YES)) return @[];
+    if (cfgBool(@"blockLaunchTimeUpload", YES)) {
+        BDS_DIAG_RECORD(g_diagBlockLaunchTime, BDSDiagStateBlocked);
+        return @[];
+    }
     return g_bdsOrigSelAll ? g_bdsOrigSelAll(self, _cmd) : @[];
 }
 static void BDSInstallLaunchTimeBlocking(void) {
@@ -5526,6 +5533,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
     BDSAppendDiagLine(message, @"隐私权限", &g_diagPrivacy);
     BDSAppendDiagLine(message, @"WebKit Cookie", &g_diagWebKitCookie);
     BDSAppendDiagLine(message, @"电池电量", &g_diagBattery);
+    BDSAppendDiagLine(message, @"启动时间上报拦截", &g_diagBlockLaunchTime);
 
     UIViewController *presenter = BDSTopController();
     if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
