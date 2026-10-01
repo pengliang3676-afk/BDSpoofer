@@ -293,6 +293,47 @@ static BOOL BDSHasEnabledCHookFeature(void) {
            cfgBool(@"spoofDlopen", NO);
 }
 
+// ---- 开机时长偏移 ----
+//
+// 目的：让 App 看到的"系统已运行时长"落在真实 iPhone 的常见分布里，
+// 而不是让一批设备全挤在一个窄区间（原先固定 1~8 天，区间太窄）。
+//
+// 真实分布（经验）：多数设备 6~30 天，其次 30~60 天，少数长期不重启。
+// 故按权重抽取，而非均匀分布 —— 均匀分布在两端都不自然。
+//
+// 注意：本偏移是加法。假 uptime = 真 uptime + 偏移。
+// 设备若刚重启过（真 uptime 仅几小时），偏移本身就等于假 uptime，
+// 所以偏移区间必须直接落在目标区间上。
+static NSInteger BDSRandomBootOffsetSeconds(void) {
+    // {下限天数, 上限天数, 权重}
+    static const int ranges[4][3] = {
+        {6,   30,  40},
+        {30,  60,  30},
+        {60,  120, 20},
+        {120, 180, 10},
+    };
+    int total = 0;
+    for (int i = 0; i < 4; i++) total += ranges[i][2];
+    int pick = (int)arc4random_uniform((uint32_t)total);
+    int acc = 0, lo = 6, hi = 30;
+    for (int i = 0; i < 4; i++) {
+        acc += ranges[i][2];
+        if (pick < acc) { lo = ranges[i][0]; hi = ranges[i][1]; break; }
+    }
+    uint32_t span = (uint32_t)(hi - lo) * 86400u;
+    return (NSInteger)((uint32_t)lo * 86400u +
+                       (span ? arc4random_uniform(span) : 0));
+}
+
+// 偏移是否在合理区间（1 天 ~ 365 天）
+static BOOL BDSBootOffsetSane(NSInteger v) {
+    return v >= 86400 && v <= 365 * 86400;
+}
+
+// 开机时间伪装：偏移量缓存。钩子函数里只做加法，不读配置、不加锁。
+static double g_bootOffsetSeconds = 0;
+static double g_lastRealUptime = 0;
+
 static void bds_update_c_cache(void) {
     NSString *v;
     v = cfgStr(@"hwMachine", @"iPhone14,6");
@@ -340,7 +381,7 @@ static void loadConfig() {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            // 9.30-29 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
+            // 10.01.01 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
             // （v189 迁移还会兜底强制关一次。）
             @"bypassJailbreakDetect": @NO
         }];
@@ -547,9 +588,9 @@ static void loadConfig() {
     BDSApplyInitialDefaults(merged, loaded);
     // 注意顺序：迁移必须放在 BDSApplyInitialDefaults 之后。
     // 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
-    // 写在它之前会被它设回 @YES（9.30-29 实测就是这个原因导致开关关不掉）。
+    // 写在它之前会被它设回 @YES（10.01.01 实测就是这个原因导致开关关不掉）。
     if (ver < 189) {
-        // 9.30-29：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
+        // 10.01.01：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
         // 老配置里这个键通常已存 @YES，光靠默认值救不了，必须强制写一次 @NO。
         // 用独立的版本号 189 是为了让已经处在 188 的配置也能被这次修正覆盖到，
         // 且只执行一次：之后用户在面板手动打开仍然有效。
@@ -1226,6 +1267,27 @@ static IMP orig_physicalMemory = NULL;
 static unsigned long long new_physicalMemory(id self, SEL _cmd) {
     BDS_DIAG_RECORD(g_diagProcess, BDSDiagStateChanged);
     return (unsigned long long)cfgInt(@"memorySize", 4096) * 1024 * 1024;
+}
+
+// NSProcessInfo.systemUptime = 设备已运行秒数，与 kern.boottime 是同一事实的两种表示：
+//     当前时间 − kern.boottime = systemUptime
+// 探针实测：百度在一次会话里读它 31~109 次，是最高频字段之一。
+// 原先只钩了 sysctl 那条路（kern.boottime），这条没钩 —— 两条路会给出互相矛盾的
+// 运行时长（开机时刻被推早了，秒数却还是真实值）。
+//
+// 安全约束：钩子函数内只做一次加法，不读配置、不加锁、不分配内存。
+// 偏移量在启动时算好存 g_bootOffsetSeconds。
+static IMP orig_systemUptime = NULL;
+static NSTimeInterval new_systemUptime(id self, SEL _cmd) {
+    NSTimeInterval real = orig_systemUptime
+        ? ((NSTimeInterval (*)(id, SEL))orig_systemUptime)(self, _cmd) : 0;
+    g_lastRealUptime = real;
+    if (!BDS_ATOMIC_GET(g_spoofBootTimeC) || g_bootOffsetSeconds <= 0) {
+        BDS_DIAG_RECORD(g_diagProcess, BDSDiagStatePassed);
+        return real;
+    }
+    BDS_DIAG_RECORD(g_diagProcess, BDSDiagStateChanged);
+    return real + g_bootOffsetSeconds;
 }
 
 #pragma mark - NSLocale Hook
@@ -3503,6 +3565,18 @@ static CFDictionaryRef bds_my_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 
 #pragma mark - P2: 本地 IP Hook（fishhook）
 
+// 把秒数格式化成"X 天 Y 小时"，用于自检面板显示运行时长
+static NSString *bds_format_duration(NSTimeInterval seconds) {
+    if (seconds <= 0) return @"(未取到)";
+    long long s = (long long)seconds;
+    long long d = s / 86400;
+    long long h = (s % 86400) / 3600;
+    long long m = (s % 3600) / 60;
+    if (d > 0) return [NSString stringWithFormat:@"%lld 天 %lld 小时", d, h];
+    if (h > 0) return [NSString stringWithFormat:@"%lld 小时 %lld 分", h, m];
+    return [NSString stringWithFormat:@"%lld 分", m];
+}
+
 static int (*orig_getifaddrs)(struct ifaddrs **);
 
 static int bds_my_getifaddrs(struct ifaddrs **ifap) {
@@ -4219,7 +4293,7 @@ static NSMutableDictionary *BDSRandomBaseValuesForPair(NSDictionary *device,
     values[@"nativeScreenHeight"] = device[@"nativeHeight"];
     [values addEntriesFromDictionary:BDSBaiduScreenSyncValues(device)];
     [values addEntriesFromDictionary:BDSBaiduSystemSyncValues(system)];
-    values[@"bootTimeOffsetSeconds"] = @(86400 + arc4random_uniform(7 * 86400));
+    values[@"bootTimeOffsetSeconds"] = @(BDSRandomBootOffsetSeconds());
     // WiFi SSID 也一起随机：CNCopyCurrentNetworkInfo 钩子只在 wifiSSID 非空时
     // 返回伪造值，留空则返回 NULL。配一个常见名字，让结果更像普通用户。
     values[@"wifiSSID"] = BDSRandomCommonSSID();
@@ -4526,7 +4600,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 9.30-29";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.01";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5451,6 +5525,35 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
         }
     }
 
+    // 开机时间：两条路都要看一眼，确认它们给出同一个运行时长。
+    //   路A sysctl  kern.boottime   -> 开机时刻（绝对时间）
+    //   路B NSProcessInfo.systemUptime -> 已运行秒数（相对时长）
+    // 两者本质是同一事实：当前时间 − 开机时刻 = 已运行秒数。
+    NSString *realUptimeText = @"(未取到)";
+    NSString *fakeUptimeText = @"(未启用)";
+    NSString *bootConsistent = @"—";
+    {
+        // 真值：绕过钩子直接问内核
+        NSTimeInterval realUp = 0;
+        struct timeval bt = {0, 0};
+        size_t btLen = sizeof(bt);
+        int (*rawSysctl)(const char *, void *, size_t *, void *, size_t) =
+            orig_sysctlbyname ? orig_sysctlbyname : sysctlbyname;
+        if (rawSysctl("kern.boottime", &bt, &btLen, NULL, 0) == 0 && bt.tv_sec > 0) {
+            realUp = NSDate.date.timeIntervalSince1970 - (NSTimeInterval)bt.tv_sec;
+        }
+        realUptimeText = bds_format_duration(realUp);
+
+        if (cfgBool(@"spoofBootTime", NO)) {
+            // 假值：走正常路径（会被钩子改）
+            NSTimeInterval fakeUp = NSProcessInfo.processInfo.systemUptime;
+            fakeUptimeText = bds_format_duration(fakeUp);
+            // 一致性：路B（假运行时长）应当约等于 路A 推导出的运行时长 + 偏移
+            NSTimeInterval expect = realUp + (NSTimeInterval)cfgInt(@"bootTimeOffsetSeconds", 0);
+            bootConsistent = (fabs(fakeUp - expect) < 120) ? @"是" : @"否（两条路对不上）";
+        }
+    }
+
     // 本地 IP：真值直接问内核（绕过钩子）；当前值走 getifaddrs。
     // 现在的策略是纯拦截（把 en0 标记为未指定），所以"当前"正常就应该是(无地址)。
     NSString *realLocalIP = bds_real_lan_ip();
@@ -5467,7 +5570,8 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
          @"屏幕(points / scale)\n原始 %.0fx%.0f / %.2f\n配置 %ldx%ld / %ld\n当前 %.0fx%.0f / %.2f\n\n"
          @"时区\n原始 %@\n配置 %@\n当前 %@\n\n"
          @"Wi-Fi SSID\n原始 %@\n配置 %@\n当前 %@\n\n"
-         @"本地 IP\n原始 %@\n配置 %@\n当前 %@",
+         @"本地 IP\n原始 %@\n配置 %@\n当前 %@\n\n"
+         @"开机时间\n真机已运行 %@\n配置偏移 %@\nApp 实际读到 %@\n两条路一致 %@",
         cfgBool(@"enabled", NO) ? @"基础功能已开启" : @"基础功能已关闭",
         realVersion, cfgStr(@"systemVersion", @"15.4.1"), cfgStr(@"systemBuild", @"19E258"), currentVersion,
         realName, cfgStr(@"deviceName", @"iPhone"), currentName,
@@ -5480,7 +5584,11 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
         CGRectGetWidth(currentBounds), CGRectGetHeight(currentBounds), currentScale,
         realTimeZone, cfgStr(@"localTimeZone", @"Asia/Shanghai"), currentTimeZone,
         realSSID, (cfgStr(@"wifiSSID", @"").length ? cfgStr(@"wifiSSID", @"") : @"(未配置，返回空)"), currentSSID,
-        realLocalIP, (cfgBool(@"spoofLocalIP", NO) ? @"已拦截" : @"未拦截"), currentLocalIP];
+        realLocalIP, (cfgBool(@"spoofLocalIP", NO) ? @"已拦截" : @"未拦截"), currentLocalIP,
+        realUptimeText,
+        bds_format_duration((NSTimeInterval)cfgInt(@"bootTimeOffsetSeconds", 0)),
+        fakeUptimeText,
+        bootConsistent];
 
     NSMutableString *advanced = [NSMutableString stringWithString:@"\n\n--- 高级功能 ---"];
 
@@ -5698,11 +5806,19 @@ static void bds_initialize() {
 
         // 使用持久化偏移量和真实 boot time 生成稳定值：同一次系统启动期间，
         // App 重启不会重新跳到另一个随机日期；设备真实重启后会随之更新。
+        if (g_bootOffsetSeconds <= 0) {
+            NSInteger ov = cfgInt(@"bootTimeOffsetSeconds", 0);
+            if (BDSBootOffsetSane(ov)) g_bootOffsetSeconds = (double)ov;
+        }
         if (BDS_ATOMIC_GET(g_spoofBootTimeC) && g_fakeBootTime.tv_sec == 0) {
             NSInteger offsetSeconds = cfgInt(@"bootTimeOffsetSeconds", 0);
-            if (offsetSeconds < 86400 || offsetSeconds >= 8 * 86400) {
-                offsetSeconds = 86400 + (NSInteger)arc4random_uniform(7 * 86400);
+            if (!BDSBootOffsetSane(offsetSeconds)) {
+                // 旧配置（1~8 天）或异常值：按新规则重抽一次并写回，
+                // 避免每次启动都重抽导致开机时间跳动。
+                offsetSeconds = BDSRandomBootOffsetSeconds();
+                saveConfigValues(@{@"bootTimeOffsetSeconds": @(offsetSeconds)});
             }
+            g_bootOffsetSeconds = (double)offsetSeconds;
             struct timeval realBootTime = {0, 0};
             size_t realBootTimeLength = sizeof(realBootTime);
             if (!orig_sysctlbyname ||
@@ -5747,6 +5863,7 @@ static void bds_initialize() {
         if (basicEnabled && cfgBool(@"spoofProcessHardware", NO)) {
             hookInst(cls, @selector(hostName), (IMP)new_hostName, &orig_hostName);
             hookInst(cls, @selector(physicalMemory), (IMP)new_physicalMemory, &orig_physicalMemory);
+hookInst(cls, @selector(systemUptime), (IMP)new_systemUptime, &orig_systemUptime);
         }
 
         if (basicEnabled && cfgBool(@"spoofLocale", NO)) {
