@@ -447,7 +447,7 @@ static void loadConfig() {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            // 10.01.01 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
+            // 10.01.03 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
             // （v189 迁移还会兜底强制关一次。）
             @"bypassJailbreakDetect": @NO
         }];
@@ -654,9 +654,9 @@ static void loadConfig() {
     BDSApplyInitialDefaults(merged, loaded);
     // 注意顺序：迁移必须放在 BDSApplyInitialDefaults 之后。
     // 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
-    // 写在它之前会被它设回 @YES（10.01.01 实测就是这个原因导致开关关不掉）。
+    // 写在它之前会被它设回 @YES（10.01.03 实测就是这个原因导致开关关不掉）。
     if (ver < 189) {
-        // 10.01.01：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
+        // 10.01.03：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
         // 老配置里这个键通常已存 @YES，光靠默认值救不了，必须强制写一次 @NO。
         // 用独立的版本号 189 是为了让已经处在 188 的配置也能被这次修正覆盖到，
         // 且只执行一次：之后用户在面板手动打开仍然有效。
@@ -808,12 +808,69 @@ static void bds_diag_reset_all(void) {
 
 #pragma mark - Hook 工具
 
+// ==== 反 Hook 自检：让"问某个方法现在指向谁"得到原始答案 ====
+//
+// 背景：百度导入了 method_getImplementation。它只要这样一行，
+// 就能发现我们的 hook：
+//     IMP now = method_getImplementation(
+//         class_getInstanceMethod(UIDevice.class, @selector(identifierForVendor)));
+//     与 Mach-O 里的原始 IMP 对比 → 不等 = 被改过
+//
+// 做法：把"我们改过的 method"和它的原始 IMP 记在表里；
+// 钩住 method_getImplementation 本身，谁来问这些 method 都返回原始 IMP。
+// 这样无论百度用哪种写法做对比，拿到的都是"没被改过"的答案。
+//
+// 安全：表静态分配、不上锁（写入只在装载期，之后只读）；
+// 未命中一律透传给真实实现，行为与原来完全一致。
+
+#define BDS_HOOKMAP_MAX 512
+static Method g_hmMethod[BDS_HOOKMAP_MAX];
+static IMP    g_hmOrig[BDS_HOOKMAP_MAX];
+static int    g_hmCount = 0;
+
+static void bds_hm_register(Method m, IMP orig) {
+    if (!m || !orig) return;
+    for (int i = 0; i < g_hmCount; i++) {
+        if (g_hmMethod[i] == m) { g_hmOrig[i] = orig; return; }
+    }
+    if (g_hmCount < BDS_HOOKMAP_MAX) {
+        g_hmMethod[g_hmCount] = m;
+        g_hmOrig[g_hmCount] = orig;
+        g_hmCount++;
+    }
+}
+
+static IMP bds_hm_lookup(Method m) {
+    if (!m) return NULL;
+    for (int i = 0; i < g_hmCount; i++) {
+        if (g_hmMethod[i] == m) return g_hmOrig[i];
+    }
+    return NULL;
+}
+
+static IMP (*orig_method_getImplementation)(Method);
+static IMP bds_my_method_getImplementation(Method m) {
+    // 1) 我们改过的 method：一律返回原始 IMP，让自检对比"看起来没被改过"
+    IMP orig = bds_hm_lookup(m);
+    if (orig) return orig;
+    // 2) 其余走真实实现。
+    //    注意：本函数可能在钩子尚未接上时被极早调用，此时绝不能返回 NULL
+    //    （调用方拿到 NULL 会直接崩）。用 dlsym 兜底取真实函数。
+    if (orig_method_getImplementation) return orig_method_getImplementation(m);
+    IMP (*real)(Method) = (IMP (*)(Method))dlsym(RTLD_DEFAULT, "method_getImplementation");
+    if (real) return real(m);
+    return NULL;
+}
+
 static void hookInst(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
     if (!cls) return;
     Method m = class_getInstanceMethod(cls, sel);
     if (m) {
-        if (oldImp) *oldImp = method_getImplementation(m);
+        IMP before = method_getImplementation(m);
+        if (oldImp) *oldImp = before;
         method_setImplementation(m, newImp);
+        // 登记：以后谁来问这个 method，都告诉他原始 IMP
+        bds_hm_register(m, before);
     }
 }
 
@@ -821,8 +878,10 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
     if (!cls) return;
     Method m = class_getClassMethod(cls, sel);
     if (m) {
-        if (oldImp) *oldImp = method_getImplementation(m);
+        IMP before = method_getImplementation(m);
+        if (oldImp) *oldImp = before;
         method_setImplementation(m, newImp);
+        bds_hm_register(m, before);
     }
 }
 
@@ -2260,6 +2319,7 @@ static void tg_install_one(NSString *clsName, SEL sel, BOOL isClass,
     Method own = class_getInstanceMethod(hookCls, sel);
     *outOrig = method_getImplementation(own);
     method_setImplementation(own, newImp);
+    bds_hm_register(own, orig);
     g_tgInstalled++;
 }
 
@@ -2710,7 +2770,9 @@ static void bds_pass_hook(NSString *clsName, SEL sel, BOOL isClass,
     class_addMethod(hookCls, sel, orig, method_getTypeEncoding(m));
     Method own = class_getInstanceMethod(hookCls, sel);
     *outOrig = method_getImplementation(own);
+    IMP beforeOwn = *outOrig;
     method_setImplementation(own, newImp);
+    bds_hm_register(own, beforeOwn);
 }
 
 static BOOL bds_pass_class_has_sel(Class cls, SEL sel) {
@@ -2733,6 +2795,7 @@ static void bds_pass_hook_own(Class cls, SEL sel, IMP newImp, IMP *outOrig) {
     if (orig == newImp) { *outOrig = orig; return; }
     *outOrig = orig;
     method_setImplementation(m, newImp);
+    bds_hm_register(m, orig);
 }
 
 static void bds_pass_install_session(void) {
@@ -3910,6 +3973,15 @@ static void installCHooks(void) {
         {"dlopen_preflight", (void *)bds_my_dlopen_preflight, (void **)&orig_dlopen_preflight},
     };
     bds_rebind_symbols(rebindings, sizeof(rebindings) / sizeof(rebindings[0]));
+
+    // 反 Hook 自检：需要单独钩 method_getImplementation（ObjC runtime 导出符号）
+    {
+        struct bds_rebinding mg[] = {
+            {"method_getImplementation", (void *)bds_my_method_getImplementation,
+             (void **)&orig_method_getImplementation},
+        };
+        bds_rebind_symbols(mg, sizeof(mg) / sizeof(mg[0]));
+    }
 }
 
 #pragma mark - 悬浮配置入口
@@ -4666,7 +4738,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.01";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.03";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5632,6 +5704,29 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
     NSString *realLocalIP = bds_real_lan_ip();
     NSString *currentLocalIP = bds_current_lan_ip();
 
+    // 反 Hook 自检：验证 hook 是否装成、是否返回原始 IMP
+    uint32_t hmCount = (uint32_t)g_hmCount;
+    NSString *hmHookOn = @"未装上";
+    NSString *hmAnswer = @"（无记录）";
+    if (orig_method_getImplementation) {
+        Method probe = class_getInstanceMethod(UIDevice.class, @selector(identifierForVendor));
+        Method tracked = NULL;
+        for (int i = 0; i < g_hmCount; i++) {
+            if (g_hmMethod[i] == probe) { tracked = probe; break; }
+        }
+        if (tracked) {
+            IMP live = orig_method_getImplementation(tracked);   // 真实当前值
+            IMP shown = method_getImplementation(tracked);       // 走钩子
+            hmHookOn = (shown == live) ? @"未生效" : @"已生效";
+            hmAnswer = [NSString stringWithFormat:@"%@（%@）",
+                        (shown != live) ? @"返回原始 IMP" : @"返回了新版 IMP",
+                        hmHookOn];
+        } else {
+            hmHookOn = @"已装上（无命中样本）";
+            hmAnswer = @"（未跟踪到该样本）";
+        }
+    }
+
     NSString *message = [NSString stringWithFormat:
         @"状态：%@\n\n"
          @"iOS\n原始 %@\n配置 %@ (%@)\n当前 %@\n\n"
@@ -5644,6 +5739,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
          @"时区\n原始 %@\n配置 %@\n当前 %@\n\n"
          @"Wi-Fi SSID\n原始 %@\n配置 %@\n当前 %@\n\n"
          @"本地 IP\n原始 %@\n配置 %@\n当前 %@\n\n"
+         @"反 Hook 自检\n已登记的 method 数 %u\nmethod_getImplementation 钩子 %@\n百度问 \"这个方法指向谁\" 得到 %@\n\n"
          @"开机时间\n真机 %@\n配置偏移 %@\nApp 实际读到 %@\n两条路一致 %@",
         cfgBool(@"enabled", NO) ? @"基础功能已开启" : @"基础功能已关闭",
         realVersion, cfgStr(@"systemVersion", @"15.4.1"), cfgStr(@"systemBuild", @"19E258"), currentVersion,
@@ -5661,7 +5757,8 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
         bootRealText,
         bds_format_duration((NSTimeInterval)cfgInt(@"bootTimeOffsetSeconds", 0)),
         bootFakeText,
-        bootConsistent];
+        bootConsistent,
+        hmCount, hmHookOn, hmAnswer];
 
     NSMutableString *advanced = [NSMutableString stringWithString:@"\n\n--- 高级功能 ---"];
 
