@@ -916,6 +916,9 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
         if(!combined) combined=[config mutableCopy];
         else for(NSString *key in BDSSafeSwitchValues()) combined[key]=@([combined[key] boolValue] && [config[key] boolValue]);
     }
+    // 拦截启动时间上报是纯拦截开关，不随一键随机走：
+    // 容器 plist 没写过这个键就默认开；用户手动关过（显式存 @NO）保持关。
+    if (combined && !combined[@"blockLaunchTimeUpload"]) combined[@"blockLaunchTimeUpload"] = @YES;
     return combined ?: @{};
 }
 
