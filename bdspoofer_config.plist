@@ -58,6 +58,8 @@
 	<true/>
 	<key>blockStatCashTelemetry</key>
 	<false/>
+	<key>blockLaunchTimeUpload</key>
+	<true/>
 	<key>spoofBaiduTargeted</key>
 	<false/>
 	<key>spoofBaiduTargetedSystem</key>
@@ -129,7 +131,7 @@
 	<key>userAgent</key>
 	<string></string>
 	<key>carrierName</key>
-	<string>中国移动</string>
+	<string>涓浗绉诲姩</string>
 	<key>mcc</key>
 	<string>460</string>
 	<key>mnc</key>
