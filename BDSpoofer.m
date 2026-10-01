@@ -386,11 +386,14 @@ static double bds_boot_consistency_delta(NSTimeInterval *outFakeUp,
     NSTimeInterval fakeUp = NSProcessInfo.processInfo.systemUptime;   // 走钩子
     if (outFakeUp) *outFakeUp = fakeUp;
 
+    // 这里必须走「正常路径」而不是原函数：
+    // 要检验的是"App 自己用开机时刻算出来的运行时长"与"我们报给它的运行时长"是否一致，
+    // 所以两边都得是 App 实际会看到的值（即被钩过的）。
+    // 原先误用 orig_sysctlbyname 故意绕过钩子，导致拿真开机时刻和假运行时长比，
+    // 差值恒等于配置偏移（实测 22.3 天）。
     struct timeval bt = {0, 0};
     size_t len = sizeof(bt);
-    int (*rawSysctl)(const char *, void *, size_t *, void *, size_t) =
-        orig_sysctlbyname ? orig_sysctlbyname : sysctlbyname;
-    if (rawSysctl("kern.boottime", &bt, &len, NULL, 0) != 0 || bt.tv_sec <= 0) return -1;
+    if (sysctlbyname("kern.boottime", &bt, &len, NULL, 0) != 0 || bt.tv_sec <= 0) return -1;
 
     NSTimeInterval fromBoot = now - (NSTimeInterval)bt.tv_sec;
     if (outFromBoot) *outFromBoot = fromBoot;
