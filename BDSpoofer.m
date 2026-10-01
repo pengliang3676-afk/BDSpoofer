@@ -447,7 +447,7 @@ static void loadConfig() {
             @"spoofSysctl": @NO,
             @"spoofKeychain": @YES,
             @"spoofUserAgent": @YES,
-            // 10.01.01 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
+            // 10.01.02 起策略为默认关闭：这里同步改成 @NO，避免后续迁移链把它带成开的。
             // （v189 迁移还会兜底强制关一次。）
             @"bypassJailbreakDetect": @NO
         }];
@@ -654,9 +654,9 @@ static void loadConfig() {
     BDSApplyInitialDefaults(merged, loaded);
     // 注意顺序：迁移必须放在 BDSApplyInitialDefaults 之后。
     // 该函数按“常规开关默认开”重写所有常规键，而防越狱检测不在风险键名单里，
-    // 写在它之前会被它设回 @YES（10.01.01 实测就是这个原因导致开关关不掉）。
+    // 写在它之前会被它设回 @YES（10.01.02 实测就是这个原因导致开关关不掉）。
     if (ver < 189) {
-        // 10.01.01：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
+        // 10.01.02：防越狱检测改为默认关闭，一键基础 / 一键高级都不会打开它。
         // 老配置里这个键通常已存 @YES，光靠默认值救不了，必须强制写一次 @NO。
         // 用独立的版本号 189 是为了让已经处在 188 的配置也能被这次修正覆盖到，
         // 且只执行一次：之后用户在面板手动打开仍然有效。
@@ -3025,6 +3025,104 @@ static void new_nsmurl_addValue(id self, SEL _cmd, NSString *value, NSString *fi
 
 #pragma mark - B: dyld 镜像名过滤（fishhook，纯 C）
 
+static uint32_t (*orig_dyld_image_count)(void);
+static const struct mach_header *(*orig_dyld_get_image_header)(uint32_t);
+
+// ==== 动态库枚举：把注入的插件库从枚举结果里藏掉 ====
+//
+// 原实现只钩 _dyld_get_image_name（改名字），没钩 _dyld_image_count（数量），
+// 于是"数量 +1、名字却没了"—— 数量与名字对不上，本身就是检测信号。
+// 现改为「索引跳过」，保证 count / name / header 三者自洽。
+// 安全：钩子内只做字符串比较与整数运算，不调用可能被钩的函数。
+#define BDS_HIDE_MAX 8
+static int  g_hideIdx[BDS_HIDE_MAX];
+static int  g_hideCount = 0;
+static BOOL g_hideBuilt = NO;
+
+static BOOL bds_should_hide_image(const char *name) {
+    if (!name) return NO;
+    return (strstr(name, "BDSpoofer") != NULL ||
+            strstr(name, "/BDSpoofer_") != NULL ||
+            strstr(name, "M-10.01.") != NULL ||
+            strstr(name, "X-10.01.") != NULL);
+}
+
+static void bds_build_hide_table(void) {
+    if (g_hideBuilt) return;
+    g_hideBuilt = YES;
+    g_hideCount = 0;
+    uint32_t n = orig_dyld_image_count ? orig_dyld_image_count() : _dyld_image_count();
+    for (uint32_t i = 0; i < n && g_hideCount < BDS_HIDE_MAX; i++) {
+        const char *nm = orig_dyld_get_image_name
+            ? orig_dyld_get_image_name(i) : _dyld_get_image_name(i);
+        if (bds_should_hide_image(nm)) g_hideIdx[g_hideCount++] = (int)i;
+    }
+}
+
+static int bds_visible_to_real(int idx) {
+    int real = idx;
+    for (int k = 0; k < g_hideCount; k++) {
+        if (g_hideIdx[k] <= real) real++;
+    }
+    return real;
+}
+
+static BOOL bds_dyld_hide_on(void) {
+    return BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC);
+}
+
+static uint32_t bds_my_dyld_image_count(void) {
+    uint32_t real = orig_dyld_image_count ? orig_dyld_image_count() : 0;
+    if (!bds_dyld_hide_on()) return real;
+    bds_build_hide_table();
+    if (g_hideCount <= 0) return real;
+    BDS_DIAG_RECORD(g_diagDyld, BDSDiagStateChanged);
+    return real - (uint32_t)g_hideCount;
+}
+
+static const char *bds_my_dyld_get_image_name(uint32_t image_index) {
+    if (!bds_dyld_hide_on()) {
+        BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
+        return orig_dyld_get_image_name(image_index);
+    }
+    bds_build_hide_table();
+    if (g_hideCount <= 0) {
+        BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
+        return orig_dyld_get_image_name(image_index);
+    }
+    BDS_DIAG_RECORD(g_diagDyld, BDSDiagStateChanged);
+    return orig_dyld_get_image_name((uint32_t)bds_visible_to_real((int)image_index));
+}
+
+static const struct mach_header *bds_my_dyld_get_image_header(uint32_t image_index) {
+    if (!orig_dyld_get_image_header) return NULL;
+    if (!bds_dyld_hide_on()) return orig_dyld_get_image_header(image_index);
+    bds_build_hide_table();
+    if (g_hideCount <= 0) return orig_dyld_get_image_header(image_index);
+    BDS_DIAG_RECORD(g_diagDyld, BDSDiagStateChanged);
+    return orig_dyld_get_image_header((uint32_t)bds_visible_to_real((int)image_index));
+}
+
+static void bds_dyld_diag(uint32_t *rawCount, uint32_t *shownCount,
+                          BOOL *seenRaw, BOOL *seenShown) {
+    uint32_t raw = orig_dyld_image_count ? orig_dyld_image_count() : _dyld_image_count();
+    if (rawCount) *rawCount = raw;
+    BOOL inRaw = NO;
+    for (uint32_t i = 0; i < raw; i++) {
+        const char *nm = _dyld_get_image_name(i);
+        if (bds_should_hide_image(nm)) { inRaw = YES; break; }
+    }
+    if (seenRaw) *seenRaw = inRaw;
+    uint32_t shown = _dyld_image_count();
+    if (shownCount) *shownCount = shown;
+    BOOL inShown = NO;
+    for (uint32_t i = 0; i < shown; i++) {
+        const char *nm = _dyld_get_image_name(i);
+        if (bds_should_hide_image(nm)) { inShown = YES; break; }
+    }
+    if (seenShown) *seenShown = inShown;
+}
+
 static const char *(*orig_dyld_get_image_name)(uint32_t);
 
 static const char *bds_fake_image_names[] = {
@@ -3054,23 +3152,7 @@ static int bds_c_should_hide_image(const char *name) {
     return 0;
 }
 
-static const char *bds_my_dyld_get_image_name(uint32_t image_index) {
-    const char *name = orig_dyld_get_image_name(image_index);
-    if (!name) {
-        BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
-        return name;
-    }
-    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_bypassJailbreakC)) {
-        BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
-        return name;
-    }
-    if (bds_c_should_hide_image(name)) {
-        BDS_DIAG_RECORD(g_diagDyld, BDSDiagStateChanged);
-        return bds_fake_image_names[image_index % BDS_FAKE_IMAGE_COUNT];
-    }
-    BDS_DIAG_RECORD(g_diagDyld, BDSDiagStatePassed);
-    return name;
-}
+
 
 #pragma mark - C: C 函数级文件检测 hook（fishhook）
 // arm64 iOS 上 struct stat 已使用 64 位 inode（__DARWIN_ONLY_64_BIT_INO_T=1），
@@ -3893,6 +3975,8 @@ static void installCHooks(void) {
         {"sysctlbyname", (void *)bds_my_sysctlbyname, (void **)&orig_sysctlbyname},
         {"uname", (void *)bds_my_uname, (void **)&orig_uname},
         {"SecItemCopyMatching", (void *)bds_my_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching},
+        {"_dyld_image_count", (void *)bds_my_dyld_image_count, (void **)&orig_dyld_image_count},
+        {"_dyld_get_image_header", (void *)bds_my_dyld_get_image_header, (void **)&orig_dyld_get_image_header},
         {"_dyld_get_image_name", (void *)bds_my_dyld_get_image_name, (void **)&orig_dyld_get_image_name},
         {"stat", (void *)bds_my_stat, (void **)&orig_stat},
         {"lstat", (void *)bds_my_lstat, (void **)&orig_lstat},
@@ -4666,7 +4750,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.01";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.02";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5632,6 +5716,11 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
     NSString *realLocalIP = bds_real_lan_ip();
     NSString *currentLocalIP = bds_current_lan_ip();
 
+    // 动态库枚举自检：四个数字都是运行时实际算的
+    uint32_t dyldRaw = 0, dyldShown = 0;
+    BOOL dyldInRaw = NO, dyldInShown = NO;
+    bds_dyld_diag(&dyldRaw, &dyldShown, &dyldInRaw, &dyldInShown);
+
     NSString *message = [NSString stringWithFormat:
         @"状态：%@\n\n"
          @"iOS\n原始 %@\n配置 %@ (%@)\n当前 %@\n\n"
@@ -5644,7 +5733,8 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
          @"时区\n原始 %@\n配置 %@\n当前 %@\n\n"
          @"Wi-Fi SSID\n原始 %@\n配置 %@\n当前 %@\n\n"
          @"本地 IP\n原始 %@\n配置 %@\n当前 %@\n\n"
-         @"开机时间\n真机 %@\n配置偏移 %@\nApp 实际读到 %@\n两条路一致 %@",
+         @"动态库枚举\n真实数量 %u\nApp 看到 %u\n原始列表里能找到插件 %@\n枚举结果里还能找到插件 %@"
+         @"开机时间\n真机 %@\n配置偏移 %@\nApp 实际读到 %@\n两条路一致 %@"
         cfgBool(@"enabled", NO) ? @"基础功能已开启" : @"基础功能已关闭",
         realVersion, cfgStr(@"systemVersion", @"15.4.1"), cfgStr(@"systemBuild", @"19E258"), currentVersion,
         realName, cfgStr(@"deviceName", @"iPhone"), currentName,
@@ -5661,7 +5751,10 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
         bootRealText,
         bds_format_duration((NSTimeInterval)cfgInt(@"bootTimeOffsetSeconds", 0)),
         bootFakeText,
-        bootConsistent];
+        bootConsistent,
+        dyldRaw, dyldShown,
+        dyldInRaw ? @"是（确实注入了）" : @"否",
+        dyldInShown ? @"是（隐藏失败）" : @"否（已藏掉）"];
 
     NSMutableString *advanced = [NSMutableString stringWithString:@"\n\n--- 高级功能 ---"];
 
