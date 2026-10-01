@@ -3025,6 +3025,7 @@ static void new_nsmurl_addValue(id self, SEL _cmd, NSString *value, NSString *fi
 
 #pragma mark - B: dyld 镜像名过滤（fishhook，纯 C）
 
+static const char *(*orig_dyld_get_image_name)(uint32_t);
 static uint32_t (*orig_dyld_image_count)(void);
 static const struct mach_header *(*orig_dyld_get_image_header)(uint32_t);
 
@@ -3122,8 +3123,6 @@ static void bds_dyld_diag(uint32_t *rawCount, uint32_t *shownCount,
     }
     if (seenShown) *seenShown = inShown;
 }
-
-static const char *(*orig_dyld_get_image_name)(uint32_t);
 
 static const char *bds_fake_image_names[] = {
     "/System/Library/Frameworks/Foundation.framework/Foundation",
