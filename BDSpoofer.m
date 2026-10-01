@@ -231,6 +231,7 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"spoofWebKitCookie": @NO,
             @"spoofBattery": @YES,
             @"blockStatCashTelemetry": @NO,
+            @"blockLaunchTimeUpload": @YES,
             @"wifiSSID": @"",
             // 伪造的本地 IP（常见家庭网段，一键基础随机生成）。
             // 留空则钩子不改动，退回“查不到本地 IP”的旧行为。
@@ -824,6 +825,33 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
         if (oldImp) *oldImp = method_getImplementation(m);
         method_setImplementation(m, newImp);
     }
+}
+
+#pragma mark - 拦截启动时间上报（百度极速 BBALaunchDeviceInfoDBHelper）
+// 7.17.0 已从二进制确认签名：
+//   selectRecentLaunchTimeLimit:  types=@24@0:8q16  → 返回 NSArray，参数 long long
+//   selectAllLaunchTime            types=@16@0:8     → 返回 NSArray，无参
+// 上报模块（设备粘性 / certscore）发"历史启动时间"前，先调这两个从 device_info.db 捞记录。
+// 开关开时返回空数组，它就没有真实启动时间可发；本地 db 照写、App 正常用。
+// 每次都读开关：运行期关掉立即放行，不重启也能停。
+static NSArray *(*g_bdsOrigSelRecent)(id, SEL, long long) = NULL;
+static NSArray *BDSNewSelRecent(id self, SEL _cmd, long long limit) {
+    if (cfgBool(@"blockLaunchTimeUpload", YES)) return @[];
+    return g_bdsOrigSelRecent ? g_bdsOrigSelRecent(self, _cmd, limit) : @[];
+}
+static NSArray *(*g_bdsOrigSelAll)(id, SEL) = NULL;
+static NSArray *BDSNewSelAll(id self, SEL _cmd) {
+    if (cfgBool(@"blockLaunchTimeUpload", YES)) return @[];
+    return g_bdsOrigSelAll ? g_bdsOrigSelAll(self, _cmd) : @[];
+}
+static void BDSInstallLaunchTimeBlocking(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        Class cls = NSClassFromString(@"BBALaunchDeviceInfoDBHelper");
+        if (!cls) return;  // 类不存在（别的 App / 旧版本）直接不装，不崩
+        hookInst(cls, @selector(selectRecentLaunchTimeLimit:), (IMP)BDSNewSelRecent, (IMP *)&g_bdsOrigSelRecent);
+        hookInst(cls, @selector(selectAllLaunchTime), (IMP)BDSNewSelAll, (IMP *)&g_bdsOrigSelAll);
+    });
 }
 
 #pragma mark - fishhook（内嵌，GOT 符号重绑定）
@@ -5852,6 +5880,11 @@ static void bds_initialize() {
         if (cfgBool(@"blockStatCashTelemetry", NO)) {
             BDSCashTelemetrySwitchProvider = BDSCashTelemetrySwitchEnabled;
             BDSInstallCashTelemetryBlocking();
+        }
+
+        // 拦截启动时间上报：默认开。开关开才装 hook；装后每次读开关，关了立即放行。
+        if (cfgBool(@"blockLaunchTimeUpload", YES)) {
+            BDSInstallLaunchTimeBlocking();
         }
 
         // 1.8.1 起，enabled 只代表“基础功能总开关”。

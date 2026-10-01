@@ -27,6 +27,7 @@ static NSArray<NSArray<NSDictionary *> *> *BDSSettingGroups(void) {
           @{@"key":@"spoofUbiquity",@"name":@"iCloud 隔离"},
           @{@"key":@"spoofPrivacyPermissions",@"name":@"通讯录与日历保护"},
           @{@"key":@"spoofBattery",@"name":@"电池参数"},
+          @{@"key":@"blockLaunchTimeUpload",@"name":@"拦截启动时间上报"},
           @{@"key":@"blockStatCashTelemetry",@"name":@"阻止金额统计上报",@"off":@YES}]
     ];
 }
