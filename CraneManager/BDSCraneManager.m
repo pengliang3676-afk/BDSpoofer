@@ -345,7 +345,7 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
         for (NSDictionary *item in groups[1]) {
             if (![item[@"off"] boolValue] && !config[item[@"key"]]) config[item[@"key"]] = @NO;
         }
-        for (NSString *key in BDSFirstEnabledKeys(groups[2], 12)) config[key] = @YES;
+        for (NSString *key in BDSFirstEnabledKeys(groups[2], 13)) config[key] = @YES;
         for (NSDictionary *item in groups[2]) {
             if (![item[@"off"] boolValue] && !config[item[@"key"]]) config[item[@"key"]] = @NO;
         }

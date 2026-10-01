@@ -180,7 +180,7 @@ static NSDictionary *BDSDefaultConfig(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         defaults = @{
-            @"configVersion": @189,
+            @"configVersion": @190,
             @"spoofBaiduTargeted": @NO,
             @"spoofBaiduTargetedSystem": @NO,
             @"spoofBaiduTargetedModel": @NO,
@@ -664,9 +664,16 @@ static void loadConfig() {
         merged[@"bypassJailbreakDetect"] = @NO;
         merged[@"configVersion"] = @189;
         [merged writeToFile:p1 atomically:YES];
-    } else if (![loaded[@"configVersion"] isEqual:@189]) {
+    } else if (ver < 190) {
+        // 10.01.02：新增“拦截启动时间上报”。老配置磁盘上没有这个键，
+        // BDSApplyInitialDefaults 只在内存里补 @YES，Crane 管理器读磁盘会显示关。
+        // 这里强制写一次 @YES 并落盘，只执行一次；用户之后手动关仍然有效。
+        merged[@"blockLaunchTimeUpload"] = @YES;
+        merged[@"configVersion"] = @190;
+        [merged writeToFile:p1 atomically:YES];
+    } else if (![loaded[@"configVersion"] isEqual:@190]) {
         // 新装（没有已保存配置）：模板已按策略写成 @NO，这里只补版本号，不覆盖用户选择。
-        merged[@"configVersion"] = @189;
+        merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     }
     // 没点过一键基础：内存里关掉机型伪装，不把默认 SE 写回文件。
@@ -4841,7 +4848,7 @@ static NSString *BDSConfigSummary(void) {
     for (NSDictionary *item in groups[1]) {
         if (![item[@"off"] boolValue] && !values[item[@"key"]]) values[item[@"key"]] = @NO;
     }
-    for (NSString *key in BDSFirstEnabledKeys(groups[2], 12)) values[key] = @YES;
+    for (NSString *key in BDSFirstEnabledKeys(groups[2], 13)) values[key] = @YES;
     for (NSDictionary *item in groups[2]) {
         if (![item[@"off"] boolValue] && !values[item[@"key"]]) values[item[@"key"]] = @NO;
     }
@@ -4855,7 +4862,7 @@ static NSString *BDSConfigSummary(void) {
     if (g_lastBasicSystem) {
         [values addEntriesFromDictionary:BDSBaiduSystemSyncValues(g_lastBasicSystem)];
     }
-    values[@"configVersion"] = @189;
+    values[@"configVersion"] = @190;
     BOOL saved = saveConfigValues(values);
     if (!saved) {
         [self presentMessage:@"配置文件写入失败，基础参数没有更换。" title:@"保存失败"];
@@ -4993,7 +5000,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
 - (void)randomizeAdvancedProfile {
     NSMutableDictionary *values = [BDSRandomIdentityValues() mutableCopy];
     // 与卍解一键高级语义一致：只更换五项身份值，不动开关。
-    values[@"configVersion"] = @189;
+    values[@"configVersion"] = @190;
     BOOL saved = saveConfigValues(values);
     if (!saved) {
         [self presentMessage:@"配置文件写入失败，高级参数没有更换。" title:@"保存失败"];
