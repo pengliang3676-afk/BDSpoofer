@@ -104,6 +104,7 @@
 #import <string.h>
 #import <errno.h>
 #import <stdlib.h>
+#import <mach/mach_time.h>
 #import <mach/mach.h>
 #import <SystemConfiguration/CaptiveNetwork.h>
 #import <SystemConfiguration/SystemConfiguration.h>
