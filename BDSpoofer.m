@@ -425,7 +425,9 @@ static void bds_update_c_cache(void) {
 static void loadConfig() {
     NSString *p1 = configPath();
     if (![[NSFileManager defaultManager] fileExistsAtPath:p1]) {
-        g_config = @{};
+        // 全新容器、从没点过一键随机：只补纯拦截开关 blockLaunchTimeUpload=YES，
+        // 其他开关保持关（用户策略）。cfgBool 默认值也兜底 YES，这里只是让 UI 显示开。
+        g_config = @{@"blockLaunchTimeUpload": @YES};
         bds_update_c_cache();
         return;
     }
