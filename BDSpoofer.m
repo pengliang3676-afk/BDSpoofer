@@ -5715,7 +5715,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
     NSString *realLocalIP = bds_real_lan_ip();
     NSString *currentLocalIP = bds_current_lan_ip();
 
-    // 动态库枚举自检：四个数字都是运行时实际算的
+    // 动态库枚举自检
     uint32_t dyldRaw = 0, dyldShown = 0;
     BOOL dyldInRaw = NO, dyldInShown = NO;
     bds_dyld_diag(&dyldRaw, &dyldShown, &dyldInRaw, &dyldInShown);
@@ -5732,8 +5732,8 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
          @"时区\n原始 %@\n配置 %@\n当前 %@\n\n"
          @"Wi-Fi SSID\n原始 %@\n配置 %@\n当前 %@\n\n"
          @"本地 IP\n原始 %@\n配置 %@\n当前 %@\n\n"
-         @"动态库枚举\n真实数量 %u\nApp 看到 %u\n原始列表里能找到插件 %@\n枚举结果里还能找到插件 %@"
-         @"开机时间\n真机 %@\n配置偏移 %@\nApp 实际读到 %@\n两条路一致 %@"
+         @"动态库枚举\n真实数量 %u\nApp 看到 %u\n原始列表里能找到插件 %@\n枚举结果里还能找到插件 %@\n\n"
+         @"开机时间\n真机 %@\n配置偏移 %@\nApp 实际读到 %@\n两条路一致 %@",
         cfgBool(@"enabled", NO) ? @"基础功能已开启" : @"基础功能已关闭",
         realVersion, cfgStr(@"systemVersion", @"15.4.1"), cfgStr(@"systemBuild", @"19E258"), currentVersion,
         realName, cfgStr(@"deviceName", @"iPhone"), currentName,
