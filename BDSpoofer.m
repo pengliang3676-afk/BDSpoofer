@@ -354,6 +354,31 @@ static double bds_wall_uptime_now(void) {
     return 0;
 }
 
+// 一致性检查（真检查，不是恒等式）：
+//   App 从 NSProcessInfo.systemUptime 读到的值，应当等于
+//   「当前时间 − 假开机时刻」。这两个是真独立的两个量：
+//     左边来自 mach 计时器 + 钩子加的偏移；
+//     右边来自我们写回 kern.boottime 的那个时间戳。
+//   两者对得上，才算两条路真正一致。
+//
+// 返回：>=0 为两者的绝对差（秒）；<0 表示条件不足无法比较（返回 -(原因码)）
+static double bds_boot_consistency_delta(NSTimeInterval *outFakeUp,
+                                         NSTimeInterval *outFromBoot) {
+    NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+    NSTimeInterval fakeUp = NSProcessInfo.processInfo.systemUptime;   // 走钩子
+    if (outFakeUp) *outFakeUp = fakeUp;
+
+    struct timeval bt = {0, 0};
+    size_t len = sizeof(bt);
+    int (*rawSysctl)(const char *, void *, size_t *, void *, size_t) =
+        orig_sysctlbyname ? orig_sysctlbyname : sysctlbyname;
+    if (rawSysctl("kern.boottime", &bt, &len, NULL, 0) != 0 || bt.tv_sec <= 0) return -1;
+
+    NSTimeInterval fromBoot = now - (NSTimeInterval)bt.tv_sec;
+    if (outFromBoot) *outFromBoot = fromBoot;
+    return fabs(fakeUp - fromBoot);
+}
+
 static void bds_update_c_cache(void) {
     NSString *v;
     v = cfgStr(@"hwMachine", @"iPhone14,6");
@@ -5569,10 +5594,18 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
                         bds_format_duration(wallUp), bds_format_duration(realSysUp)];
 
         if (cfgBool(@"spoofBootTime", NO)) {
-            NSTimeInterval fakeUp = NSProcessInfo.processInfo.systemUptime;   // 会被钩子改
-            bootFakeText = bds_format_duration(fakeUp);
-            NSTimeInterval expect = realSysUp + g_uptimeAddOffset;
-            bootConsistent = (fabs(fakeUp - expect) < 120) ? @"是" : @"否（两条路对不上）";
+            NSTimeInterval fakeUp = 0, fromBoot = 0;
+            double delta = bds_boot_consistency_delta(&fakeUp, &fromBoot);
+            bootFakeText = [NSString stringWithFormat:@"%@（开机时刻推算 %@）",
+                            bds_format_duration(fakeUp), bds_format_duration(fromBoot)];
+            if (delta < 0) {
+                bootConsistent = @"无法比较（读不到开机时刻）";
+            } else if (delta < 120) {
+                bootConsistent = [NSString stringWithFormat:@"是（差 %.0f 秒）", delta];
+            } else {
+                bootConsistent = [NSString stringWithFormat:@"否（差 %.0f 秒 = %.1f 天）",
+                                  delta, delta / 86400.0];
+            }
         }
     }
 
