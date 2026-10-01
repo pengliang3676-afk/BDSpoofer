@@ -343,6 +343,23 @@ static double g_uptimeAddOffset = 0;      // 加到清醒时长上的偏移，�
 // 设备休眠时不走；而 (当前时间 − 开机时刻) 是"墙钟时长"。两者天然差一个累计休眠时长。
 // 自检面板实测：墙钟 58 天 21 小时，清醒 37 天 17 小时，差 21 天 4 小时 —— 就是休眠时间。
 // 因此不能用同一个 offset 同时套两条路，必须按清醒时长的口径反推。
+// 真清醒时长（不经任何钩子）：mach_absolute_time / timebase
+static void bds_mach_timebase(double *numer, double *denom) {
+    mach_timebase_info_data_t tb = {0, 0};
+    if (mach_timebase_info(&tb) != KERN_SUCCESS || tb.denom == 0) {
+        *numer = 1; *denom = 1;
+    } else {
+        *numer = (double)tb.numer; *denom = (double)tb.denom;
+    }
+}
+
+static double bds_real_awake_uptime(void) {
+    double n = 1, d = 1;
+    bds_mach_timebase(&n, &d);
+    uint64_t ticks = mach_absolute_time();
+    return ((double)ticks * n / d) / 1e9;
+}
+
 static double bds_wall_uptime_now(void) {
     struct timeval bt = {0, 0};
     size_t len = sizeof(bt);
@@ -5585,19 +5602,16 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
         // 正确的比较对象：App 从 systemUptime 读到的值，应当等于
         //                 真实清醒时长 + g_uptimeAddOffset
         NSTimeInterval wallUp = bds_wall_uptime_now();
-        NSTimeInterval realSysUp = 0;
-        if (orig_systemUptime) {
-            realSysUp = ((NSTimeInterval (*)(id, SEL))orig_systemUptime)(
-                NSProcessInfo.processInfo, @selector(systemUptime));
-        }
+        NSTimeInterval realSysUp = bds_real_awake_uptime();   // 与偏移计算同一口径
         bootRealText = [NSString stringWithFormat:@"墙钟 %@ / 清醒 %@",
                         bds_format_duration(wallUp), bds_format_duration(realSysUp)];
 
         if (cfgBool(@"spoofBootTime", NO)) {
             NSTimeInterval fakeUp = 0, fromBoot = 0;
             double delta = bds_boot_consistency_delta(&fakeUp, &fromBoot);
-            bootFakeText = [NSString stringWithFormat:@"%@（开机时刻推算 %@）",
-                            bds_format_duration(fakeUp), bds_format_duration(fromBoot)];
+            bootFakeText = [NSString stringWithFormat:@"%@（开机时刻推算 %@，钩子加数 %@）",
+                            bds_format_duration(fakeUp), bds_format_duration(fromBoot),
+                            bds_format_duration(g_uptimeAddOffset)];
             if (delta < 0) {
                 bootConsistent = @"无法比较（读不到开机时刻）";
             } else if (delta < 120) {
@@ -5865,13 +5879,6 @@ static void bds_initialize() {
             NSInteger ov = cfgInt(@"bootTimeOffsetSeconds", 0);
             if (BDSBootOffsetSane(ov)) g_bootOffsetSeconds = (double)ov;
         }
-        if (g_bootOffsetSeconds > 0 && g_uptimeAddOffset == 0) {
-            NSTimeInterval realSys = orig_systemUptime
-                ? ((NSTimeInterval (*)(id, SEL))orig_systemUptime)(
-                      NSProcessInfo.processInfo, @selector(systemUptime)) : 0;
-            g_realSystemUptime = realSys;
-            g_uptimeAddOffset = (bds_wall_uptime_now() + g_bootOffsetSeconds) - realSys;
-        }
         if (BDS_ATOMIC_GET(g_spoofBootTimeC) && g_fakeBootTime.tv_sec == 0) {
             NSInteger offsetSeconds = cfgInt(@"bootTimeOffsetSeconds", 0);
             if (!BDSBootOffsetSane(offsetSeconds)) {
@@ -5883,13 +5890,20 @@ static void bds_initialize() {
             g_bootOffsetSeconds = (double)offsetSeconds;
             // 反推一个加到"清醒时长"上的偏移，使 systemUptime 那条路
             // 与 kern.boottime 那条路给出同一个运行时长。
+            //
+            // 关键：读真值前必须先把 systemUptime 的钩子摘掉。
+            // 否则如果本函数被二次调用（loadConfig 有多处调用点），
+            // 这里读到的会是"已经加过偏移"的假值，偏移就被加了两次
+            // （实测症状：面板显示 205 天，正确值应为 166 天，多出 39 天 = 真机清醒时长）。
+            g_uptimeAddOffset = 0;
             {
-                NSTimeInterval realSys = orig_systemUptime
-                    ? ((NSTimeInterval (*)(id, SEL))orig_systemUptime)(
-                          NSProcessInfo.processInfo, @selector(systemUptime)) : 0;
-                g_realSystemUptime = realSys;
+                // 真清醒时长直接用 mach_absolute_time 算，不碰被钩的 systemUptime。
+                // 这样无论 loadConfig 被调用几次、钩子装没装上，读到的都是真值，
+                // 从根上杜绝"偏移被加两次"（实测症状：面板 205 天，正确应为 166 天）。
+                NSTimeInterval realAwake = bds_real_awake_uptime();
+                g_realSystemUptime = realAwake;
                 NSTimeInterval wantFake = bds_wall_uptime_now() + (double)offsetSeconds;
-                g_uptimeAddOffset = wantFake - realSys;
+                g_uptimeAddOffset = wantFake - realAwake;
             }
             struct timeval realBootTime = {0, 0};
             size_t realBootTimeLength = sizeof(realBootTime);
