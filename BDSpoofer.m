@@ -330,6 +330,9 @@ static BOOL BDSBootOffsetSane(NSInteger v) {
     return v >= 86400 && v <= 365 * 86400;
 }
 
+// 下面几个辅助函数需要原版 sysctlbyname（定义在文件后部的 fishhook 段）
+static int (*orig_sysctlbyname)(const char *, void *, size_t *, void *, size_t);
+
 // 开机时间伪装：缓存。钩子函数里只做加法，不读配置、不加锁。
 static double g_bootOffsetSeconds = 0;    // 配置里的偏移（天→秒）
 static double g_lastRealUptime = 0;       // 最近一次真实 systemUptime
@@ -2747,7 +2750,6 @@ static void bds_pass_schedule_retry(void) {
 
 #pragma mark - sysctlbyname Hook（fishhook，纯 C）
 
-static int (*orig_sysctlbyname)(const char *, void *, size_t *, void *, size_t);
 
 static int bds_my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
                                 void *newp, size_t newlen) {
@@ -5607,7 +5609,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
         realLocalIP, (cfgBool(@"spoofLocalIP", NO) ? @"已拦截" : @"未拦截"), currentLocalIP,
         bootRealText,
         bds_format_duration((NSTimeInterval)cfgInt(@"bootTimeOffsetSeconds", 0)),
-        fakeUptimeText,
+        bootFakeText,
         bootConsistent];
 
     NSMutableString *advanced = [NSMutableString stringWithString:@"\n\n--- 高级功能 ---"];
