@@ -1240,6 +1240,36 @@ static float bds_battery_level(void) {
     if (elapsed < 0) elapsed = 0;
     float drop = (float)((NSUInteger)(elapsed / g_batterySecondsPerPct));
     float level = g_fakeBatteryBasePct - drop / 100.0f;
+    // 自动充电：电量掉到下限时，本次冷启动 70% 概率模拟“充过电”，
+    // 电量跳回 80~100%、基准时刻重置，之后继续缓慢下降。
+    // 决策每次启动只做一次，避免同一次运行内反复随机。
+    // batteryState 保持 Unplugged：充满后刚拔掉充电器，电量满、状态未充电，合理。
+    static BOOL chargeDecisionMade = NO;
+    static BOOL shouldCharge = NO;
+    if (!chargeDecisionMade) {
+        shouldCharge = (arc4random_uniform(100) < 70);
+        chargeDecisionMade = YES;
+    }
+    if (level <= g_batteryFloorPct && shouldCharge) {
+        NSInteger newBase = 80 + arc4random_uniform(21);       // 80~100
+        NSInteger newFloor = newBase - (15 + arc4random_uniform(31));
+        if (newFloor < 8) newFloor = 8;
+        NSInteger newSp = 100 + arc4random_uniform(181);       // 每 1% 需 100~280 秒
+        NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+        NSMutableDictionary *cfg = [g_config mutableCopy] ?: [NSMutableDictionary dictionary];
+        cfg[@"batteryBasePct"] = @(newBase);
+        cfg[@"batteryFloorPct"] = @(newFloor);
+        cfg[@"batterySecondsPerPct"] = @(newSp);
+        cfg[@"batteryBaseTime"] = @((long long)now);
+        if ([BDSConfigForPersistentStorage(cfg) writeToFile:configPath() atomically:YES]) {
+            g_config = [cfg copy];
+        }
+        g_fakeBatteryBasePct = (float)newBase / 100.0f;
+        g_batteryFloorPct = (float)newFloor / 100.0f;
+        g_batterySecondsPerPct = (double)newSp;
+        g_batteryBaseTime = (CFAbsoluteTime)now - kCFAbsoluteTimeIntervalSince1970;
+        level = g_fakeBatteryBasePct;
+    }
     if (level < g_batteryFloorPct) level = g_batteryFloorPct;
     if (level > g_fakeBatteryBasePct) level = g_fakeBatteryBasePct;
     return level;
@@ -4710,7 +4740,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.02";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.03";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
