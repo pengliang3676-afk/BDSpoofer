@@ -1,0 +1,1 @@
+fix: 补 BDSIDWriteViaAPI 前向声明

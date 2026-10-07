@@ -278,7 +278,7 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
     return v ? [v integerValue] : def;
 }
 
-// ── 10.01.05 写盘统一：前向声明（定义在下方「写盘统一」段）──
+// ── 10.01.06 写盘统一：前向声明（定义在下方「写盘统一」段）──
 static void BDSIDMapBuild(void);      // 由配置重建「容器键 → 假身份值」映射
 static void BDSIDWriteViaAPI(void);   // 用公开 API 写入统一值（cfprefsd 落盘）
 static void BDSUnifyIdentity(void);   // 建表 + 写盘 + 装钩子
@@ -846,7 +846,7 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 }
 
 
-#pragma mark - 写盘统一（10.01.05）
+#pragma mark - 写盘统一（10.01.06）
 //
 // 背景：百度极速会把「上一次读到的设备信息」缓存到容器 plist。
 //       插件只钩运行时返回值时，plist 里仍留着旧值 / 真机值，
@@ -964,7 +964,7 @@ static void BDSIDMapBuild(void) {
 
 // ── ① 用公开 API 写盘（不碰文件）────────────────────────────
 //
-// 教训（10.01.05 前两版实测）：
+// 教训（10.01.06 前两版实测）：
 //   · 直接 writeToFile: 重写域文件 → 和 App 内存副本打架，440 键被写成 290 个
 //   · 钩 setObject:forKey: 忽略写入 → App 写不进去，落盘也没这些键，同样丢数据
 //
@@ -4883,6 +4883,31 @@ static NSString *BDSConfigSummary(void) {
     [summary appendFormat:@"\n\n反关联增强：%@\n收益额上报：%@",
         associationEnabled ? @"已开启" : @"已关闭",
         cfgBool(@"blockStatCashTelemetry", NO) ? @"已开启" : @"已关闭"];
+
+    // 金额拦截命中统计（Blocker 写 Documents/bdspoofer_cash_hits.plist）
+    {
+        NSString *docs = [NSSearchPathForDirectoriesInDomains(
+            NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+        NSDictionary *hits = [NSDictionary dictionaryWithContentsOfFile:
+            [docs stringByAppendingPathComponent:@"bdspoofer_cash_hits.plist"]];
+        if (hits) {
+            [summary appendFormat:@"\n拦到次数：%@（网页 %@ / 原生 %@）",
+                hits[@"total"] ?: @0, hits[@"src.web"] ?: @0, hits[@"src.native"] ?: @0];
+            NSDate *when = hits[@"lastTime"];
+            if ([when isKindOfClass:NSDate.class]) {
+                static NSDateFormatter *df = nil;
+                static dispatch_once_t onceDf;
+                dispatch_once(&onceDf, ^{
+                    df = [NSDateFormatter new];
+                    df.dateFormat = @"MM-dd HH:mm:ss";
+                });
+                [summary appendFormat:@"\n最近：%@  %@", [df stringFromDate:when],
+                    hits[@"lastSource"] ?: @"?"];
+            }
+        } else if (cfgBool(@"blockStatCashTelemetry", NO)) {
+            [summary appendString:@"\n拦到次数：0（还没命中过）"];
+        }
+    }
     return summary;
 }
 
@@ -5047,7 +5072,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.05";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.06";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;

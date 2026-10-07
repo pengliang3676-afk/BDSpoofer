@@ -64,6 +64,7 @@ static BOOL BDSCashTelemetryRequestIsTarget(NSURLRequest *request) {
     return [super requestIsCacheEquivalent:a toRequest:b];
 }
 - (void)startLoading {
+    BDSCashRecordHit(@"native", self.request.URL.absoluteString ?: @"");
     NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc]
         initWithURL:self.request.URL
         statusCode:204
@@ -81,6 +82,7 @@ static BOOL BDSCashTelemetryRequestIsTarget(NSURLRequest *request) {
 static NSString * const BDSCashTelemetryBlockScript = @
 "(function(){"
 "if(window.__bdsCashBlockInstalled)return;"
+"function __bdsCashHit(u){try{window.webkit.messageHandlers.bdsCashHit.postMessage(u||'');}catch(x){}}"
 "window.__bdsCashBlockInstalled=true;"
 "var blank='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';"
 "function on(){try{return typeof window.__bdsBlockStatCashTelemetry==='boolean'?window.__bdsBlockStatCashTelemetry:true;}catch(x){return true;}}"
@@ -93,7 +95,9 @@ static NSString * const BDSCashTelemetryBlockScript = @
 "if(u.pathname!=='/ztbox')return false;"
 "if(u.searchParams.get('action')!=='zpblog')return false;"
 "var a=JSON.parse(u.searchParams.get('data')||'null'),ad=a&&a.actiondata,c=ad&&ad.content,e=c&&c.ext;"
-"return String(ad&&ad.id)==='10290'&&!!c&&c.page==='y_mission_index'&&c.type==='c_pv'&&!!e&&e.num!==undefined&&e.num!==null;"
+"var ok=String(ad&&ad.id)==='10290'&&!!c&&c.page==='y_mission_index'&&c.type==='c_pv'&&!!e&&e.num!==undefined&&e.num!==null;"
+"if(ok){try{__bdsCashHit(String(v));}catch(x){}}"
+"return ok;"
 "}catch(x){return false;}"
 "}"
 "try{"
@@ -133,11 +137,74 @@ static void BDSEnsureCashTelemetryBlockScript(WKUserContentController *controlle
     [controller addUserScript:script];
 }
 
+#pragma mark - 金额拦截命中记录
+
+static NSString *BDSCashHitLogPath(void) {
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    return [docs stringByAppendingPathComponent:@"bdspoofer_cash_hits.plist"];
+}
+
+static void BDSCashRecordHit(NSString *source, NSString *url) {
+    static NSLock *lock = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSLock new]; });
+    [lock lock];
+    @autoreleasepool {
+        NSString *p = BDSCashHitLogPath();
+        NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:p]
+                              ?: [NSMutableDictionary dictionary];
+        d[@"total"] = @([d[@"total"] integerValue] + 1);
+        NSString *k = [NSString stringWithFormat:@"src.%@", source ?: @"?"];
+        d[k] = @([d[k] integerValue] + 1);
+        d[@"lastTime"] = [NSDate date];
+        d[@"lastSource"] = source ?: @"?";
+        if (url.length) {
+            d[@"lastURL"] = [url length] > 600 ? [url substringToIndex:600] : url;
+        }
+        NSMutableArray *recent = [d[@"recent"] mutableCopy] ?: [NSMutableArray array];
+        if (url.length) {
+            NSString *u = [url length] > 400 ? [url substringToIndex:400] : url;
+            [recent insertObject:u atIndex:0];
+            while (recent.count > 8) [recent removeLastObject];
+        }
+        d[@"recent"] = recent;
+        [d writeToFile:p atomically:YES];
+    }
+    [lock unlock];
+}
+
+@interface BDSCashHitHandler : NSObject <WKScriptMessageHandler>
+@end
+@implementation BDSCashHitHandler
+- (void)userContentController:(WKUserContentController *)ucc
+      didReceiveScriptMessage:(WKScriptMessage *)message {
+    (void)ucc;
+    if (![message.name isEqualToString:@"bdsCashHit"]) return;
+    NSString *u = [message.body isKindOfClass:NSString.class] ? message.body : @"";
+    BDSCashRecordHit(@"web", u);
+}
+@end
+
+static BDSCashHitHandler *g_cashHitHandler = nil;
+
+static void BDSCashInstallHitHandler(WKUserContentController *ucc) {
+    if (!ucc) return;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ g_cashHitHandler = [BDSCashHitHandler new]; });
+    @try {
+        [ucc addScriptMessageHandler:g_cashHitHandler name:@"bdsCashHit"];
+    } @catch (NSException *e) {
+        (void)e;   // 同一 controller 重复注册会抛，忽略
+    }
+}
+
 static IMP g_bdsCashOriginalWKInit = NULL;
 static WKWebView *BDSCashWKInit(id self, SEL command, CGRect frame, WKWebViewConfiguration *configuration) {
     // 只在这个钩子确实装上时才会走到这里，也就是开关在启动时是打开的。
     // 新建的 WebView 补一份 =true 的脚本；关掉开关后不新建的页面不受影响，
     // 原生请求那条路由判定入口每次读开关负责，关掉立即放行。
+    BDSCashInstallHitHandler(configuration.userContentController);
     BDSEnsureCashTelemetryBlockScript(configuration.userContentController, YES);
     WKWebView *(*original)(id, SEL, CGRect, WKWebViewConfiguration *) = (void *)g_bdsCashOriginalWKInit;
     return original(self, command, frame, configuration);
@@ -170,6 +237,7 @@ static NSURLSession *BDSCashSession(Class receiver, SEL command, NSURLSessionCon
 static void BDSInstallCashTelemetryBlocking(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        BDSCashRecordHit(@"install", @"金额拦截已安装");
         [NSURLProtocol registerClass:BDSCashTelemetryBlockProtocol.class];
         Class sessionClass = NSURLSession.class;
         Method withDelegate = class_getClassMethod(sessionClass, @selector(sessionWithConfiguration:delegate:delegateQueue:));
