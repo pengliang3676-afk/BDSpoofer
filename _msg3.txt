@@ -1,0 +1,17 @@
+Fix 10.01.05: 去掉直接重写 plist（会丢键），只保留 NSUserDefaults 钩子
+
+实测问题（真机验证，已恢复数据）：
+  首版在 App 启动后直接 writeToFile: 重写 UserDefaults 域文件，
+  与 App 自己的内存副本冲突，把 440 个键覆盖成 309 个，丢掉：
+    SAPI_LOCAL_LOGINMODEL / SAPI_LOCAL_PTOKEN / SAPI_LOCAL_STOKEN
+    UTDID / OpenUDID / BBAActivationManagerCuidPreviousKey
+  等 139 个键（含登录态）。
+  已用容器内原始副本完整还原（440 键）。
+
+改动：
+  ① 删除 BDSIDWriteToDisk()，不再碰 plist 文件
+  ② 只保留 NSUserDefaults 的 objectForKey: / stringForKey: / setObject:forKey: 钩子
+     —— 在读取层强制统一，不落盘、不丢键
+  ③ 修版本号拼接 bug：ShortVersion 已是 7.11.0.10，不再拼 CFBundleVersion
+     （原先拼成 7.11.0.7.11.0.10）
+  ④ 补 BBAUserAgentKey 进映射表（真机 UA 那句也要跟上）

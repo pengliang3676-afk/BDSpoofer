@@ -912,9 +912,9 @@ static NSString *BDSIDAppVersion(void) {
     NSDictionary *info = NSBundle.mainBundle.infoDictionary;
     NSString *s = info[@"CFBundleShortVersionString"];
     NSString *b = info[@"CFBundleVersion"];
-    if (s.length && b.length) v = [NSString stringWithFormat:@"%@.%@", s, b];
-    else if (s.length)        v = s;
-    else                      v = @"";
+    // 百度极速的 CFBundleVersion 是 7.11.0.10，而 ShortVersion 是 7.11.0 —— 直接用 ShortVersion，
+    // 不要拼接（拼出来是 7.11.0.7.11.0.10，比不改还糟）。
+    v = s.length ? s : (b.length ? b : @"");
     return v;
 }
 
@@ -949,6 +949,7 @@ static void BDSIDMapBuild(void) {
     }
     BDSIDMapSet(@"PASS_CUSTOM_UA_WK", realUA);
     BDSIDMapSet(@"kBBASplashUserDefaultConfQueryUserAgent", realUA);
+    BDSIDMapSet(@"BBAUserAgentKey", realUA);          // 真机 UA 那句也必须跟上
 
     // ⑤ 版本号：跟实际 App 版本对齐（容器里停在旧版本本身也是异常）
     NSString *appVer = BDSIDAppVersion();
@@ -959,36 +960,13 @@ static void BDSIDMapBuild(void) {
     }
 }
 
-// ── ① 直接把值写进容器 plist ───────────────────────────────
-static void BDSIDWriteToDisk(void) {
-    if (!g_idCount) return;
-    NSString *prefsDir = [NSSearchPathForDirectoriesInDomains(
-        NSLibraryDirectory, NSUserDomainMask, YES).firstObject
-        stringByAppendingPathComponent:@"Preferences"];
-    NSString *bid = NSBundle.mainBundle.bundleIdentifier;
-    if (!bid.length) return;
-    NSString *file = [prefsDir stringByAppendingPathComponent:
-                      [bid stringByAppendingPathExtension:@"plist"]];
-
-    NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:file];
-    if (!d) d = [NSMutableDictionary dictionary];
-
-    int changed = 0;
-    for (int i = 0; i < g_idCount; i++) {
-        NSString *old = d[g_idKeys[i]];
-        if ([old isKindOfClass:NSString.class] && [old isEqualToString:g_idVals[i]]) continue;
-        d[g_idKeys[i]] = g_idVals[i];
-        changed++;
-    }
-    if (!changed) return;
-
-    // 先备份原文件（只备一次），出问题能还原
-    NSString *bak = [file stringByAppendingString:@".bdspoofer.bak"];
-    if (![NSFileManager.defaultManager fileExistsAtPath:bak]) {
-        [NSFileManager.defaultManager copyItemAtPath:file toPath:bak error:NULL];
-    }
-    [d writeToFile:file atomically:YES];
-}
+// ── ① 不再直接重写 plist 文件 ───────────────────────────────
+//
+// 教训（10.01.05 首版实测）：App 启动后会把 UserDefaults 读进内存，
+// 此时插件直接 writeToFile: 重写域文件，会和 App 自己的内存副本打架：
+//   · 文件里 440 个键被覆盖成内存里的 309 个 → 丢数据
+//   · App 之后 flush 又会把插件写的值盖回去 → 不可靠
+// 所以改成只走下面的 NSUserDefaults 钩子，在读取层强制统一。
 
 // ── ② 钩 NSUserDefaults，强制读写一致 ──────────────────────
 static IMP orig_ud_objectForKey = NULL;
@@ -1051,7 +1029,6 @@ static void BDSIDInstallHooks(void) {
 static void BDSUnifyIdentity(void) {
     BDSIDMapBuild();
     if (!g_idCount) return;
-    BDSIDWriteToDisk();
     BDSIDInstallHooks();
 }
 
