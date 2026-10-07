@@ -992,16 +992,42 @@ static void BDSIDDiagHit(NSString *key, NSString *val) {
     }
 }
 
+// 未命中记录：把 App 读过的、但我们表里没有的键也记下来
+static void BDSIDDiagMiss(NSString *key) {
+    if (!key.length) return;
+    if (![key containsString:@"Baidu"] && ![key containsString:@"PASS_"] &&
+        ![key containsString:@"cuid"] && ![key containsString:@"UserAgent"] &&
+        ![key hasPrefix:@"kBB"] && ![key hasPrefix:@"kBD"] &&
+        ![key hasPrefix:@"BIM"] && ![key hasPrefix:@"SAPI"])
+        return;
+    static NSMutableSet *seen = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ seen = [NSMutableSet set]; });
+    @synchronized (seen) {
+        if ([seen containsObject:key]) return;
+        [seen addObject:key];
+        NSString *docs = [NSSearchPathForDirectoriesInDomains(
+            NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+        NSString *f = [docs stringByAppendingPathComponent:@"bdspoofer_unify_miss.plist"];
+        NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:f]
+                               ?: [NSMutableDictionary dictionary];
+        d[key] = @(YES);
+        [d writeToFile:f atomically:YES];
+    }
+}
+
 static id new_ud_objectForKey(id self, SEL _cmd, NSString *key) {
     NSString *v = BDSIDMapLookup(key);
     if (v) { BDSIDDiagHit(key, v); return v; }
+    BDSIDDiagMiss(key);
     return orig_ud_objectForKey
         ? ((id (*)(id, SEL, NSString *))orig_ud_objectForKey)(self, _cmd, key) : nil;
 }
 
 static NSString *new_ud_stringForKey(id self, SEL _cmd, NSString *key) {
     NSString *v = BDSIDMapLookup(key);
-    if (v) return v;
+    if (v) { BDSIDDiagHit(key, v); return v; }
+    BDSIDDiagMiss(key);
     return orig_ud_stringForKey
         ? ((NSString *(*)(id, SEL, NSString *))orig_ud_stringForKey)(self, _cmd, key) : nil;
 }
@@ -1011,6 +1037,33 @@ static void new_ud_setObject(id self, SEL _cmd, id value, NSString *key) {
     if (BDSIDMapLookup(key)) return;
     if (orig_ud_setObject)
         ((void (*)(id, SEL, id, NSString *))orig_ud_setObject)(self, _cmd, value, key);
+}
+
+// App 可能整份取域字典（dictionaryRepresentation / persistentDomainForName:），
+// 那条路不经过 objectForKey:，必须单独处理。O(n) 只在有伪装时生效。
+static IMP orig_ud_dictRep = NULL;
+static IMP orig_ud_persistDomain = NULL;
+
+static NSDictionary *BDSIDOverride(NSDictionary *src) {
+    if (![src isKindOfClass:NSDictionary.class] || !g_idCount) return src;
+    NSMutableDictionary *d = [src mutableCopy];
+    for (int i = 0; i < g_idCount; i++) {
+        if (d[g_idKeys[i]] || src[g_idKeys[i]] == nil) { /* 有就覆盖，没有也补上 */ }
+        d[g_idKeys[i]] = g_idVals[i];
+    }
+    return d;
+}
+
+static NSDictionary *new_ud_dictRep(id self, SEL _cmd) {
+    NSDictionary *r = orig_ud_dictRep
+        ? ((NSDictionary *(*)(id, SEL))orig_ud_dictRep)(self, _cmd) : nil;
+    return BDSIDOverride(r);
+}
+
+static NSDictionary *new_ud_persistDomain(id self, SEL _cmd, NSString *name) {
+    NSDictionary *r = orig_ud_persistDomain
+        ? ((NSDictionary *(*)(id, SEL, NSString *))orig_ud_persistDomain)(self, _cmd, name) : nil;
+    return BDSIDOverride(r);
 }
 
 static void BDSIDInstallHooks(void) {
@@ -1040,6 +1093,22 @@ static void BDSIDInstallHooks(void) {
         if (b != (IMP)new_ud_setObject) {
             method_setImplementation(m, (IMP)new_ud_setObject);
             orig_ud_setObject = b;
+        }
+    }
+    m = class_getInstanceMethod(ud, @selector(dictionaryRepresentation));
+    if (m) {
+        IMP b = method_getImplementation(m);
+        if (b != (IMP)new_ud_dictRep) {
+            method_setImplementation(m, (IMP)new_ud_dictRep);
+            orig_ud_dictRep = b;
+        }
+    }
+    m = class_getInstanceMethod(ud, @selector(persistentDomainForName:));
+    if (m) {
+        IMP b = method_getImplementation(m);
+        if (b != (IMP)new_ud_persistDomain) {
+            method_setImplementation(m, (IMP)new_ud_persistDomain);
+            orig_ud_persistDomain = b;
         }
     }
 }

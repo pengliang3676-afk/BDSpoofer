@@ -1,0 +1,4 @@
+Add 10.01.05 diagnostic: 记录 NSUserDefaults 钩子命中 + 映射表内容
+
+用途：确认插件是否加载、配置是否读到、钩子是否被调用。
+输出到 App Documents/bdspoofer_unify_diag.plist。
