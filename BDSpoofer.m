@@ -973,9 +973,28 @@ static IMP orig_ud_objectForKey = NULL;
 static IMP orig_ud_stringForKey = NULL;
 static IMP orig_ud_setObject    = NULL;
 
+// 诊断：记录命中的键（每个键只记一次）
+static void BDSIDDiagHit(NSString *key, NSString *val) {
+    static NSMutableSet *seen = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ seen = [NSMutableSet set]; });
+    @synchronized (seen) {
+        if ([seen containsObject:key]) return;
+        [seen addObject:key];
+        NSString *docs = [NSSearchPathForDirectoriesInDomains(
+            NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+        NSString *f = [docs stringByAppendingPathComponent:@"bdspoofer_unify_diag.plist"];
+        NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:f]
+                               ?: [NSMutableDictionary dictionary];
+        d[key] = val ?: @"";
+        d[@"_hits"] = @([d[@"_hits"] integerValue] + 1);
+        [d writeToFile:f atomically:YES];
+    }
+}
+
 static id new_ud_objectForKey(id self, SEL _cmd, NSString *key) {
     NSString *v = BDSIDMapLookup(key);
-    if (v) return v;
+    if (v) { BDSIDDiagHit(key, v); return v; }
     return orig_ud_objectForKey
         ? ((id (*)(id, SEL, NSString *))orig_ud_objectForKey)(self, _cmd, key) : nil;
 }
@@ -1030,6 +1049,16 @@ static void BDSUnifyIdentity(void) {
     BDSIDMapBuild();
     if (!g_idCount) return;
     BDSIDInstallHooks();
+
+    // 诊断：把映射表本身写出来（证明插件跑到了、配置读到了）
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSMutableDictionary *d = [NSMutableDictionary dictionary];
+    d[@"_entries"] = @(g_idCount);
+    d[@"_home"] = NSHomeDirectory() ?: @"?";
+    for (int i = 0; i < g_idCount; i++) d[g_idKeys[i]] = g_idVals[i];
+    [d writeToFile:[docs stringByAppendingPathComponent:@"bdspoofer_unify_diag.plist"]
+        atomically:YES];
 }
 
 #pragma mark - 拦截启动时间上报（百度极速 BBALaunchDeviceInfoDBHelper）
