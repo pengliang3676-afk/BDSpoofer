@@ -1,0 +1,29 @@
+Ship 10.01.05: 写盘统一 —— 消除容器 plist 里的设备身份矛盾
+
+背景（真机实测）：
+  百度极速会把上一次读到的设备信息缓存进容器 plist，
+  插件只钩运行时返回值时，plist 里仍留着旧值/真机值，导致同一容器内
+  同时存在多套互相矛盾的设备身份：
+
+    com.baidu.baidumobile.cuidDeviceInfo  = iPhone12,8      （真机）
+    BBAUserAgentCheckInfoKey              = _iPhone16,2_18.7
+    PASS_CUSTOM_SYS_VER                   = 15.4.1
+    BBAUserAgentKey                       = ...OS 16_5...   （真机）
+    kBBASplashUserDefaultConfQueryUserAgent = ...OS 18_7...
+
+  百度交叉比对即可看出被改过。
+
+本次改动（只做一致性，不新增伪装值）：
+  ① 新增「键 → 值」映射表，由配置生成：
+       cuidDeviceInfo                ← hwMachine
+       BBAUserAgentCheckInfoKey      ← _机型_系统版本
+       PASS_CUSTOM_SYS_VER           ← systemVersion
+       PASS_CUSTOM_UA_WK             ← 与配置一致的 UA
+       kBBASplash...QueryUserAgent   ← 同上
+       kBDPDeviceLastAppVersion 等   ← 实际 App 版本
+  ② App 启动最早时机直接写进容器 plist（先备份 .bdspoofer.bak）
+  ③ 钩 NSUserDefaults 的 objectForKey: / stringForKey: / setObject:forKey:
+     读返回统一值，写忽略 —— 保证运行期也一致
+  ④ 配置变化时重建映射（loadConfig / saveConfigValues 各加一次）
+
+明确不碰：cuid / cuidPrevious / UTDID / OpenUDID / 登录态

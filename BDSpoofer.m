@@ -699,6 +699,7 @@ static void loadConfig() {
     }
     g_config = [merged copy];
     bds_update_c_cache();
+    BDSIDMapBuild();          // 配置变了 → 重建「容器键 → 假身份值」映射
 }
 
 static BOOL saveConfigValues(NSDictionary *values) {
@@ -709,6 +710,7 @@ static BOOL saveConfigValues(NSDictionary *values) {
     if (saved) {
         g_config = [next copy];
         bds_update_c_cache();
+        BDSIDMapBuild();      // 卍解改了配置 → 重建映射
         // C 层 Hook 属于高级功能，不能被基础总开关 enabled 一并关闭。
         BDS_ATOMIC_SET(g_enabledC, BDSHasEnabledCHookFeature() ? 1 : 0);
         BDS_ATOMIC_SET(g_spoofSysctlC, cfgBool(@"spoofSysctl", NO) ? 1 : 0);
@@ -835,6 +837,218 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
         if (oldImp) *oldImp = method_getImplementation(m);
         method_setImplementation(m, newImp);
     }
+}
+
+
+#pragma mark - 写盘统一（10.01.05）
+//
+// 背景：百度极速会把「上一次读到的设备信息」缓存到容器 plist。
+//       插件只钩运行时返回值时，plist 里仍留着旧值 / 真机值，
+//       于是同一个容器里出现多套互相矛盾的设备身份：
+//         com.baidu.baidumobile.cuidDeviceInfo   = iPhone12,8   （真机）
+//         BBAUserAgentCheckInfoKey               = _iPhone16,2_18.7
+//         PASS_CUSTOM_SYS_VER                    = 15.4.1
+//         BBAUserAgentKey                        = ...OS 16_5... （真机）
+//       百度拿这几个交叉比对即可看出被改过。
+//
+// 做法：
+//   ① App 启动最早时机，直接把目标 key 写进容器 plist 文件
+//   ② 钩 NSUserDefaults 的读/写，按「键 → 值」表强制一致
+//
+// 只处理「设备身份」相关键。cuid / UTDID / OpenUDID / 登录态一律不碰。
+
+// ── 键 → 值 映射表（运行时生成，配置变了要重建）────────────────
+#define BDS_IDMAP_MAX 16
+static NSString *g_idKeys[BDS_IDMAP_MAX];
+static NSString *g_idVals[BDS_IDMAP_MAX];
+static int       g_idCount = 0;
+
+static NSString *BDSIDMapLookup(NSString *key) {
+    if (!key.length || !g_idCount) return nil;
+    for (int i = 0; i < g_idCount; i++) {
+        NSString *k = g_idKeys[i];
+        if (k && k.length == key.length && [k isEqualToString:key]) return g_idVals[i];
+    }
+    return nil;
+}
+
+static void BDSIDMapSet(NSString *key, NSString *val) {
+    if (!key.length || !val.length || g_idCount >= BDS_IDMAP_MAX) return;
+    for (int i = 0; i < g_idCount; i++) {
+        if ([g_idKeys[i] isEqualToString:key]) { g_idVals[i] = [val copy]; return; }
+    }
+    g_idKeys[g_idCount] = [key copy];
+    g_idVals[g_idCount] = [val copy];
+    g_idCount++;
+}
+
+// 「15.4.1」→「15_4_1」（UA 里的写法）
+static NSString *BDSIDUnder(NSString *ver) {
+    if (!ver.length) return @"15_4_1";
+    return [ver stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+}
+
+// 由 UA 模板拼出与配置一致的 UA（只换 CPU 段的系统号）
+static NSString *BDSIDFixUA(NSString *ua, NSString *sysVer) {
+    if (![ua isKindOfClass:NSString.class] || !ua.length) return ua;
+    NSString *want = [NSString stringWithFormat:@"CPU iPhone OS %@ like", BDSIDUnder(sysVer)];
+    NSRange r = [ua rangeOfString:@"CPU iPhone OS "];
+    if (r.location == NSNotFound) return ua;
+    NSRange tail = [ua rangeOfString:@" like" options:0
+                              range:NSMakeRange(r.location, ua.length - r.location)];
+    if (tail.location == NSNotFound) return ua;
+    NSRange full = NSMakeRange(r.location, NSMaxRange(tail) - r.location);
+    return [ua stringByReplacingCharactersInRange:full withString:want];
+}
+
+// 读 App 自己的版本（Info.plist），用于把「上次版本」这类键对齐
+static NSString *BDSIDAppVersion(void) {
+    static NSString *v = nil;
+    if (v) return v;
+    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
+    NSString *s = info[@"CFBundleShortVersionString"];
+    NSString *b = info[@"CFBundleVersion"];
+    if (s.length && b.length) v = [NSString stringWithFormat:@"%@.%@", s, b];
+    else if (s.length)        v = s;
+    else                      v = @"";
+    return v;
+}
+
+// 重建映射表
+static void BDSIDMapBuild(void) {
+    g_idCount = 0;
+
+    NSString *machine = cfgStr(@"hwMachine", nil);
+    NSString *sysVer  = cfgStr(@"systemVersion", nil);
+    if (!machine.length || !sysVer.length) return;         // 没伪装就不做
+
+    // ① 机型
+    BDSIDMapSet(@"com.baidu.baidumobile.cuidDeviceInfo", machine);
+
+    // ② UA 检查键：_机型_系统版本
+    BDSIDMapSet(@"BBAUserAgentCheckInfoKey",
+                [NSString stringWithFormat:@"_%@_%@", machine, sysVer]);
+
+    // ③ 自定义系统版本
+    BDSIDMapSet(@"PASS_CUSTOM_SYS_VER", sysVer);
+
+    // ④ UA：以真机 UA 为模板，只换 CPU 段系统号
+    NSString *realUA = cfgStr(@"userAgent", nil);
+    if (!realUA.length) {
+        // 没有配置 UA 就自己拼一条 iOS 标准 UA
+        realUA = [NSString stringWithFormat:
+                  @"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) "
+                  @"AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+                  BDSIDUnder(sysVer)];
+    } else {
+        realUA = BDSIDFixUA(realUA, sysVer);
+    }
+    BDSIDMapSet(@"PASS_CUSTOM_UA_WK", realUA);
+    BDSIDMapSet(@"kBBASplashUserDefaultConfQueryUserAgent", realUA);
+
+    // ⑤ 版本号：跟实际 App 版本对齐（容器里停在旧版本本身也是异常）
+    NSString *appVer = BDSIDAppVersion();
+    if (appVer.length) {
+        BDSIDMapSet(@"kBDPDeviceLastAppVersion", appVer);
+        BDSIDMapSet(@"BNPush_app_version_old", appVer);
+        BDSIDMapSet(@"protocol_current_app_version", appVer);
+    }
+}
+
+// ── ① 直接把值写进容器 plist ───────────────────────────────
+static void BDSIDWriteToDisk(void) {
+    if (!g_idCount) return;
+    NSString *prefsDir = [NSSearchPathForDirectoriesInDomains(
+        NSLibraryDirectory, NSUserDomainMask, YES).firstObject
+        stringByAppendingPathComponent:@"Preferences"];
+    NSString *bid = NSBundle.mainBundle.bundleIdentifier;
+    if (!bid.length) return;
+    NSString *file = [prefsDir stringByAppendingPathComponent:
+                      [bid stringByAppendingPathExtension:@"plist"]];
+
+    NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:file];
+    if (!d) d = [NSMutableDictionary dictionary];
+
+    int changed = 0;
+    for (int i = 0; i < g_idCount; i++) {
+        NSString *old = d[g_idKeys[i]];
+        if ([old isKindOfClass:NSString.class] && [old isEqualToString:g_idVals[i]]) continue;
+        d[g_idKeys[i]] = g_idVals[i];
+        changed++;
+    }
+    if (!changed) return;
+
+    // 先备份原文件（只备一次），出问题能还原
+    NSString *bak = [file stringByAppendingString:@".bdspoofer.bak"];
+    if (![NSFileManager.defaultManager fileExistsAtPath:bak]) {
+        [NSFileManager.defaultManager copyItemAtPath:file toPath:bak error:NULL];
+    }
+    [d writeToFile:file atomically:YES];
+}
+
+// ── ② 钩 NSUserDefaults，强制读写一致 ──────────────────────
+static IMP orig_ud_objectForKey = NULL;
+static IMP orig_ud_stringForKey = NULL;
+static IMP orig_ud_setObject    = NULL;
+
+static id new_ud_objectForKey(id self, SEL _cmd, NSString *key) {
+    NSString *v = BDSIDMapLookup(key);
+    if (v) return v;
+    return orig_ud_objectForKey
+        ? ((id (*)(id, SEL, NSString *))orig_ud_objectForKey)(self, _cmd, key) : nil;
+}
+
+static NSString *new_ud_stringForKey(id self, SEL _cmd, NSString *key) {
+    NSString *v = BDSIDMapLookup(key);
+    if (v) return v;
+    return orig_ud_stringForKey
+        ? ((NSString *(*)(id, SEL, NSString *))orig_ud_stringForKey)(self, _cmd, key) : nil;
+}
+
+static void new_ud_setObject(id self, SEL _cmd, id value, NSString *key) {
+    // 这些键由插件说了算，App 想改回去就忽略
+    if (BDSIDMapLookup(key)) return;
+    if (orig_ud_setObject)
+        ((void (*)(id, SEL, id, NSString *))orig_ud_setObject)(self, _cmd, value, key);
+}
+
+static void BDSIDInstallHooks(void) {
+    if (!g_idCount) return;                       // 没伪装不装钩子
+    Class ud = objc_getClass("NSUserDefaults");
+    if (!ud) return;
+    Method m;
+    m = class_getInstanceMethod(ud, @selector(objectForKey:));
+    if (m) {
+        IMP b = method_getImplementation(m);
+        if (b != (IMP)new_ud_objectForKey) {
+            method_setImplementation(m, (IMP)new_ud_objectForKey);
+            orig_ud_objectForKey = b;
+        }
+    }
+    m = class_getInstanceMethod(ud, @selector(stringForKey:));
+    if (m) {
+        IMP b = method_getImplementation(m);
+        if (b != (IMP)new_ud_stringForKey) {
+            method_setImplementation(m, (IMP)new_ud_stringForKey);
+            orig_ud_stringForKey = b;
+        }
+    }
+    m = class_getInstanceMethod(ud, @selector(setObject:forKey:));
+    if (m) {
+        IMP b = method_getImplementation(m);
+        if (b != (IMP)new_ud_setObject) {
+            method_setImplementation(m, (IMP)new_ud_setObject);
+            orig_ud_setObject = b;
+        }
+    }
+}
+
+// 对外入口：构造映射 → 写盘 → 装钩子
+static void BDSUnifyIdentity(void) {
+    BDSIDMapBuild();
+    if (!g_idCount) return;
+    BDSIDWriteToDisk();
+    BDSIDInstallHooks();
 }
 
 #pragma mark - 拦截启动时间上报（百度极速 BBALaunchDeviceInfoDBHelper）
@@ -4740,7 +4954,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.03";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.05";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5916,6 +6130,10 @@ static void bds_initialize() {
 
         NSString *bundleID = [NSBundle mainBundle].bundleIdentifier;
         if (![bundleID isEqualToString:@"com.baidu.BaiduMobileInfo"]) return;
+
+        // 写盘统一：把容器 plist 里互相矛盾的设备身份统一成同一套假身份。
+        // 必须在任何网络请求之前跑完，否则百度可能已经读到旧值。
+        BDSUnifyIdentity();
 
         // 配置入口始终安装
         BDSInstallUI();
