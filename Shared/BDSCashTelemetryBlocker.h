@@ -52,6 +52,11 @@ static BOOL BDSCashTelemetryRequestIsTarget(NSURLRequest *request) {
            amountTypeOK;
 }
 
+// 命中记录的前向声明（实现在文件下方，startLoading 里要用）
+static NSString *BDSCashHitLogPath(void);
+static void BDSCashRecordHit(NSString *source, NSString *url);
+static void BDSCashInstallHitHandler(WKUserContentController *ucc);
+
 @interface BDSCashTelemetryBlockProtocol : NSURLProtocol
 @end
 
