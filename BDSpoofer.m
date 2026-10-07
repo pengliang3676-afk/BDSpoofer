@@ -704,6 +704,7 @@ static void loadConfig() {
     g_config = [merged copy];
     bds_update_c_cache();
     BDSIDMapBuild();          // 配置变了 → 重建「容器键 → 假身份值」映射
+    BDSIDWriteViaAPI();       // 并把新值写进去
 }
 
 static BOOL saveConfigValues(NSDictionary *values) {
@@ -960,13 +961,23 @@ static void BDSIDMapBuild(void) {
     }
 }
 
-// ── ① 不再直接重写 plist 文件 ───────────────────────────────
+// ── ① 用公开 API 写盘（不碰文件）────────────────────────────
 //
-// 教训（10.01.05 首版实测）：App 启动后会把 UserDefaults 读进内存，
-// 此时插件直接 writeToFile: 重写域文件，会和 App 自己的内存副本打架：
-//   · 文件里 440 个键被覆盖成内存里的 309 个 → 丢数据
-//   · App 之后 flush 又会把插件写的值盖回去 → 不可靠
-// 所以改成只走下面的 NSUserDefaults 钩子，在读取层强制统一。
+// 教训（10.01.05 前两版实测）：
+//   · 直接 writeToFile: 重写域文件 → 和 App 内存副本打架，440 键被写成 290 个
+//   · 钩 setObject:forKey: 忽略写入 → App 写不进去，落盘也没这些键，同样丢数据
+//
+// 正解：走 [NSUserDefaults setObject:forKey:] + synchronize，
+//       让 cfprefsd 自己合并落盘 —— 不丢键，也不和内存打架。
+static void BDSIDWriteViaAPI(void) {
+    if (!g_idCount) return;
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    if (!ud) return;
+    for (int i = 0; i < g_idCount; i++) {
+        [ud setObject:g_idVals[i] forKey:g_idKeys[i]];
+    }
+    [ud synchronize];
+}
 
 // ── ② 钩 NSUserDefaults，强制读写一致 ──────────────────────
 static IMP orig_ud_objectForKey = NULL;
@@ -1032,9 +1043,10 @@ static NSString *new_ud_stringForKey(id self, SEL _cmd, NSString *key) {
         ? ((NSString *(*)(id, SEL, NSString *))orig_ud_stringForKey)(self, _cmd, key) : nil;
 }
 
+// 不再拦截写入。
+// 早期版本在这里「忽略这些键的写入」，结果 App 写不进去、cfprefsd 后续落盘也没有这些键，
+// 把 plist 越写越少（440 → 290）。改成只管读，值由下面的 setObject 统一写入。
 static void new_ud_setObject(id self, SEL _cmd, id value, NSString *key) {
-    // 这些键由插件说了算，App 想改回去就忽略
-    if (BDSIDMapLookup(key)) return;
     if (orig_ud_setObject)
         ((void (*)(id, SEL, id, NSString *))orig_ud_setObject)(self, _cmd, value, key);
 }
@@ -1117,7 +1129,8 @@ static void BDSIDInstallHooks(void) {
 static void BDSUnifyIdentity(void) {
     BDSIDMapBuild();
     if (!g_idCount) return;
-    BDSIDInstallHooks();
+    BDSIDWriteViaAPI();     // 用公开 API 写入统一值（cfprefsd 自己落盘）
+    BDSIDInstallHooks();    // 再装读钩子，保证 App 拿到的也是统一值
 
     // 诊断：把映射表本身写出来（证明插件跑到了、配置读到了）
     NSString *docs = [NSSearchPathForDirectoriesInDomains(

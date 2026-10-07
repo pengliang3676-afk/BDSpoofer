@@ -1,0 +1,5 @@
+Add 10.01.05: 补钩 dictionaryRepresentation / persistentDomainForName: + 未命中诊断
+
+首轮诊断显示 _hits 只有 3 —— App 读这些键没走 objectForKey:。
+补上整份取域字典的两条路径，并把未命中的键记到 bdspoofer_unify_miss.plist，
+以便确定 App 实际用哪个 API。
