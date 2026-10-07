@@ -1,0 +1,13 @@
+Fix 10.01.05: 改用公开 API 写盘，去掉写入拦截
+
+前两版教训：
+  1) 直接 writeToFile: 重写域文件 -> 与 App 内存副本冲突，440 键被写成 290 个
+  2) 钩 setObject:forKey: 忽略写入 -> App 写不进去，cfprefsd 落盘也没这些键，同样丢数据
+     实测 plist 键数 440 -> 314 -> 442 -> 290，目标键全部消失
+
+正解：
+  BDSIDWriteViaAPI() 用 [NSUserDefaults setObject:forKey:] + synchronize
+  让 cfprefsd 自己合并落盘 —— 不丢键、不碰文件、可验证
+  读取钩子保留，保证运行期也拿到统一值
+
+数据已从容器内原始副本恢复（440 键，登录 token 完好）。
