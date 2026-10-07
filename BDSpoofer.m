@@ -278,6 +278,10 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
     return v ? [v integerValue] : def;
 }
 
+// ── 10.01.05 写盘统一：前向声明（定义在下方「写盘统一」段）──
+static void BDSIDMapBuild(void);      // 由配置重建「容器键 → 假身份值」映射
+static void BDSUnifyIdentity(void);   // 建表 + 写盘 + 装钩子
+
 // 金额统计上报拦截的运行期开关查询：每次请求都读一次，关掉立即生效。
 static BOOL BDSCashTelemetrySwitchEnabled(void) {
     return cfgBool(@"blockStatCashTelemetry", NO);
