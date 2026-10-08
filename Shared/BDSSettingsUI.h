@@ -151,8 +151,8 @@ static UIColor *BDSResetButtonColor(void) {
             [row.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-5]]];
         return cell;
     }
-    NSArray<NSNumber *> *rowIndexes=[self compactItemIndexesForRow:indexPath.row];
-    NSUInteger itemIndex=[self usesCompactActionRow] ? (rowIndexes.count ? rowIndexes[0].unsignedIntegerValue : 0) : indexPath.row;
+    NSArray<NSNumber *> *fullRowIndexes=[self compactItemIndexesForRow:indexPath.row];
+    NSUInteger itemIndex=[self usesCompactActionRow] ? (fullRowIndexes.count ? fullRowIndexes[0].unsignedIntegerValue : 0) : indexPath.row;
     NSDictionary *item=self.items[itemIndex];
     UILabel *label=[[UILabel alloc] init];
     label.translatesAutoresizingMaskIntoConstraints=NO;
