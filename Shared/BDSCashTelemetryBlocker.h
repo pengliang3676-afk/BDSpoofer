@@ -54,7 +54,10 @@ static BOOL BDSCashTelemetryRequestIsTarget(NSURLRequest *request) {
 
 // 命中记录的前向声明（实现在文件下方，startLoading 里要用）
 static NSString *BDSCashHitLogPath(void);
+static NSString *BDSZtboxObsLogPath(void);
 static void BDSCashRecordHit(NSString *source, NSString *url);
+static void BDSZtboxObserve(NSString *source, NSString *url);
+static NSDictionary *BDSZtboxExtract(NSString *url);
 static void BDSCashInstallHitHandler(WKUserContentController *ucc);
 
 @interface BDSCashTelemetryBlockProtocol : NSURLProtocol
@@ -88,6 +91,14 @@ static NSString * const BDSCashTelemetryBlockScript = @
 "(function(){"
 "if(window.__bdsCashBlockInstalled)return;"
 "function __bdsCashHit(u){try{window.webkit.messageHandlers.bdsCashHit.postMessage(u||'');}catch(x){}}"
+"function __bdsObs(u,src){"
+"try{"
+"var s=String(u&&u.url?u.url:u);"
+"if(s.indexOf('h2tcbox.baidu.com')<0)return;"
+"if(s.indexOf('/ztbox')<0)return;"
+"window.webkit.messageHandlers.bdsZtboxObs.postMessage(src+'|'+s);"
+"}catch(x){}"
+"}"
 "window.__bdsCashBlockInstalled=true;"
 "var blank='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';"
 "function on(){try{return typeof window.__bdsBlockStatCashTelemetry==='boolean'?window.__bdsBlockStatCashTelemetry:true;}catch(x){return true;}}"
@@ -110,13 +121,14 @@ static NSString * const BDSCashTelemetryBlockScript = @
 "if(d&&d.set){"
 "var s=d.set;"
 "Object.defineProperty(HTMLImageElement.prototype,'src',{get:d.get,set:function(v){"
+"try{__bdsObs(v,'img');}catch(x){}"
 "try{if(hit(v)){s.call(this,blank);return;}}catch(x){}"
 "s.call(this,v);},enumerable:d.enumerable,configurable:d.configurable});"
 "}"
 "}catch(x){}"
-"try{if(navigator.sendBeacon){var sb=navigator.sendBeacon;navigator.sendBeacon=function(u,d){try{if(hit(u))return true;}catch(x){}return sb.apply(navigator,arguments);};}}catch(x){}"
-"try{if(window.fetch){var f=window.fetch;window.fetch=function(i,o){try{var u=(typeof i==='string'||i instanceof URL)?i:(i&&i.url);if(hit(u))return Promise.resolve(new Response('',{status:204,statusText:'No Content'}));}catch(x){}return f.apply(this,arguments);};}}catch(x){}"
-"try{var xo=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){try{this.__bdsCashHit=hit(u);}catch(x){this.__bdsCashHit=false;}return xo.apply(this,arguments);};"
+"try{if(navigator.sendBeacon){var sb=navigator.sendBeacon;navigator.sendBeacon=function(u,d){try{__bdsObs(u,'beacon');}catch(x){}try{if(hit(u))return true;}catch(x){}return sb.apply(navigator,arguments);};}}catch(x){}"
+"try{if(window.fetch){var f=window.fetch;window.fetch=function(i,o){try{var u=(typeof i==='string'||i instanceof URL)?i:(i&&i.url);__bdsObs(u,'fetch');if(hit(u))return Promise.resolve(new Response('',{status:204,statusText:'No Content'}));}catch(x){}return f.apply(this,arguments);};}}catch(x){}"
+"try{var xo=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){try{__bdsObs(u,'xhr');}catch(x){}try{this.__bdsCashHit=hit(u);}catch(x){this.__bdsCashHit=false;}return xo.apply(this,arguments);};"
 "var xs=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.send=function(){if(this.__bdsCashHit){try{this.abort();}catch(x){}return;}"
 "return xs.apply(this,arguments);};}catch(x){}"
 "})();";
@@ -148,6 +160,91 @@ static NSString *BDSCashHitLogPath(void) {
     NSString *docs = [NSSearchPathForDirectoriesInDomains(
         NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
     return [docs stringByAppendingPathComponent:@"bdspoofer_cash_hits.plist"];
+}
+
+static NSString *BDSZtboxObsLogPath(void) {
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    return [docs stringByAppendingPathComponent:@"bdspoofer_ztbox_obs.plist"];
+}
+
+// 从 data= 参数里抠出关心字段（id / page / type / num / ext）
+static NSDictionary *BDSZtboxExtract(NSString *url) {
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    NSRange r = [url rangeOfString:@"data="];
+    if (r.location == NSNotFound) return out;
+    NSString *tail = [url substringFromIndex:NSMaxRange(r)];
+    NSRange amp = [tail rangeOfString:@"&"];
+    if (amp.location != NSNotFound) tail = [tail substringToIndex:amp.location];
+    NSString *json = [tail stringByRemovingPercentEncoding] ?: tail;
+    NSData *d = [json dataUsingEncoding:NSUTF8StringEncoding];
+    id obj = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
+    if (![obj isKindOfClass:NSDictionary.class]) {
+        out[@"dataRaw"] = json.length > 1500 ? [json substringToIndex:1500] : json;
+        return out;
+    }
+    if (obj[@"cateid"]) out[@"cateid"] = [obj[@"cateid"] description];
+    NSDictionary *ad = obj[@"actiondata"];
+    if ([ad isKindOfClass:NSDictionary.class]) {
+        if (ad[@"id"]) out[@"id"] = [ad[@"id"] description];
+        NSDictionary *c = ad[@"content"];
+        if ([c isKindOfClass:NSDictionary.class]) {
+            if (c[@"page"])  out[@"page"]  = [c[@"page"] description];
+            if (c[@"type"])  out[@"type"]  = [c[@"type"] description];
+            if (c[@"from"])  out[@"from"]  = [c[@"from"] description];
+            if (c[@"value"]) out[@"value"] = [c[@"value"] description];
+            NSDictionary *e = c[@"ext"];
+            if ([e isKindOfClass:NSDictionary.class]) {
+                if (e[@"num"] != nil)  out[@"num"]    = [e[@"num"] description];
+                if (e[@"page"])        out[@"extPage"] = [e[@"page"] description];
+                NSData *ej = [NSJSONSerialization dataWithJSONObject:e options:0 error:nil];
+                if (ej) {
+                    NSString *es = [[NSString alloc] initWithData:ej encoding:NSUTF8StringEncoding];
+                    if (es.length > 1200) es = [es substringToIndex:1200];
+                    out[@"extJSON"] = es ?: @"";
+                }
+            }
+        }
+    }
+    return out;
+}
+
+static void BDSZtboxObserve(NSString *source, NSString *url) {
+    if (!url.length) return;
+    static NSLock *lock = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSLock new]; });
+    [lock lock];
+    @autoreleasepool {
+        NSString *p = BDSZtboxObsLogPath();
+        NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:p]
+                              ?: [NSMutableDictionary dictionary];
+        d[@"total"] = @([d[@"total"] integerValue] + 1);
+        NSString *sk = [NSString stringWithFormat:@"src.%@", source ?: @"?"];
+        d[sk] = @([d[sk] integerValue] + 1);
+
+        NSDictionary *info = BDSZtboxExtract(url);
+        NSString *sig = [NSString stringWithFormat:@"%@/%@/%@",
+                         info[@"id"] ?: @"?", info[@"page"] ?: @"?", info[@"type"] ?: @"?"];
+        NSMutableDictionary *sigs = [d[@"sigs"] mutableCopy] ?: [NSMutableDictionary dictionary];
+        sigs[sig] = @([sigs[sig] integerValue] + 1);
+        d[@"sigs"] = sigs;
+
+        NSMutableArray *items = [d[@"items"] mutableCopy] ?: [NSMutableArray array];
+        NSMutableDictionary *item = [NSMutableDictionary dictionary];
+        item[@"t"] = [NSDate date];
+        item[@"src"] = source ?: @"?";
+        for (NSString *k in @[@"id", @"page", @"type", @"from", @"value", @"num",
+                              @"cateid", @"extPage", @"extJSON", @"dataRaw"]) {
+            if (info[k]) item[k] = info[k];
+        }
+        item[@"url"] = url.length > 2500 ? [url substringToIndex:2500] : url;
+        [items insertObject:item atIndex:0];
+        while (items.count > 30) [items removeLastObject];
+        d[@"items"] = items;
+        [d writeToFile:p atomically:YES];
+    }
+    [lock unlock];
 }
 
 static void BDSCashRecordHit(NSString *source, NSString *url) {
@@ -185,9 +282,17 @@ static void BDSCashRecordHit(NSString *source, NSString *url) {
 - (void)userContentController:(WKUserContentController *)ucc
       didReceiveScriptMessage:(WKScriptMessage *)message {
     (void)ucc;
-    if (![message.name isEqualToString:@"bdsCashHit"]) return;
-    NSString *u = [message.body isKindOfClass:NSString.class] ? message.body : @"";
-    BDSCashRecordHit(@"web", u);
+    NSString *body = [message.body isKindOfClass:NSString.class] ? message.body : @"";
+    if ([message.name isEqualToString:@"bdsCashHit"]) {
+        BDSCashRecordHit(@"web", body);
+        return;
+    }
+    if ([message.name isEqualToString:@"bdsZtboxObs"]) {
+        NSRange bar = [body rangeOfString:@"|"];
+        NSString *src = bar.location == NSNotFound ? @"?" : [body substringToIndex:bar.location];
+        NSString *url = bar.location == NSNotFound ? body : [body substringFromIndex:NSMaxRange(bar)];
+        BDSZtboxObserve(src, url);
+    }
 }
 @end
 
@@ -201,6 +306,11 @@ static void BDSCashInstallHitHandler(WKUserContentController *ucc) {
         [ucc addScriptMessageHandler:g_cashHitHandler name:@"bdsCashHit"];
     } @catch (NSException *e) {
         (void)e;   // 同一 controller 重复注册会抛，忽略
+    }
+    @try {
+        [ucc addScriptMessageHandler:g_cashHitHandler name:@"bdsZtboxObs"];
+    } @catch (NSException *e) {
+        (void)e;
     }
 }
 
