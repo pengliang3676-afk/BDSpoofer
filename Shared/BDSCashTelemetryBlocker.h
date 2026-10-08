@@ -186,7 +186,7 @@ static NSDictionary *BDSZtboxExtract(NSString *url) {
     NSData *d = [json dataUsingEncoding:NSUTF8StringEncoding];
     id obj = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
     if (![obj isKindOfClass:NSDictionary.class]) {
-        out[@"dataRaw"] = json.length > 1500 ? [json substringToIndex:1500] : json;
+        out[@"dataRaw"] = json.length > 6000 ? [json substringToIndex:6000] : json;
         return out;
     }
     if (obj[@"cateid"]) out[@"cateid"] = [obj[@"cateid"] description];
@@ -206,7 +206,7 @@ static NSDictionary *BDSZtboxExtract(NSString *url) {
                 NSData *ej = [NSJSONSerialization dataWithJSONObject:e options:0 error:nil];
                 if (ej) {
                     NSString *es = [[NSString alloc] initWithData:ej encoding:NSUTF8StringEncoding];
-                    if (es.length > 1200) es = [es substringToIndex:1200];
+                    if (es.length > 6000) es = [es substringToIndex:6000];
                     out[@"extJSON"] = es ?: @"";
                 }
             }
@@ -268,7 +268,7 @@ static void BDSZtboxObserve(NSString *source, NSString *url) {
             if (info[k]) item[k] = info[k];
         }
         item[@"blocked"] = isTarget ? @YES : @NO;
-        item[@"url"] = url.length > 2500 ? [url substringToIndex:2500] : url;
+        item[@"url"] = url.length > 8000 ? [url substringToIndex:8000] : url;
         [items insertObject:item atIndex:0];
         while (items.count > 30) [items removeLastObject];
         d[@"items"] = items;
@@ -292,11 +292,11 @@ static void BDSCashRecordHit(NSString *source, NSString *url) {
         d[@"lastTime"] = [NSDate date];
         d[@"lastSource"] = source ?: @"?";
         if (url.length) {
-            d[@"lastURL"] = [url length] > 600 ? [url substringToIndex:600] : url;
+            d[@"lastURL"] = [url length] > 8000 ? [url substringToIndex:8000] : url;
         }
         NSMutableArray *recent = [d[@"recent"] mutableCopy] ?: [NSMutableArray array];
         if (url.length) {
-            NSString *u = [url length] > 400 ? [url substringToIndex:400] : url;
+            NSString *u = [url length] > 8000 ? [url substringToIndex:8000] : url;
             [recent insertObject:u atIndex:0];
             while (recent.count > 8) [recent removeLastObject];
         }
