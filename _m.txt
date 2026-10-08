@@ -1,19 +1,23 @@
-10.01.19: 金额上报（收益额上报）默认开启
+10.01.20: 主面板加「重置设备编号」按钮
 
-默认值改动（8 处）：
-  ① 内存默认值表 blockStatCashTelemetry: @NO -> @YES
-  ② BDSCashTelemetrySwitchEnabled() 默认 NO -> YES
-  ③ 启动时安装拦截的判断默认 NO -> YES
-  ④ 面板「拦到次数：0」分支默认 NO -> YES
-  ⑤ 面板「收益额上报」显示默认 NO -> YES
-  ⑥ 187 迁移里的兜底写入 NO -> YES
-  ⑦ 新增 191 迁移块：老配置强制写一次 @YES 并落盘（只跑一次）
-  ⑧ BDSConfigPolicy.h：去掉该键的 off 标记（风险键 -> 常规键）
-     因为「常规键默认开」这条策略是 BDSApplyInitialDefaults 执行的，
-     留在风险键名单里会被每次启动重写回 @NO。
+背景（真机实测）：
+  组容器 group.com.baidu.BaiduMobileInfo 是全机共用的，换数据容器不会重置它。
+  实测：把 BNPush_cuid / cacheCuid / token / channelid / status 这 5 个键删掉后，
+  百度启动时重新注册了一套全新的 cuid + push token
+    旧 3FF4C8A3195600C8...DOLKORANJLG
+    新 1588ECA3B16B45D9...91OLKFRAHLPK
+  => 这就是「换设备身份」的开关。
 
-同步：打包 bdspoofer_config.plist 该键 false -> true，configVersion 189 -> 191
-同步：策略文件版本号 189 -> 191；校验脚本断言与计数同步
-     （常规键 21->22，风险键 6->5）
+改动（只动 BDSpoofer.m）：
+  ① 新增辅助：BDSGroupSuite / BDSDeviceIDKeys() / BDSResetLogPath() / BDSDevicePushCuid()
+  ② 新增 -resetDeviceIdentity：
+       走 NSUserDefaults initWithSuiteName: 的公开 suite API 删键
+       （插件跨不了沙盒，不能直接删文件；走 API 不受限）
+       删前把旧编号与时间写进 Documents/bdspoofer_identity_reset.plist
+       置 identityResetUsed=YES，让按钮重启后继续显示
+  ③ 主面板：「重置设备编号」插在三个随机按钮之后、反关联项之前；
+     仅在 identityResetUsed 为 YES 时显示（没点过就不显示）
+     动作判定从 i==N 改成按标题字符串比较，加按钮不会错位
+  ④ 摘要新增两行：设备编号 / 上次重置时间与旧编号
 
-含 10.01.18 的精简面板改动（面板从 13+ 行降到 7 行）。
+手机里不做任何自动备份（按用户要求）。

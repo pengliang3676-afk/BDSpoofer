@@ -4927,8 +4927,6 @@ static NSString *BDSConfigSummary(void) {
             [summary appendString:@"\n拦到次数：0（还没命中过）"];
         }
 
-        // /ztbox 全量观测：命中 vs 放过
-        NSDictionary *obs = [NSDictionary dictionaryWithContentsOfFile:
         // 设备编号（组容器里的 BNPush_cuid）+ 上次重置记录
         {
             NSString *cur = BDSDevicePushCuid();
@@ -4952,6 +4950,7 @@ static NSString *BDSConfigSummary(void) {
         }
 
         // /ztbox 全量观测：命中 vs 放过
+        NSDictionary *obs = [NSDictionary dictionaryWithContentsOfFile:
             [docs stringByAppendingPathComponent:@"bdspoofer_ztbox_obs.plist"]];
         if (obs) {
             // 精简：/ztbox 与全网合成一行，不再列接口明细与命中签名
