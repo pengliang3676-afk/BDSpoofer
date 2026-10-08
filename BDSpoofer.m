@@ -230,7 +230,7 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"spoofPrivacyPermissions": @YES,
             @"spoofWebKitCookie": @NO,
             @"spoofBattery": @YES,
-            @"blockStatCashTelemetry": @NO,
+            @"blockStatCashTelemetry": @YES,
             @"blockLaunchTimeUpload": @YES,
             @"wifiSSID": @"",
             // 伪造的本地 IP（常见家庭网段，一键基础随机生成）。
@@ -278,14 +278,14 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
     return v ? [v integerValue] : def;
 }
 
-// ── 10.01.18 写盘统一：前向声明（定义在下方「写盘统一」段）──
+// ── 10.01.19 写盘统一：前向声明（定义在下方「写盘统一」段）──
 static void BDSIDMapBuild(void);      // 由配置重建「容器键 → 假身份值」映射
 static void BDSIDWriteViaAPI(void);   // 用公开 API 写入统一值（cfprefsd 落盘）
 static void BDSUnifyIdentity(void);   // 建表 + 写盘 + 装钩子
 
 // 金额统计上报拦截的运行期开关查询：每次请求都读一次，关掉立即生效。
 static BOOL BDSCashTelemetrySwitchEnabled(void) {
-    return cfgBool(@"blockStatCashTelemetry", NO);
+    return cfgBool(@"blockStatCashTelemetry", YES);
 }
 static BOOL BDSHasEnabledCHookFeature(void) {
     return cfgBool(@"spoofSysctl", NO) ||
@@ -653,9 +653,9 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 187 || !loaded[@"blockStatCashTelemetry"] || loaded[@"spoofStatCash"]) {
-        // 1.8.1 UI1.2：新增金额统计上报控制，默认不阻止；旧试验键不继承。
+        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.19 起默认开启。旧试验键不继承。
         merged[@"configVersion"] = @187;
-        if (!loaded[@"blockStatCashTelemetry"]) merged[@"blockStatCashTelemetry"] = @NO;
+        if (!loaded[@"blockStatCashTelemetry"]) merged[@"blockStatCashTelemetry"] = @YES;
         [merged removeObjectForKey:@"spoofStatCash"];
         [merged writeToFile:p1 atomically:YES];
     }
@@ -678,9 +678,16 @@ static void loadConfig() {
         merged[@"blockLaunchTimeUpload"] = @YES;
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
-    } else if (![loaded[@"configVersion"] isEqual:@190]) {
-        // 新装（没有已保存配置）：模板已按策略写成 @NO，这里只补版本号，不覆盖用户选择。
-        merged[@"configVersion"] = @190;
+    } else if (ver < 191) {
+        // 10.01.19：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
+        // 光改默认值救不了，必须强制写一次 @YES 并落盘；只执行一次，
+        // 用户之后在面板手动关掉仍然有效。
+        merged[@"blockStatCashTelemetry"] = @YES;
+        merged[@"configVersion"] = @191;
+        [merged writeToFile:p1 atomically:YES];
+    } else if (![loaded[@"configVersion"] isEqual:@191]) {
+        // 新装（没有已保存配置）：模板已写成 @YES，这里只补版本号，不覆盖用户选择。
+        merged[@"configVersion"] = @191;
         [merged writeToFile:p1 atomically:YES];
     }
     // 没点过一键基础：内存里关掉机型伪装，不把默认 SE 写回文件。
@@ -846,7 +853,7 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 }
 
 
-#pragma mark - 写盘统一（10.01.18）
+#pragma mark - 写盘统一（10.01.19）
 //
 // 背景：百度极速会把「上一次读到的设备信息」缓存到容器 plist。
 //       插件只钩运行时返回值时，plist 里仍留着旧值 / 真机值，
@@ -964,7 +971,7 @@ static void BDSIDMapBuild(void) {
 
 // ── ① 用公开 API 写盘（不碰文件）────────────────────────────
 //
-// 教训（10.01.18 前两版实测）：
+// 教训（10.01.19 前两版实测）：
 //   · 直接 writeToFile: 重写域文件 → 和 App 内存副本打架，440 键被写成 290 个
 //   · 钩 setObject:forKey: 忽略写入 → App 写不进去，落盘也没这些键，同样丢数据
 //
@@ -4882,7 +4889,7 @@ static NSString *BDSConfigSummary(void) {
     }
     [summary appendFormat:@"\n\n反关联增强：%@\n收益额上报：%@",
         associationEnabled ? @"已开启" : @"已关闭",
-        cfgBool(@"blockStatCashTelemetry", NO) ? @"已开启" : @"已关闭"];
+        cfgBool(@"blockStatCashTelemetry", YES) ? @"已开启" : @"已关闭"];
 
     // 金额拦截命中统计（Blocker 写 Documents/bdspoofer_cash_hits.plist）
     {
@@ -4894,7 +4901,7 @@ static NSString *BDSConfigSummary(void) {
             [summary appendFormat:@"\n拦到次数：%@（网页 %@ / 原生 %@）",
                 hits[@"total"] ?: @0, hits[@"src.web"] ?: @0, hits[@"src.native"] ?: @0];
             // 精简：不再显示「最近时间 + 来源」，对判断拦截有没有生效没帮助
-        } else if (cfgBool(@"blockStatCashTelemetry", NO)) {
+        } else if (cfgBool(@"blockStatCashTelemetry", YES)) {
             [summary appendString:@"\n拦到次数：0（还没命中过）"];
         }
 
@@ -5082,7 +5089,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.18";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.19";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -6270,7 +6277,7 @@ static void bds_initialize() {
         // 默认保持金额统计上报：开关关闭时完全不安装拦截（与 9.28-03 相同）。
         // 开关打开才安装；安装后判定入口每次请求都读开关，所以关掉立即放行、
         // 不必重启也能停下拦截。
-        if (cfgBool(@"blockStatCashTelemetry", NO)) {
+        if (cfgBool(@"blockStatCashTelemetry", YES)) {
             BDSCashTelemetrySwitchProvider = BDSCashTelemetrySwitchEnabled;
             BDSInstallCashTelemetryBlocking();
         }

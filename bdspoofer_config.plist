@@ -2,173 +2,173 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>configVersion</key>
-	<integer>189</integer>
-	<key>enabled</key>
+	<key>blockLaunchTimeUpload</key>
 	<true/>
-	<key>spoofScreen</key>
-	<false/>
-	<key>spoofAdvertisingIdentifiers</key>
+	<key>blockStatCashTelemetry</key>
 	<true/>
-	<key>spoofProcessHardware</key>
-	<true/>
-	<key>spoofLocale</key>
-	<true/>
-	<key>spoofCarrier</key>
-	<true/>
-	<key>spoofStorage</key>
-	<true/>
-	<key>spoofBaiduSDK</key>
-	<true/>
-	<key>spoofSysctl</key>
-	<true/>
-	<key>spoofKeychain</key>
-	<false/>
-	<key>spoofUserAgent</key>
-	<false/>
+	<key>bootTimeOffsetSeconds</key>
+	<integer>0</integer>
 	<key>bypassJailbreakDetect</key>
 	<false/>
-	<key>spoofWiFi</key>
+	<key>carrierName</key>
+	<string>涓浗绉诲姩</string>
+	<key>configVersion</key>
+	<integer>191</integer>
+	<key>cuid</key>
+	<string></string>
+	<key>deviceID</key>
+	<string></string>
+	<key>deviceModel</key>
+	<string>iPhone</string>
+	<key>deviceName</key>
+	<string>iPhone</string>
+	<key>deviceProfileName</key>
+	<string>iPhone SE (3rd generation)</string>
+	<key>diskSize</key>
+	<integer>64</integer>
+	<key>enabled</key>
 	<true/>
-	<key>spoofLocalIP</key>
+	<key>floatingButtonSide</key>
+	<string>right</string>
+	<key>floatingButtonYPermille</key>
+	<integer>520</integer>
+	<key>hwMachine</key>
+	<string>iPhone14,6</string>
+	<key>hwModel</key>
+	<string>D49AP</string>
+	<key>idfa</key>
+	<string></string>
+	<key>idfv</key>
+	<string></string>
+	<key>isoCountryCode</key>
+	<string>cn</string>
+	<key>kernHostname</key>
+	<string>iPhone</string>
+	<key>kernOSVersion</key>
+	<string>19E258</string>
+	<key>localeIdentifier</key>
+	<string>zh_CN</string>
+	<key>marketingModel</key>
+	<string>iPhone</string>
+	<key>mcc</key>
+	<string>460</string>
+	<key>memorySize</key>
+	<integer>4096</integer>
+	<key>mnc</key>
+	<string>00</string>
+	<key>nativeScreenHeight</key>
+	<integer>1334</integer>
+	<key>nativeScreenWidth</key>
+	<integer>750</integer>
+	<key>screenHeight</key>
+	<integer>667</integer>
+	<key>screenScale</key>
+	<integer>2</integer>
+	<key>screenWidth</key>
+	<integer>375</integer>
+	<key>spoofAdvertisingIdentifiers</key>
 	<true/>
 	<key>spoofAppGroup</key>
 	<false/>
-	<key>spoofPasteboard</key>
+	<key>spoofBaiduSDK</key>
+	<true/>
+	<key>spoofBaiduTargeted</key>
+	<false/>
+	<key>spoofBaiduTargetedModel</key>
+	<false/>
+	<key>spoofBaiduTargetedPush</key>
+	<false/>
+	<key>spoofBaiduTargetedScreen</key>
+	<false/>
+	<key>spoofBaiduTargetedSystem</key>
+	<false/>
+	<key>spoofBaiduTargetedUA</key>
+	<false/>
+	<key>spoofBattery</key>
 	<true/>
 	<key>spoofBootTime</key>
 	<true/>
 	<key>spoofCPU</key>
 	<true/>
-	<key>spoofLocation</key>
-	<true/>
-	<key>spoofProxyDetection</key>
-	<true/>
-	<key>spoofStatfs</key>
+	<key>spoofCarrier</key>
 	<true/>
 	<key>spoofDlopen</key>
 	<true/>
-	<key>spoofUbiquity</key>
+	<key>spoofKeychain</key>
+	<false/>
+	<key>spoofLocalIP</key>
+	<true/>
+	<key>spoofLocale</key>
+	<true/>
+	<key>spoofLocation</key>
+	<true/>
+	<key>spoofPasteboard</key>
 	<true/>
 	<key>spoofPrivacyPermissions</key>
 	<true/>
+	<key>spoofProcessHardware</key>
+	<true/>
+	<key>spoofProxyDetection</key>
+	<true/>
+	<key>spoofScreen</key>
+	<false/>
+	<key>spoofStatfs</key>
+	<true/>
+	<key>spoofStorage</key>
+	<true/>
+	<key>spoofSysctl</key>
+	<true/>
+	<key>spoofUbiquity</key>
+	<true/>
+	<key>spoofUserAgent</key>
+	<false/>
 	<key>spoofWebKitCookie</key>
 	<false/>
-	<key>spoofBattery</key>
+	<key>spoofWiFi</key>
 	<true/>
-	<key>blockStatCashTelemetry</key>
-	<false/>
-	<key>blockLaunchTimeUpload</key>
-	<true/>
-	<key>spoofBaiduTargeted</key>
-	<false/>
-	<key>spoofBaiduTargetedSystem</key>
-	<false/>
-	<key>spoofBaiduTargetedModel</key>
-	<false/>
-	<key>spoofBaiduTargetedScreen</key>
-	<false/>
-	<key>spoofBaiduTargetedUA</key>
-	<false/>
-	<key>spoofBaiduTargetedPush</key>
-	<false/>
+	<key>systemBuild</key>
+	<string>19E258</string>
+	<key>systemVersion</key>
+	<string>15.4.1</string>
 	<key>targetedDeviceProfileName</key>
 	<string>iPhone SE (3rd generation)</string>
-	<key>targetedSystemVersion</key>
-	<string>15.4.1</string>
-	<key>targetedSystemBuild</key>
-	<string>19E258</string>
+	<key>targetedGeneratedAt</key>
+	<integer>0</integer>
 	<key>targetedHwMachine</key>
 	<string>iPhone14,6</string>
 	<key>targetedHwModel</key>
 	<string>D49AP</string>
-	<key>targetedScreenWidth</key>
-	<integer>375</integer>
-	<key>targetedScreenHeight</key>
-	<integer>667</integer>
-	<key>targetedScreenScale</key>
-	<integer>2</integer>
-	<key>targetedNativeScreenWidth</key>
-	<integer>750</integer>
 	<key>targetedNativeScreenHeight</key>
 	<integer>1334</integer>
-	<key>targetedUASystemVersion</key>
-	<string>15.4.1</string>
-	<key>targetedUASystemBuild</key>
-	<string>19E258</string>
+	<key>targetedNativeScreenWidth</key>
+	<integer>750</integer>
 	<key>targetedPushDeviceProfileName</key>
 	<string>iPhone SE (3rd generation)</string>
 	<key>targetedPushHwMachine</key>
 	<string>iPhone14,6</string>
 	<key>targetedPushHwModel</key>
 	<string>D49AP</string>
-	<key>targetedGeneratedAt</key>
-	<integer>0</integer>
-	<key>wifiSSID</key>
-	<string></string>
-	<key>bootTimeOffsetSeconds</key>
-	<integer>0</integer>
-	<key>deviceName</key>
-	<string>iPhone</string>
-	<key>deviceModel</key>
-	<string>iPhone</string>
-	<key>marketingModel</key>
-	<string>iPhone</string>
-	<key>systemVersion</key>
-	<string>15.4.1</string>
-	<key>systemBuild</key>
+	<key>targetedScreenHeight</key>
+	<integer>667</integer>
+	<key>targetedScreenHwMachine</key>
+	<string>iPhone14,6</string>
+	<key>targetedScreenScale</key>
+	<integer>2</integer>
+	<key>targetedScreenWidth</key>
+	<integer>375</integer>
+	<key>targetedSystemBuild</key>
 	<string>19E258</string>
-	<key>idfa</key>
-	<string></string>
-	<key>idfv</key>
-	<string></string>
-	<key>cuid</key>
+	<key>targetedSystemVersion</key>
+	<string>15.4.1</string>
+	<key>targetedUASystemBuild</key>
+	<string>19E258</string>
+	<key>targetedUASystemVersion</key>
+	<string>15.4.1</string>
+	<key>userAgent</key>
 	<string></string>
 	<key>utdid</key>
 	<string></string>
-	<key>deviceID</key>
+	<key>wifiSSID</key>
 	<string></string>
-	<key>userAgent</key>
-	<string></string>
-	<key>carrierName</key>
-	<string>涓浗绉诲姩</string>
-	<key>mcc</key>
-	<string>460</string>
-	<key>mnc</key>
-	<string>00</string>
-	<key>isoCountryCode</key>
-	<string>cn</string>
-	<key>diskSize</key>
-	<integer>64</integer>
-	<key>memorySize</key>
-	<integer>4096</integer>
-	<key>kernHostname</key>
-	<string>iPhone</string>
-	<key>hwMachine</key>
-	<string>iPhone14,6</string>
-	<key>hwModel</key>
-	<string>D49AP</string>
-	<key>kernOSVersion</key>
-	<string>19E258</string>
-	<key>deviceProfileName</key>
-	<string>iPhone SE (3rd generation)</string>
-	<key>screenWidth</key>
-	<integer>375</integer>
-	<key>screenHeight</key>
-	<integer>667</integer>
-	<key>screenScale</key>
-	<integer>2</integer>
-	<key>nativeScreenWidth</key>
-	<integer>750</integer>
-	<key>nativeScreenHeight</key>
-	<integer>1334</integer>
-	<key>localeIdentifier</key>
-	<string>zh_CN</string>
-	<key>floatingButtonSide</key>
-	<string>right</string>
-	<key>floatingButtonYPermille</key>
-	<integer>520</integer>
-	<key>targetedScreenHwMachine</key>
-	<string>iPhone14,6</string>
 </dict>
 </plist>

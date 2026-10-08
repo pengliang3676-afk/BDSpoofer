@@ -1,14 +1,12 @@
-10.01.17: 在 10.01.11 基线上只加「网页屏幕伪装」
+10.01.18: 精简面板显示
 
-背景：面板实测 10.01.09 / 10.01.10 / 10.01.11 均正常（拦截 86 次、观测文件正常写）。
-之前的判断失误源于 App 里同时存在两个 dylib，以及我读错了容器。
-本次以 10.01.11 为基线，只加一件事，不碰其它任何东西。
+问题：面板要滚动才能看全，信息太多抓不住重点。
 
-改动（两处）：
-  ① JS 加 __bdsDefineScreen()，改写 Screen.prototype 的
-       width / height / availWidth / availHeight 与 window.devicePixelRatio
-     值取自 window.__bdsWebSpoof；明确不动 window.innerWidth/Height（布局用值）
-  ② 原生在 BDSCashWKInit 里把 screenWidth/screenHeight/screenScale 注入网页
-  ③ 探测回报加 spoofExists / spoof 两个字段，便于验证
+改动（只动 BDSpoofer.m 的 BDSConfigSummary，不碰任何功能）：
+  ① 删掉「最近：时间 + 来源」一行（对判断拦截有没生效没帮助）
+  ② /ztbox 与全网合并成一行：
+       /ztbox 31 次（命中 12 / 放过 19） · 全网 73 次/14 口/金额 1
+  ③ 删掉全网下面的接口明细列表（最多 4 行）
+  ④ 删掉「命中签名」下面最多 6 行明细 + 「…还有 X 种」
 
-JS 已用 node --check 验证语法通过；innerWidth 仅被读取、未被改写。
+从 13+ 行降到 7 行，一屏看得完。
