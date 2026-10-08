@@ -1,14 +1,16 @@
-10.01.11: 网页侧自检（探头）—— 先取证，不改写
+10.01.12: 网页侧注入伪装系统版本（改 UA）
 
-目的：不靠推测，用「网页自己读到的值」证明后续注入是否生效。
+10.01.11 基准确认：网页读到的 UA 是
+  Mozilla/5.0 (iPhone; CPU iPhone OS 16_7_2 like Mac OS X) ... (Baidu; P2 16.7.2)
+而插件伪装的是 16.0 —— 网页这层漏了真机系统版本。
 
 改动：
-  ① JS 注入 __bdsProbeWeb()：读 navigator.userAgent / appVersion / platform /
-     screen.width/height/availWidth/availHeight / devicePixelRatio /
-     innerWidth/innerHeight / location.href，JSON 回报原生
-     触发时机：DOMContentLoaded + 延时 1200ms 各一次
-  ② 原生 BDSWebProbeStore() 存 bdspoofer_web_probe.plist：
-     total / lastTime / last（完整 JSON）/ uas（按 UA 去重计数）
-  ③ 新消息 bdsWebProbe
+  ① 原生在 WKWebView 初始化时注入 window.__bdsWebSpoof={sv_under,sv_dot}
+     值取自 bdspoofer_config.plist 的 systemVersion
+  ② JS 改写 Navigator.prototype.userAgent / appVersion 的 getter：
+       CPU iPhone OS x_y like  -> 伪装值
+       (Baidu; P2 x.y)          -> 伪装值
+  ③ 探测回报里加 o.spoof（当前伪装配置），便于对照
 
-本版只观测，不改写任何网页值。下一版才注入伪装值，届时同一份文件即可对比。
+不改：screen.width/height、devicePixelRatio、innerWidth/Height
+      （改屏幕尺寸有布局错乱风险，且 UA 里的系统版本才是主要破绽）

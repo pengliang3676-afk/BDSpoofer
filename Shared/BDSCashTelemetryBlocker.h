@@ -121,6 +121,22 @@ static NSString * const BDSCashTelemetryBlockScript = @
 "var _av=Object.getOwnPropertyDescriptor(Navigator.prototype,'appVersion');"
 "if(_av&&_av.get){Object.defineProperty(Navigator.prototype,'appVersion',{get:function(){return __bdsRewriteUA(_av.get.call(this));},configurable:true});}"
 "}catch(x){}"
+// 屏幕「上报值」改写：只动 screen.*，绝不动 window.innerWidth/Height（布局用后者）
+"function __bdsDefineScreen(prop,val){"
+"try{"
+"var d=Object.getOwnPropertyDescriptor(Screen.prototype,prop);"
+"if(!d||!d.get)return;"
+"Object.defineProperty(Screen.prototype,prop,{get:function(){var s=window.__bdsWebSpoof;if(!s||!s.sw)return d.get.call(this);return val(s);},configurable:true});"
+"}catch(x){}"
+"}"
+"__bdsDefineScreen('width',function(s){return s.sw;});"
+"__bdsDefineScreen('height',function(s){return s.sh;});"
+"__bdsDefineScreen('availWidth',function(s){return s.sw;});"
+"__bdsDefineScreen('availHeight',function(s){return s.sh;});"
+"try{"
+"var _dpr=Object.getOwnPropertyDescriptor(window,'devicePixelRatio');"
+"Object.defineProperty(window,'devicePixelRatio',{get:function(){var s=window.__bdsWebSpoof;if(!s||!s.sc)return _dpr?_dpr.get.call(window):1;return s.sc;},configurable:true});"
+"}catch(x){}"
 "function __bdsProbeWeb(){"
 "try{"
 "var o={};"
@@ -553,8 +569,30 @@ static WKWebView *BDSCashWKInit(id self, SEL command, CGRect frame, WKWebViewCon
         NSString *sv = BDSCurrentSpoofSystemVersion();
         if (sv.length) {
             NSString *under = [sv stringByReplacingOccurrencesOfString:@"." withString:@"_"];
-            NSString *js = [NSString stringWithFormat:
-                @"window.__bdsWebSpoof={sv_under:'%@',sv_dot:'%@'};", under, sv];
+            NSString *docs2 = [NSSearchPathForDirectoriesInDomains(
+                NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+            NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:
+                [docs2 stringByAppendingPathComponent:@"bdspoofer_config.plist"]] ?: @{};
+            NSNumber *sw = [cfg[@"screenWidth"] isKindOfClass:NSNumber.class]
+                         ? cfg[@"screenWidth"] : nil;
+            NSNumber *sh = [cfg[@"screenHeight"] isKindOfClass:NSNumber.class]
+                         ? cfg[@"screenHeight"] : nil;
+            NSNumber *sc = [cfg[@"screenScale"] isKindOfClass:NSNumber.class]
+                         ? cfg[@"screenScale"] : nil;
+            NSMutableString *js = [NSMutableString stringWithFormat:
+                @"window.__bdsWebSpoof={sv_under:'%@',sv_dot:'%@'", under, sv];
+            if (sw && sh) {
+                [js appendFormat:@",sw:%@,sh:%@", sw, sh];
+            }
+            if (sc && sc.doubleValue > 0) {
+                [js appendFormat:@",sc:%@", sc];
+            }
+            [js appendString:@"};"];
+            WKUserScript *s = [[WKUserScript alloc]
+                initWithSource:js
+                injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                forMainFrameOnly:NO];
+            [configuration.userContentController addUserScript:s];
             WKUserScript *s = [[WKUserScript alloc]
                 initWithSource:js
                 injectionTime:WKUserScriptInjectionTimeAtDocumentStart
