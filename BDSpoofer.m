@@ -299,7 +299,7 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
     return v ? [v integerValue] : def;
 }
 
-// ── 10.01.20 写盘统一：前向声明（定义在下方「写盘统一」段）──
+// ── 10.01.21 写盘统一：前向声明（定义在下方「写盘统一」段）──
 static void BDSIDMapBuild(void);      // 由配置重建「容器键 → 假身份值」映射
 static void BDSIDWriteViaAPI(void);   // 用公开 API 写入统一值（cfprefsd 落盘）
 static void BDSUnifyIdentity(void);   // 建表 + 写盘 + 装钩子
@@ -674,7 +674,7 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 187 || !loaded[@"blockStatCashTelemetry"] || loaded[@"spoofStatCash"]) {
-        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.20 起默认开启。旧试验键不继承。
+        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.21 起默认开启。旧试验键不继承。
         merged[@"configVersion"] = @187;
         if (!loaded[@"blockStatCashTelemetry"]) merged[@"blockStatCashTelemetry"] = @YES;
         [merged removeObjectForKey:@"spoofStatCash"];
@@ -700,7 +700,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.01.20：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
+        // 10.01.21：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
         // 光改默认值救不了，必须强制写一次 @YES 并落盘；只执行一次，
         // 用户之后在面板手动关掉仍然有效。
         merged[@"blockStatCashTelemetry"] = @YES;
@@ -874,7 +874,7 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 }
 
 
-#pragma mark - 写盘统一（10.01.20）
+#pragma mark - 写盘统一（10.01.21）
 //
 // 背景：百度极速会把「上一次读到的设备信息」缓存到容器 plist。
 //       插件只钩运行时返回值时，plist 里仍留着旧值 / 真机值，
@@ -992,7 +992,7 @@ static void BDSIDMapBuild(void) {
 
 // ── ① 用公开 API 写盘（不碰文件）────────────────────────────
 //
-// 教训（10.01.20 前两版实测）：
+// 教训（10.01.21 前两版实测）：
 //   · 直接 writeToFile: 重写域文件 → 和 App 内存副本打架，440 键被写成 290 个
 //   · 钩 setObject:forKey: 忽略写入 → App 写不进去，落盘也没这些键，同样丢数据
 //
@@ -5137,9 +5137,6 @@ static NSString *BDSConfigSummary(void) {
     log[@"oldCuid"] = oldID.length ? oldID : @"(读不到)";
     [log writeToFile:BDSResetLogPath() atomically:YES];
 
-    // 让按钮在重启后继续显示
-    saveConfigValues(@{@"identityResetUsed": @YES});
-
     // 真正删键：走公开 suite API，不碰文件、不需要特殊权限
     NSUserDefaults *g = [[NSUserDefaults alloc] initWithSuiteName:BDSGroupSuite];
     NSInteger cleared = 0;
@@ -5164,14 +5161,13 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.20";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.21";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
-    // 「重置设备编号」只在点过一次之后显示（identityResetUsed）
-    BOOL showReset = cfgBool(@"identityResetUsed", NO);
+    // 「重置设备编号」一直显示
     NSMutableArray *titles=[@[@"一键随机整套基础参数",@"一键随机整套高级参数",@"一键随机定向指纹参数"] mutableCopy];
-    if (showReset) [titles addObject:@"重置设备编号"];
+    [titles addObject:@"重置设备编号"];
     [titles addObjectsFromArray:@[@"反关联项",@"诊断自检",@"恢复安全",@"关闭"]];
     NSMutableArray *items=[NSMutableArray array];
     for(NSUInteger i=0;i<titles.count;i++) {
