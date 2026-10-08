@@ -578,43 +578,62 @@ static void BDSCashInstallHitHandler(WKUserContentController *ucc) {
     }
 }
 
+// 构造「把伪装值写进网页」的脚本源（window.__bdsWebSpoof）
+static NSString *BDSWebSpoofSource(void) {
+    NSString *sv = BDSCurrentSpoofSystemVersion();
+    if (!sv.length) return nil;
+    NSString *under = [sv stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+    NSString *docs2 = [NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:
+        [docs2 stringByAppendingPathComponent:@"bdspoofer_config.plist"]] ?: @{};
+    NSNumber *sw = [cfg[@"screenWidth"] isKindOfClass:NSNumber.class] ? cfg[@"screenWidth"] : nil;
+    NSNumber *sh = [cfg[@"screenHeight"] isKindOfClass:NSNumber.class] ? cfg[@"screenHeight"] : nil;
+    NSNumber *sc = [cfg[@"screenScale"] isKindOfClass:NSNumber.class] ? cfg[@"screenScale"] : nil;
+    NSMutableString *js = [NSMutableString stringWithFormat:
+        @"window.__bdsWebSpoof={sv_under:'%@',sv_dot:'%@'", under, sv];
+    if (sw && sh) [js appendFormat:@",sw:%@,sh:%@", sw, sh];
+    if (sc && sc.doubleValue > 0) [js appendFormat:@",sc:%@", sc];
+    [js appendString:@"};"];
+    return js;
+}
+
+// 同一 controller 只注入一次（用标记串判断）
+static NSString * const BDSWebSpoofMarker = @"window.__bdsWebSpoof={";
+
+static void BDSInjectWebSpoofScript(WKUserContentController *ucc) {
+    if (!ucc) return;
+    NSString *src = BDSWebSpoofSource();
+    if (!src.length) return;
+    for (WKUserScript *s in ucc.userScripts) {
+        if ([s.source hasPrefix:BDSWebSpoofMarker]) return;   // 已注入
+    }
+    WKUserScript *us = [[WKUserScript alloc]
+        initWithSource:src
+        injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+        forMainFrameOnly:NO];
+    @try { [ucc addUserScript:us]; } @catch (NSException *e) { (void)e; }
+}
+
+// hook -[WKUserContentController addUserScript:] —— 任何页面把脚本挂上来时，
+// 我们紧跟其后补一份伪装值脚本（DocumentStart 执行，早于页面脚本读 UA）
+static IMP g_bdsCashOriginalAddUserScript = NULL;
+static void BDSCashAddUserScript(id self, SEL _cmd, WKUserScript *script) {
+    if (g_bdsCashOriginalAddUserScript) {
+        ((void (*)(id, SEL, WKUserScript *))g_bdsCashOriginalAddUserScript)(self, _cmd, script);
+    }
+    // 避免递归：我们自己的脚本不再触发二次注入
+    if ([script.source hasPrefix:BDSWebSpoofMarker]) return;
+    BDSInjectWebSpoofScript((WKUserContentController *)self);
+}
+
 static IMP g_bdsCashOriginalWKInit = NULL;
 static WKWebView *BDSCashWKInit(id self, SEL command, CGRect frame, WKWebViewConfiguration *configuration) {
     // 只在这个钩子确实装上时才会走到这里，也就是开关在启动时是打开的。
     // 新建的 WebView 补一份 =true 的脚本；关掉开关后不新建的页面不受影响，
     // 原生请求那条路由判定入口每次读开关负责，关掉立即放行。
     BDSCashInstallHitHandler(configuration.userContentController);
-    // 把当前伪装值写进网页（window.__bdsWebSpoof），供 JS 改写 UA 使用
-    {
-        NSString *sv = BDSCurrentSpoofSystemVersion();
-        if (sv.length) {
-            NSString *under = [sv stringByReplacingOccurrencesOfString:@"." withString:@"_"];
-            NSString *docs2 = [NSSearchPathForDirectoriesInDomains(
-                NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-            NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:
-                [docs2 stringByAppendingPathComponent:@"bdspoofer_config.plist"]] ?: @{};
-            NSNumber *sw = [cfg[@"screenWidth"] isKindOfClass:NSNumber.class]
-                         ? cfg[@"screenWidth"] : nil;
-            NSNumber *sh = [cfg[@"screenHeight"] isKindOfClass:NSNumber.class]
-                         ? cfg[@"screenHeight"] : nil;
-            NSNumber *sc = [cfg[@"screenScale"] isKindOfClass:NSNumber.class]
-                         ? cfg[@"screenScale"] : nil;
-            NSMutableString *js = [NSMutableString stringWithFormat:
-                @"window.__bdsWebSpoof={sv_under:'%@',sv_dot:'%@'", under, sv];
-            if (sw && sh) {
-                [js appendFormat:@",sw:%@,sh:%@", sw, sh];
-            }
-            if (sc && sc.doubleValue > 0) {
-                [js appendFormat:@",sc:%@", sc];
-            }
-            [js appendString:@"};"];
-            WKUserScript *s = [[WKUserScript alloc]
-                initWithSource:js
-                injectionTime:WKUserScriptInjectionTimeAtDocumentStart
-                forMainFrameOnly:NO];
-            [configuration.userContentController addUserScript:s];
-        }
-    }
+    BDSInjectWebSpoofScript(configuration.userContentController);
     BDSEnsureCashTelemetryBlockScript(configuration.userContentController, YES);
     WKWebView *(*original)(id, SEL, CGRect, WKWebViewConfiguration *) = (void *)g_bdsCashOriginalWKInit;
     return original(self, command, frame, configuration);
@@ -659,6 +678,14 @@ static void BDSInstallCashTelemetryBlocking(void) {
         if (withoutDelegate) {
             g_bdsCashOriginalSession = method_getImplementation(withoutDelegate);
             method_setImplementation(withoutDelegate, (IMP)BDSCashSession);
+        }
+        Class uccClass = NSClassFromString(@"WKUserContentController");
+        if (uccClass) {
+            Method addUS = class_getInstanceMethod(uccClass, @selector(addUserScript:));
+            if (addUS) {
+                g_bdsCashOriginalAddUserScript = method_getImplementation(addUS);
+                method_setImplementation(addUS, (IMP)BDSCashAddUserScript);
+            }
         }
         Class webViewClass = WKWebView.class;
         Method initializer = class_getInstanceMethod(webViewClass, @selector(initWithFrame:configuration:));

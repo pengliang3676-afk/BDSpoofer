@@ -1,15 +1,9 @@
-10.01.13: 网页侧注入屏幕上报值（修屏幕矛盾）
+10.01.14: 网页自检增强 —— 查清 __bdsWebSpoof 到底注入上没有
 
-实据（不是推测）：
-  插件配置:  iPhone 11 Pro / 375x812 / @3x
-  网页实报:  375x667 / @2x      <- SE2 的屏
-  => 服务端看到「11 Pro 配 SE2 屏」这种不存在的机器
+10.01.13 实测：网页 screen 仍是 375x667@2x（伪装目标是 375x812@3x），
+且探测回报里 spoof 字段为空 —— 说明 window.__bdsWebSpoof 可能没注入上。
 
 改动：
-  ① JS 改写 Screen.prototype 的 width/height/availWidth/availHeight
-     以及 window.devicePixelRatio
-     值一律取自 window.__bdsWebSpoof（原生注入的配置）
-  ② 原生注入补 sw/sh/sc 三个字段（取自 bdspoofer_config.plist）
-
-明确不改：window.innerWidth / innerHeight
-  —— 那是布局用值，改了会导致页面排版错乱（同 9.21-01 UIScreen 的教训）
+  ① 探测改 3 次（DOMContentLoaded / 600ms / 2500ms）
+  ② 探测新增 spoofExists（布尔）与 uaRaw（绕过改写取原始 UA）
+  ③ 存储新增 withSpoof / noSpoof 计数、lastHasSpoof、recent（最近 20 条）
