@@ -1,11 +1,25 @@
-10.01.21: 重置按钮一直显示
+10.01.22: 卍解加「重置设备身份」按钮
 
-问题：10.01.20 把「重置设备编号」设成「点过一次才显示」，
-但第一次根本点不到 —— 逻辑死锁。
+背景（真机实测，见 10.01.21 的失败）：
+  cuid 在这台设备上有 13 份副本，插件在百度进程里删组容器的键没用 ——
+  百度进程内存里还留着已注册的编号，转头就写回磁盘，重启后直接复用。
+  手动（App 关着）删同一个文件却成功换了编号，差别就在于没有那个进程缓存。
 
-改动（BDSpoofer.m 两处）：
-  ① 面板：去掉 identityResetUsed 判断，按钮无条件加进列表
-     → 位置固定在三个随机按钮之后、反关联项之前
-  ② 去掉 resetDeviceIdentity 里写 identityResetUsed 的那行（不再需要）
+所以改到卍解做：卍解是独立进程，自己不带百度的内存缓存，
+而且 entitlements 里有 com.apple.private.security.no-sandbox，能直接写 AppGroup。
 
-其余（suite API 删键 / 写旧编号日志 / 摘要两行）与 10.01.20 相同。
+改动（CraneManager/BDSCraneManager.m）：
+  ① 新增 BDSFindGroupContainer()：扫 AppGroup 目录，
+     按 metadata 里的 MCMMetadataIdentifier 找 group.com.baidu.BaiduMobileInfo
+     （组容器 UUID 每台机器不同，不能写死）
+  ② 新增 BDSGroupCuid() / BDSWritePlist()：读编号、原子写回
+  ③ 新增 -resetDeviceIdentity：
+       删组容器 5 个键（BNPush_cuid/cacheCuid/token/channelid/status）
+       再删当前容器 plist 里的 tempCUID / BIMPIMLogRegisterKeyCUID
+       （这两个是百度自己缓存的编号，不清会被写回）
+       结果写进弹窗：清了几个键、原编号是多少、是否成功
+  ④ 底部按钮区新增「重置设备身份」，独占一行（tag 1005）
+     footer 高度 232 -> 290；布局同步加第 5 行
+  ⑤ 校验脚本同步：footer 高度断言、viewWithTag:1005 断言
+
+失败会明确报「找不到组容器 / 没权限 / 写入失败」，不假装成功。

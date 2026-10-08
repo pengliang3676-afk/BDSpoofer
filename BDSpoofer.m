@@ -299,7 +299,7 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
     return v ? [v integerValue] : def;
 }
 
-// ── 10.01.22 写盘统一：前向声明（定义在下方「写盘统一」段）──
+// ── 10.01.23 写盘统一：前向声明（定义在下方「写盘统一」段）──
 static void BDSIDMapBuild(void);      // 由配置重建「容器键 → 假身份值」映射
 static void BDSIDWriteViaAPI(void);   // 用公开 API 写入统一值（cfprefsd 落盘）
 static void BDSUnifyIdentity(void);   // 建表 + 写盘 + 装钩子
@@ -674,7 +674,7 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 187 || !loaded[@"blockStatCashTelemetry"] || loaded[@"spoofStatCash"]) {
-        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.22 起默认开启。旧试验键不继承。
+        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.23 起默认开启。旧试验键不继承。
         merged[@"configVersion"] = @187;
         if (!loaded[@"blockStatCashTelemetry"]) merged[@"blockStatCashTelemetry"] = @YES;
         [merged removeObjectForKey:@"spoofStatCash"];
@@ -700,7 +700,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.01.22：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
+        // 10.01.23：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
         // 光改默认值救不了，必须强制写一次 @YES 并落盘；只执行一次，
         // 用户之后在面板手动关掉仍然有效。
         merged[@"blockStatCashTelemetry"] = @YES;
@@ -874,7 +874,7 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 }
 
 
-#pragma mark - 写盘统一（10.01.22）
+#pragma mark - 写盘统一（10.01.23）
 //
 // 背景：百度极速会把「上一次读到的设备信息」缓存到容器 plist。
 //       插件只钩运行时返回值时，plist 里仍留着旧值 / 真机值，
@@ -992,7 +992,7 @@ static void BDSIDMapBuild(void) {
 
 // ── ① 用公开 API 写盘（不碰文件）────────────────────────────
 //
-// 教训（10.01.22 前两版实测）：
+// 教训（10.01.23 前两版实测）：
 //   · 直接 writeToFile: 重写域文件 → 和 App 内存副本打架，440 键被写成 290 个
 //   · 钩 setObject:forKey: 忽略写入 → App 写不进去，落盘也没这些键，同样丢数据
 //
@@ -4876,58 +4876,80 @@ static NSDictionary *BDSRandomTargetedProfileValues(void) {
 }
 
 static NSString *BDSRandomRunText(NSString *mode) {
-    return BDSRandomModeWasRun(g_config, mode) ? @"已执行一键随机" : @"尚未执行一键随机";
+    return BDSRandomModeWasRun(g_config, mode) ? @"已执行" : @"未执行";
 }
 
 static NSString *BDSConfigSummary(void) {
     NSMutableString *summary = [NSMutableString string];
-    [summary appendFormat:@"基础功能：当前功能状态  %@\n%@ · iOS %@ · %@",
+
+    // 一行：状态 已开启/已关闭
+    NSMutableString *(^line1)(NSString *, NSString *) = ^NSMutableString *(NSString *a, NSString *b) {
+        NSMutableString *m = [NSMutableString stringWithString:a];
+        NSUInteger pad = 18;
+        NSUInteger len = a.length;
+        if (len < pad) [m appendString:[@"" stringByPaddingToLength:(pad - len) withString:@" " startingAtIndex:0]];
+        [m appendString:b];
+        return m;
+    };
+
+    // ── 基础功能（含机型·系统·是否执行）────────────────────
+    [summary appendFormat:@"基础功能：当前功能状态 %@\n%@ · iOS %@ · %@",
         cfgBool(@"enabled", NO) ? @"已开启" : @"已关闭",
-        cfgStr(@"deviceProfileName", cfgStr(@"hwMachine", @"未设置")), cfgStr(@"systemVersion", @"未设置"),
+        cfgStr(@"deviceProfileName", cfgStr(@"hwMachine", @"未设置")),
+        cfgStr(@"systemVersion", @"未设置"),
         BDSRandomRunText(@"basic")];
 
+    // ── 高级功能 / 定向指纹（两栏并排，只显示是否执行）──
     NSArray<NSString *> *advancedKeys = @[@"spoofBaiduSDK", @"spoofSysctl", @"bypassJailbreakDetect"];
     BOOL advancedEnabled = NO;
     for (NSString *key in advancedKeys) if (cfgBool(key, NO)) { advancedEnabled = YES; break; }
-    [summary appendFormat:@"\n\n高级功能：%@",
-        advancedEnabled ? @"已开启" : @"已关闭"];
-    [summary appendFormat:@"\n%@", BDSRandomRunText(@"advanced")];
+    BOOL targetedEnabled = cfgBool(@"spoofBaiduTargeted", NO);
+    NSString *advancedRun = BDSRandomModeWasRun(g_config, @"advanced") ? @"已执行" : @"未执行";
+    NSString *targetedRun = BDSRandomModeWasRun(g_config, @"targeted") ? @"已执行" : @"未执行";
 
-    BOOL targetedWasRun = BDSRandomModeWasRun(g_config, @"targeted");
-    [summary appendFormat:@"\n\n定向指纹：%@",
-        cfgBool(@"spoofBaiduTargeted", NO) ? @"已开启" : @"已关闭"];
-    if (targetedWasRun) {
-        [summary appendFormat:@"\n%@ · iOS %@ · 已执行一键随机",
-            cfgStr(@"targetedDeviceProfileName", cfgStr(@"targetedHwMachine", @"未设置")),
-            cfgStr(@"targetedSystemVersion", @"未设置")];
-    } else {
-        [summary appendString:@"\n尚未执行一键随机"];
-    }
+    [summary appendFormat:@"\n\n%@", line1(advancedEnabled ? @"高级功能：已开启" : @"高级功能：已关闭",
+                                            targetedEnabled ? @"定向指纹：已开启" : @"定向指纹：已关闭")];
+    [summary appendFormat:@"\n%@", line1(advancedRun, targetedRun)];
 
+    // ── 反关联增强 / 收益额上报（两栏并排）──────────────
     NSUInteger associationEnabled = 0;
     NSArray<NSDictionary *> *associationItems = BDSSettingGroups()[2];
     for (NSDictionary *item in associationItems) {
         if (![item[@"off"] boolValue] && cfgBool(item[@"key"], NO)) associationEnabled++;
     }
-    [summary appendFormat:@"\n\n反关联增强：%@\n收益额上报：%@",
-        associationEnabled ? @"已开启" : @"已关闭",
-        cfgBool(@"blockStatCashTelemetry", YES) ? @"已开启" : @"已关闭"];
+    [summary appendFormat:@"\n\n%@", line1(associationEnabled ? @"反关联增强：已开启" : @"反关联增强：已关闭",
+                                            cfgBool(@"blockStatCashTelemetry", YES) ? @"收益额上报：已开启" : @"收益额上报：已关闭")];
 
-    // 金额拦截命中统计（Blocker 写 Documents/bdspoofer_cash_hits.plist）
+    // ── 拦截统计 + /ztbox + 全网 ─────────────────────────
     {
         NSString *docs = [NSSearchPathForDirectoriesInDomains(
             NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
         NSDictionary *hits = [NSDictionary dictionaryWithContentsOfFile:
             [docs stringByAppendingPathComponent:@"bdspoofer_cash_hits.plist"]];
         if (hits) {
-            [summary appendFormat:@"\n拦到次数：%@（网页 %@ / 原生 %@）",
+            [summary appendFormat:@"\n\n拦到次数：%@（网页 %@ / 原生 %@）",
                 hits[@"total"] ?: @0, hits[@"src.web"] ?: @0, hits[@"src.native"] ?: @0];
-            // 精简：不再显示「最近时间 + 来源」，对判断拦截有没有生效没帮助
         } else if (cfgBool(@"blockStatCashTelemetry", YES)) {
-            [summary appendString:@"\n拦到次数：0（还没命中过）"];
+            [summary appendString:@"\n\n拦到次数：0（还没命中过）"];
         }
 
-        // 设备编号（组容器里的 BNPush_cuid）+ 上次重置记录
+        NSDictionary *obs = [NSDictionary dictionaryWithContentsOfFile:
+            [docs stringByAppendingPathComponent:@"bdspoofer_ztbox_obs.plist"]];
+        if (obs) {
+            [summary appendFormat:@"\n/ztbox %@ 次（命中 %@ / 放过 %@）",
+                obs[@"total"] ?: @0, obs[@"hitCount"] ?: @0, obs[@"missCount"] ?: @0];
+            NSDictionary *all = [NSDictionary dictionaryWithContentsOfFile:
+                [docs stringByAppendingPathComponent:@"bdspoofer_all_obs.plist"]];
+            if (all) {
+                NSDictionary *eps = all[@"endpoints"];
+                [summary appendFormat:@"\n· 全网 %@ 次 / %@ 口 / 金额 %@",
+                    all[@"total"] ?: @0,
+                    @([eps isKindOfClass:NSDictionary.class] ? eps.count : 0),
+                    all[@"amountHits"] ?: @0];
+            }
+        }
+
+        // ── 设备编号 + 上次重置（放最后）──────────────────
         {
             NSString *cur = BDSDevicePushCuid();
             if (cur.length) {
@@ -4947,26 +4969,6 @@ static NSString *BDSConfigSummary(void) {
                 [summary appendFormat:@"\n上次重置：%@（原 %@…）",
                     [rdf stringFromDate:rt], oldc];
             }
-        }
-
-        // /ztbox 全量观测：命中 vs 放过
-        NSDictionary *obs = [NSDictionary dictionaryWithContentsOfFile:
-            [docs stringByAppendingPathComponent:@"bdspoofer_ztbox_obs.plist"]];
-        if (obs) {
-            // 精简：/ztbox 与全网合成一行，不再列接口明细与命中签名
-            NSMutableString *line = [NSMutableString stringWithFormat:
-                @"\n\n/ztbox %@ 次（命中 %@ / 放过 %@）",
-                obs[@"total"] ?: @0, obs[@"hitCount"] ?: @0, obs[@"missCount"] ?: @0];
-            NSDictionary *all = [NSDictionary dictionaryWithContentsOfFile:
-                [docs stringByAppendingPathComponent:@"bdspoofer_all_obs.plist"]];
-            if (all) {
-                NSDictionary *eps = all[@"endpoints"];
-                [line appendFormat:@" · 全网 %@ 次/%@ 口/金额 %@",
-                    all[@"total"] ?: @0,
-                    @([eps isKindOfClass:NSDictionary.class] ? eps.count : 0),
-                    all[@"amountHits"] ?: @0];
-            }
-            [summary appendString:line];
         }
     }
     return summary;
@@ -5161,26 +5163,26 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.22";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.23";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
     // 「重置设备编号」一直显示
-    NSMutableArray *titles=[@[@"一键随机整套基础参数",@"一键随机整套高级参数",@"一键随机定向指纹参数"] mutableCopy];
-    [titles addObject:@"重置设备编号"];
-    [titles addObjectsFromArray:@[@"反关联项",@"诊断自检",@"恢复安全",@"关闭"]];
+    NSArray *titles=@[@"一键随机基础",@"一键随机高级",@"一键随机指纹",@"重置设备编号",
+                      @"反关联项",@"诊断自检",@"恢复安全",@"关闭页面"];
     NSMutableArray *items=[NSMutableArray array];
     for(NSUInteger i=0;i<titles.count;i++) {
         NSString *title=titles[i];
         NSMutableDictionary *item=[@{@"title":title} mutableCopy];
         if(i<3) item[@"color"]=BDSRandomButtonColor(i);
+        else if([title isEqualToString:@"重置设备编号"]) item[@"color"]=BDSResetButtonColor();
         item[@"action"]=[^{
-            if([title isEqualToString:@"一键随机定向指纹参数"]) { [self showBaiduTargetedSwitches]; return; }
+            if([title isEqualToString:@"一键随机指纹"]) { [self showBaiduTargetedSwitches]; return; }
             if([title isEqualToString:@"反关联项"]) { [self showAssociationSettings]; return; }
             if([title isEqualToString:@"重置设备编号"]) { [self resetDeviceIdentity]; return; }
             [weakPage dismissViewControllerAnimated:YES completion:^{
-                if([title isEqualToString:@"一键随机整套基础参数"]) [self randomizeBasicProfile];
-                else if([title isEqualToString:@"一键随机整套高级参数"]) [self randomizeAdvancedProfile];
+                if([title isEqualToString:@"一键随机基础"]) [self randomizeBasicProfile];
+                else if([title isEqualToString:@"一键随机高级"]) [self randomizeAdvancedProfile];
                 else if([title isEqualToString:@"诊断自检"]) [self showSelfTest];
                 else if([title isEqualToString:@"恢复安全"]) [self showRestartNotice:saveConfigValues(BDSSafeSwitchValues())];
             }];
@@ -5208,7 +5210,7 @@ static NSString *BDSConfigSummary(void) {
     };
     if(presenter.navigationController) [presenter.navigationController pushViewController:page animated:YES];
     else {
-        page.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"关闭" style:UIBarButtonItemStylePlain target:self action:@selector(closeSettingsPage)];
+        page.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"关闭页面" style:UIBarButtonItemStylePlain target:self action:@selector(closeSettingsPage)];
         [presenter presentViewController:[[UINavigationController alloc] initWithRootViewController:page] animated:YES completion:nil];
     }
 }
@@ -5536,7 +5538,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
     page.randomize=^{ [weakPage dismissViewControllerAnimated:YES completion:^{ [self randomizeTargetedProfile]; }]; };
     if(presenter.navigationController) [presenter.navigationController pushViewController:page animated:YES];
     else {
-        page.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"关闭" style:UIBarButtonItemStylePlain target:self action:@selector(closeSettingsPage)];
+        page.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"关闭页面" style:UIBarButtonItemStylePlain target:self action:@selector(closeSettingsPage)];
         [presenter presentViewController:[[UINavigationController alloc] initWithRootViewController:page] animated:YES completion:nil];
     }
 }
