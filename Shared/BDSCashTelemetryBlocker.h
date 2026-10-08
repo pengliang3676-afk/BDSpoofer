@@ -222,6 +222,7 @@ static void BDSEnsureCashTelemetryBlockScript(WKUserContentController *controlle
     for (WKUserScript *script in controller.userScripts) {
         if ([script.source hasPrefix:setting]) return;
     }
+    BDSCashRecordHit(@"block-script", @"准备挂载拦截主脚本");
     NSString *source = [setting stringByAppendingString:BDSCashTelemetryBlockScript];
     WKUserScript *script = [[WKUserScript alloc]
         initWithSource:source
@@ -602,17 +603,25 @@ static NSString *BDSWebSpoofSource(void) {
 static NSString * const BDSWebSpoofMarker = @"window.__bdsWebSpoof={";
 
 static void BDSInjectWebSpoofScript(WKUserContentController *ucc) {
-    if (!ucc) return;
+    if (!ucc) { BDSCashRecordHit(@"spoof-no-ucc", @"ucc 为空"); return; }
     NSString *src = BDSWebSpoofSource();
-    if (!src.length) return;
+    if (!src.length) { BDSCashRecordHit(@"spoof-no-src", @"构造脚本失败"); return; }
     for (WKUserScript *s in ucc.userScripts) {
-        if ([s.source hasPrefix:BDSWebSpoofMarker]) return;   // 已注入
+        if ([s.source hasPrefix:BDSWebSpoofMarker]) {
+            BDSCashRecordHit(@"spoof-skip", @"已注入过，跳过");
+            return;
+        }
     }
     WKUserScript *us = [[WKUserScript alloc]
         initWithSource:src
         injectionTime:WKUserScriptInjectionTimeAtDocumentStart
         forMainFrameOnly:NO];
-    @try { [ucc addUserScript:us]; } @catch (NSException *e) { (void)e; }
+    @try {
+        [ucc addUserScript:us];
+        BDSCashRecordHit(@"spoof-ok", src);
+    } @catch (NSException *e) {
+        BDSCashRecordHit(@"spoof-err", e.reason ?: @"未知");
+    }
 }
 
 // hook -[WKUserContentController addUserScript:] —— 任何页面把脚本挂上来时，
@@ -622,6 +631,7 @@ static void BDSCashAddUserScript(id self, SEL _cmd, WKUserScript *script) {
     if (g_bdsCashOriginalAddUserScript) {
         ((void (*)(id, SEL, WKUserScript *))g_bdsCashOriginalAddUserScript)(self, _cmd, script);
     }
+    BDSCashRecordHit(@"addus", @"addUserScript: 被调用");
     // 避免递归：我们自己的脚本不再触发二次注入
     if ([script.source hasPrefix:BDSWebSpoofMarker]) return;
     BDSInjectWebSpoofScript((WKUserContentController *)self);
@@ -632,6 +642,7 @@ static WKWebView *BDSCashWKInit(id self, SEL command, CGRect frame, WKWebViewCon
     // 只在这个钩子确实装上时才会走到这里，也就是开关在启动时是打开的。
     // 新建的 WebView 补一份 =true 的脚本；关掉开关后不新建的页面不受影响，
     // 原生请求那条路由判定入口每次读开关负责，关掉立即放行。
+    BDSCashRecordHit(@"wkinit", @"WKWebView initWithFrame:configuration: 被调用");
     BDSCashInstallHitHandler(configuration.userContentController);
     BDSInjectWebSpoofScript(configuration.userContentController);
     BDSEnsureCashTelemetryBlockScript(configuration.userContentController, YES);

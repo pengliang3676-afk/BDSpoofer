@@ -1,9 +1,14 @@
-10.01.14: 网页自检增强 —— 查清 __bdsWebSpoof 到底注入上没有
+10.01.15: 换注入点 —— hook WKUserContentController addUserScript:
 
-10.01.13 实测：网页 screen 仍是 375x667@2x（伪装目标是 375x812@3x），
-且探测回报里 spoof 字段为空 —— 说明 window.__bdsWebSpoof 可能没注入上。
+实测：10.01.14 里 window.__bdsWebSpoof 没设置上（探测回报 spoofExists=false），
+导致 __bdsDefineScreen 拿不到值、屏幕不上报伪装值。
+原因：原注入点在 BDSCashWKInit（-initWithFrame:configuration:），
+App 若不经该初始化器创建 WebView，就一次都不会走到。
 
 改动：
-  ① 探测改 3 次（DOMContentLoaded / 600ms / 2500ms）
-  ② 探测新增 spoofExists（布尔）与 uaRaw（绕过改写取原始 UA）
-  ③ 存储新增 withSpoof / noSpoof 计数、lastHasSpoof、recent（最近 20 条）
+  ① 抽出 BDSWebSpoofSource() / BDSInjectWebSpoofScript()
+  ② 新增 hook：- [WKUserContentController addUserScript:]
+     任何页面往 controller 挂脚本时，紧跟其后补一份 window.__bdsWebSpoof
+     用 BDSWebSpoofMarker 前缀判重，避免重复注入
+  ③ BDSCashWKInit 与 addUserScript 两条路都注入（互为兜底）
+  ④ 保留 10.01.14 的 spoofExists / withSpoof / noSpoof 自检，便于验证
