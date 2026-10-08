@@ -221,14 +221,14 @@ static UIColor *BDSResetButtonColor(void) {
 @implementation BDSTargetedPage
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title=@"定向指纹参数";
+    self.title=@"定向指纹";
     self.tableView.rowHeight=56;
     if(!self.selection) self.selection=[NSMutableSet set];
     UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem];
     button.frame=CGRectMake(0,0,320,52);
     button.backgroundColor=BDSRandomButtonColor(2);
     [button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-    [button setTitle:@"一键随机定向指纹参数" forState:UIControlStateNormal];
+    [button setTitle:@"一键随机指纹" forState:UIControlStateNormal];
     button.titleLabel.font=[UIFont boldSystemFontOfSize:16];
     [button addTarget:self action:@selector(runRandom) forControlEvents:UIControlEventTouchUpInside];
     self.tableView.tableFooterView=button;
