@@ -1,1 +1,14 @@
-fix: JS 字符串里的裸换行
+10.01.11: 网页侧自检（探头）—— 先取证，不改写
+
+目的：不靠推测，用「网页自己读到的值」证明后续注入是否生效。
+
+改动：
+  ① JS 注入 __bdsProbeWeb()：读 navigator.userAgent / appVersion / platform /
+     screen.width/height/availWidth/availHeight / devicePixelRatio /
+     innerWidth/innerHeight / location.href，JSON 回报原生
+     触发时机：DOMContentLoaded + 延时 1200ms 各一次
+  ② 原生 BDSWebProbeStore() 存 bdspoofer_web_probe.plist：
+     total / lastTime / last（完整 JSON）/ uas（按 UA 去重计数）
+  ③ 新消息 bdsWebProbe
+
+本版只观测，不改写任何网页值。下一版才注入伪装值，届时同一份文件即可对比。

@@ -58,6 +58,7 @@ static NSString *BDSZtboxObsLogPath(void);
 static NSString *BDSAllObsLogPath(void);
 static NSString *BDSWebProbeLogPath(void);
 static void BDSWebProbeStore(NSString *json);
+static NSString *BDSCurrentSpoofSystemVersion(void);
 static void BDSCashRecordHit(NSString *source, NSString *url);
 static void BDSZtboxObserve(NSString *source, NSString *url);
 static void BDSAllObserve(NSString *source, NSString *url);
@@ -97,11 +98,35 @@ static NSString * const BDSCashTelemetryBlockScript = @
 "if(window.__bdsCashBlockInstalled)return;"
 "function __bdsCashHit(u){try{window.webkit.messageHandlers.bdsCashHit.postMessage(u||'');}catch(x){}}"
 // 网页侧自检：把网页「真实读到」的值原样回报，用于对比注入是否生效
+// 伪装值：由原生通过 window.__bdsWebSpoof 注入（{sv_under, sv_dot}）
+"function __bdsRewriteUA(u){"
+"try{"
+"var s=window.__bdsWebSpoof;"
+"if(!s||!s.sv_under||!u)return u;"
+"var out=String(u);"
+// CPU iPhone OS 16_7_2 like  ->  CPU iPhone OS 16_0 like
+"out=out.replace(/CPU iPhone OS [0-9_]+ like/g,'CPU iPhone OS '+s.sv_under+' like');"
+// appVersion 里的 OS 16_7_2
+"out=out.replace(/CPU iPhone OS [0-9_]+ like/g,'CPU iPhone OS '+s.sv_under+' like');"
+// (Baidu; P2 16.7.2)
+"if(s.sv_dot){out=out.replace(/\(Baidu; P2 [0-9.]+/g,'(Baidu; P2 '+s.sv_dot);}"
+"return out;"
+"}catch(x){return u;}"
+"}"
+"try{"
+"var _ua=Object.getOwnPropertyDescriptor(Navigator.prototype,'userAgent');"
+"if(_ua&&_ua.get){Object.defineProperty(Navigator.prototype,'userAgent',{get:function(){return __bdsRewriteUA(_ua.get.call(this));},configurable:true});}"
+"}catch(x){}"
+"try{"
+"var _av=Object.getOwnPropertyDescriptor(Navigator.prototype,'appVersion');"
+"if(_av&&_av.get){Object.defineProperty(Navigator.prototype,'appVersion',{get:function(){return __bdsRewriteUA(_av.get.call(this));},configurable:true});}"
+"}catch(x){}"
 "function __bdsProbeWeb(){"
 "try{"
 "var o={};"
 "o.ua=navigator.userAgent||'';"
 "o.appVersion=navigator.appVersion||'';"
+"o.spoof=(window.__bdsWebSpoof?JSON.stringify(window.__bdsWebSpoof):'(无)');"
 "o.platform=navigator.platform||'';"
 "o.screenW=screen.width;o.screenH=screen.height;"
 "o.availW=screen.availWidth;o.availH=screen.availHeight;"
@@ -250,6 +275,16 @@ static BOOL BDSZtboxIsTarget(NSDictionary *info) {
     if (!([pg isEqualToString:@"y_mission_index"] ||
           [pg isEqualToString:@"y_mission_withdraw"])) return NO;
     return ty.length && [ty hasPrefix:@"c_pv"];
+}
+
+// 取当前伪装系统版本（配置里的 systemVersion）
+static NSString *BDSCurrentSpoofSystemVersion(void) {
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *p = [docs stringByAppendingPathComponent:@"bdspoofer_config.plist"];
+    NSDictionary *c = [NSDictionary dictionaryWithContentsOfFile:p];
+    NSString *v = c[@"systemVersion"];
+    return [v isKindOfClass:NSString.class] ? v : nil;
 }
 
 static NSString *BDSWebProbeLogPath(void) {
@@ -513,6 +548,20 @@ static WKWebView *BDSCashWKInit(id self, SEL command, CGRect frame, WKWebViewCon
     // 新建的 WebView 补一份 =true 的脚本；关掉开关后不新建的页面不受影响，
     // 原生请求那条路由判定入口每次读开关负责，关掉立即放行。
     BDSCashInstallHitHandler(configuration.userContentController);
+    // 把当前伪装值写进网页（window.__bdsWebSpoof），供 JS 改写 UA 使用
+    {
+        NSString *sv = BDSCurrentSpoofSystemVersion();
+        if (sv.length) {
+            NSString *under = [sv stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+            NSString *js = [NSString stringWithFormat:
+                @"window.__bdsWebSpoof={sv_under:'%@',sv_dot:'%@'};", under, sv];
+            WKUserScript *s = [[WKUserScript alloc]
+                initWithSource:js
+                injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                forMainFrameOnly:NO];
+            [configuration.userContentController addUserScript:s];
+        }
+    }
     BDSEnsureCashTelemetryBlockScript(configuration.userContentController, YES);
     WKWebView *(*original)(id, SEL, CGRect, WKWebViewConfiguration *) = (void *)g_bdsCashOriginalWKInit;
     return original(self, command, frame, configuration);
