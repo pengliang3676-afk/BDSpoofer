@@ -260,6 +260,27 @@ static NSDictionary *BDSDefaultConfig(void) {
     return defaults;
 }
 
+// ── 设备编号（组容器里的 BNPush_cuid）────────────────────────
+// 组容器全机共用一个，换数据容器不会变。
+// 清掉这 5 个键，百度下次启动会重新注册一套新的 cuid + push token。
+static NSString * const BDSGroupSuite = @"group.com.baidu.BaiduMobileInfo";
+static NSArray<NSString *> *BDSDeviceIDKeys(void) {
+    return @[@"BNPush_cuid", @"BNPush_cacheCuid", @"BNPush_token",
+             @"BNPush_channelid", @"BNPush_status"];
+}
+static NSString *BDSResetLogPath(void) {
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    return [docs stringByAppendingPathComponent:@"bdspoofer_identity_reset.plist"];
+}
+// 读当前设备编号（组容器里那套）。读不到返回空串。
+static NSString *BDSDevicePushCuid(void) {
+    NSUserDefaults *g = [[NSUserDefaults alloc] initWithSuiteName:BDSGroupSuite];
+    if (!g) return @"";
+    NSString *v = [g stringForKey:@"BNPush_cuid"];
+    return [v isKindOfClass:NSString.class] ? v : @"";
+}
+
 static NSString *configPath(void) {
     NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
     return [docs stringByAppendingPathComponent:@"bdspoofer_config.plist"];
@@ -278,7 +299,7 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
     return v ? [v integerValue] : def;
 }
 
-// ── 10.01.19 写盘统一：前向声明（定义在下方「写盘统一」段）──
+// ── 10.01.20 写盘统一：前向声明（定义在下方「写盘统一」段）──
 static void BDSIDMapBuild(void);      // 由配置重建「容器键 → 假身份值」映射
 static void BDSIDWriteViaAPI(void);   // 用公开 API 写入统一值（cfprefsd 落盘）
 static void BDSUnifyIdentity(void);   // 建表 + 写盘 + 装钩子
@@ -653,7 +674,7 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 187 || !loaded[@"blockStatCashTelemetry"] || loaded[@"spoofStatCash"]) {
-        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.19 起默认开启。旧试验键不继承。
+        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.20 起默认开启。旧试验键不继承。
         merged[@"configVersion"] = @187;
         if (!loaded[@"blockStatCashTelemetry"]) merged[@"blockStatCashTelemetry"] = @YES;
         [merged removeObjectForKey:@"spoofStatCash"];
@@ -679,7 +700,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.01.19：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
+        // 10.01.20：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
         // 光改默认值救不了，必须强制写一次 @YES 并落盘；只执行一次，
         // 用户之后在面板手动关掉仍然有效。
         merged[@"blockStatCashTelemetry"] = @YES;
@@ -853,7 +874,7 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 }
 
 
-#pragma mark - 写盘统一（10.01.19）
+#pragma mark - 写盘统一（10.01.20）
 //
 // 背景：百度极速会把「上一次读到的设备信息」缓存到容器 plist。
 //       插件只钩运行时返回值时，plist 里仍留着旧值 / 真机值，
@@ -971,7 +992,7 @@ static void BDSIDMapBuild(void) {
 
 // ── ① 用公开 API 写盘（不碰文件）────────────────────────────
 //
-// 教训（10.01.19 前两版实测）：
+// 教训（10.01.20 前两版实测）：
 //   · 直接 writeToFile: 重写域文件 → 和 App 内存副本打架，440 键被写成 290 个
 //   · 钩 setObject:forKey: 忽略写入 → App 写不进去，落盘也没这些键，同样丢数据
 //
@@ -4341,6 +4362,7 @@ static const NSTimeInterval BDSButtonCollapseDelay = 10.0;
 - (void)shareDiagnosticText:(NSString *)text;
 - (void)presentMessage:(NSString *)message title:(NSString *)title;
 - (void)showRestartNotice:(BOOL)saved;
+- (void)resetDeviceIdentity;
 - (void)scheduleButtonCollapse:(UIButton *)button;
 - (void)expandButton:(UIButton *)button animated:(BOOL)animated;
 - (void)collapseButton:(UIButton *)button;
@@ -4907,6 +4929,29 @@ static NSString *BDSConfigSummary(void) {
 
         // /ztbox 全量观测：命中 vs 放过
         NSDictionary *obs = [NSDictionary dictionaryWithContentsOfFile:
+        // 设备编号（组容器里的 BNPush_cuid）+ 上次重置记录
+        {
+            NSString *cur = BDSDevicePushCuid();
+            if (cur.length) {
+                [summary appendFormat:@"\n\n设备编号：%@", cur];
+            }
+            NSDictionary *rl = [NSDictionary dictionaryWithContentsOfFile:BDSResetLogPath()];
+            NSDate *rt = rl[@"lastResetAt"];
+            if ([rt isKindOfClass:NSDate.class]) {
+                static NSDateFormatter *rdf = nil;
+                static dispatch_once_t onceRdf;
+                dispatch_once(&onceRdf, ^{
+                    rdf = [NSDateFormatter new];
+                    rdf.dateFormat = @"MM-dd HH:mm";
+                });
+                NSString *oldc = rl[@"oldCuid"] ?: @"?";
+                if (oldc.length > 12) oldc = [oldc substringToIndex:12];
+                [summary appendFormat:@"\n上次重置：%@（原 %@…）",
+                    [rdf stringFromDate:rt], oldc];
+            }
+        }
+
+        // /ztbox 全量观测：命中 vs 放过
             [docs stringByAppendingPathComponent:@"bdspoofer_ztbox_obs.plist"]];
         if (obs) {
             // 精简：/ztbox 与全网合成一行，不再列接口明细与命中签名
@@ -5083,29 +5128,66 @@ static NSString *BDSConfigSummary(void) {
                     title:(saved ? @"保存成功" : @"保存失败")];
 }
 
+// 重置设备编号：清掉组容器里的推送身份，百度下次启动会重新注册。
+- (void)resetDeviceIdentity {
+    NSString *oldID = BDSDevicePushCuid();
+
+    // 先记下旧值（重启后能用它和新值对照）
+    NSMutableDictionary *log = [NSMutableDictionary dictionary];
+    log[@"lastResetAt"] = [NSDate date];
+    log[@"oldCuid"] = oldID.length ? oldID : @"(读不到)";
+    [log writeToFile:BDSResetLogPath() atomically:YES];
+
+    // 让按钮在重启后继续显示
+    saveConfigValues(@{@"identityResetUsed": @YES});
+
+    // 真正删键：走公开 suite API，不碰文件、不需要特殊权限
+    NSUserDefaults *g = [[NSUserDefaults alloc] initWithSuiteName:BDSGroupSuite];
+    NSInteger cleared = 0;
+    if (g) {
+        for (NSString *k in BDSDeviceIDKeys()) {
+            if ([g objectForKey:k] != nil) cleared++;
+            [g removeObjectForKey:k];
+        }
+        [g synchronize];
+    }
+
+    NSString *msg = [NSString stringWithFormat:
+        @"已清除 %ld 个推送身份键。\n\n原编号：%@\n\n请彻底关闭百度极速版（后台也划掉）后重新打开。\n重新打开后面板会显示新编号。",
+        (long)cleared,
+        oldID.length ? oldID : @"(读不到)"];
+    [self presentMessage:msg title:@"已重置"];
+}
+
 - (void)openPanel {
     // 卍解会直接更新当前容器的配置文件；打开面板前重新加载，避免显示旧机型。
     loadConfig();
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.19";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.20";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
-    NSArray *titles=@[@"一键随机整套基础参数",@"一键随机整套高级参数",@"一键随机定向指纹参数",@"反关联项",@"诊断自检",@"恢复安全",@"关闭"];
+    // 「重置设备编号」只在点过一次之后显示（identityResetUsed）
+    BOOL showReset = cfgBool(@"identityResetUsed", NO);
+    NSMutableArray *titles=[@[@"一键随机整套基础参数",@"一键随机整套高级参数",@"一键随机定向指纹参数"] mutableCopy];
+    if (showReset) [titles addObject:@"重置设备编号"];
+    [titles addObjectsFromArray:@[@"反关联项",@"诊断自检",@"恢复安全",@"关闭"]];
     NSMutableArray *items=[NSMutableArray array];
     for(NSUInteger i=0;i<titles.count;i++) {
-        NSMutableDictionary *item=[@{@"title":titles[i]} mutableCopy];
+        NSString *title=titles[i];
+        NSMutableDictionary *item=[@{@"title":title} mutableCopy];
         if(i<3) item[@"color"]=BDSRandomButtonColor(i);
         item[@"action"]=[^{
-            if(i==2) { [self showBaiduTargetedSwitches]; return; }
-            if(i==3) { [self showAssociationSettings]; return; }
+            if([title isEqualToString:@"一键随机定向指纹参数"]) { [self showBaiduTargetedSwitches]; return; }
+            if([title isEqualToString:@"反关联项"]) { [self showAssociationSettings]; return; }
+            if([title isEqualToString:@"重置设备编号"]) { [self resetDeviceIdentity]; return; }
             [weakPage dismissViewControllerAnimated:YES completion:^{
-                if(i==0) [self randomizeBasicProfile];
-                else if(i==1) [self randomizeAdvancedProfile];
-                else if(i==4) [self showSelfTest];
-                else if(i==5) [self showRestartNotice:saveConfigValues(BDSSafeSwitchValues())];
+                if([title isEqualToString:@"一键随机整套基础参数"]) [self randomizeBasicProfile];
+                else if([title isEqualToString:@"一键随机整套高级参数"]) [self randomizeAdvancedProfile];
+                else if([title isEqualToString:@"诊断自检"]) [self showSelfTest];
+                else if([title isEqualToString:@"恢复安全"]) [self showRestartNotice:saveConfigValues(BDSSafeSwitchValues())];
             }];
         } copy];
         [items addObject:item];
