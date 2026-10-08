@@ -16,18 +16,18 @@ assert all(config[k] is True for k in regular)
 assert all(config[k] is False for k in risk)
 assert config['bypassJailbreakDetect'] is False  # 10.01.01 起默认关闭
 assert config['spoofScreen'] is False and config['configVersion']==191
-assert config['blockStatCashTelemetry'] is True  # 10.01.25 起默认开启
+assert config['blockStatCashTelemetry'] is True  # 10.01.26 起默认开启
 assert 'blockStatCashTelemetry' in policy and 'blockStatCashTelemetry' in plugin
-assert '收益额上报：已开启' in plugin and '? @"已开启" : @"已关闭"' in plugin
+assert '收益上报：已开启' in plugin and '? @"已开启" : @"已关闭"' in plugin
 assert all(config['spoofBaiduTargeted'+x] is False for x in ['', 'System','Model','Screen','UA','Push'])
 for text in ['一键随机基础','一键随机高级','一键随机指纹','反关联项','诊断自检','恢复安全','重置设备编号','关闭页面']:assert text in plugin,text
 for text in ['一键随机基础整套设置','一键随机高级整套设置','一键随机定向指纹设置','反关联项','恢复安全']:assert text in manager,text
-for text in ['基础功能：当前功能状态 %@','高级功能：已开启','定向指纹：已开启','反关联增强：已开启','收益额上报：已开启','已执行','未执行']:
+for text in ['基础功能：当前功能状态 %@','高级功能：已开启','定向指纹：已开启','关联增强：已开启','收益上报：已开启','已执行','未执行']:
     assert text in plugin,text
 assert '百度身份参数 · 系统硬件参数 · 防越狱检测' not in plugin
 assert '已开启（%lu 项）' not in plugin
 assert 'cfgStr(@"deviceProfileName", cfgStr(@"hwMachine", @"未设置"))' in plugin
-# 10.01.25 起摘要不再显示定向指纹的机型/系统详情，只显示 已执行/未执行，故此断言移除
+# 10.01.26 起摘要不再显示定向指纹的机型/系统详情，只显示 已执行/未执行，故此断言移除
 settings_ui=(root/'Shared/BDSSettingsUI.h').read_text(encoding='utf-8')
 assert 'usesCompactActionRow' in settings_ui and 'UIStackViewDistributionFillEqually' in settings_ui
 assert 'i==5 ? UIColor.systemRedColor' not in settings_ui
@@ -38,7 +38,7 @@ assert 'closeApp' not in manager and 'NSSelectorFromString(@"suspend")' not in m
 assert 'config[@"deviceProfileName"] ?: config[@"hwMachine"]' in manager
 assert 'config[@"targetedDeviceProfileName"] ?: config[@"targetedHwMachine"]' in manager
 assert 'NSString *currentSuffix = @"（当前）"' in manager and 'UIColor.systemRedColor' in manager
-assert 'page.title=@"卐解 1.8.1 UI1.3 10.01.25"' in plugin
+assert 'page.title=@"卐解 1.8.1 UI1.3 10.01.26"' in plugin
 assert 'didRandomize%@%@' in policy
 for text in ['BDSMarkRandomModeRun','BDSRandomModeWasRun','BDSConfigForPersistentStorage']:
     assert text in plugin+manager+policy,text
@@ -58,12 +58,12 @@ for text in ['h2tcbox.baidu.com','/ztbox','zpblog','10290','y_mission_index','c_
 assert 'BDSInstallCashTelemetryBlocking();' in plugin
 assert plugin.count('loadConfig();') >= 3
 assert '0.50' not in release and '触发风控' not in release
-assert 'BDSpoofer_1.8.1_UI1.3_10.01.25.dylib' in build and 'UI1.1.dylib' not in build
-assert 'BDSpooferCraneManager_1.0.3-ui1_10.01.25_RootHide.deb' in build
+assert 'BDSpoofer_1.8.1_UI1.3_10.01.26.dylib' in build and 'UI1.1.dylib' not in build
+assert 'BDSpooferCraneManager_1.0.3-ui1_10.01.26_RootHide.deb' in build
 assert 'BDSLoginDeviceDict' in plugin and 'ssologin' in plugin
 assert 'BDSPassEncryptedDi' in plugin and 'deviceInfoForLogin' in plugin
 assert 'BDSPassEnsureDVIF' in plugin and 'bds_my_uname' in plugin and '{"uname"' in plugin
-assert 'self.title = @"卍解 1.0.3 10.01.25"' in manager
+assert 'self.title = @"卍解 1.0.3 10.01.26"' in manager
 assert '[verified isEqualToDictionary:config]' in manager
 assert 'targetedScreenHwMachine' in plugin and 'targetedScreenHwMachine' in manager
 def function(text,name):
@@ -132,7 +132,7 @@ for name in ['bds_my_stat','bds_my_lstat','bds_my_access','bds_my_fopen','bds_my
     assert strip_guards(plugin,name)==strip_guards(base,name),name
 for path in ['bdspoofer_config.plist','CraneManager/Info.plist','CraneManager/BDSCraneManager.entitlements','CraneManager/BDSCraneManager.libSandy.plist']:plistlib.loads((root/path).read_bytes())
 manager_info=plistlib.loads((root/'CraneManager/Info.plist').read_bytes())
-assert manager_info['CFBundleVersion']=='10.01.25' and manager_info['CFBundleShortVersionString']=='1.0.3-10.01.25'
+assert manager_info['CFBundleVersion']=='10.01.26' and manager_info['CFBundleShortVersionString']=='1.0.3-10.01.26'
 assert 'CPU iPhone OS ' in plugin and 'setCustomUserAgent:' in plugin
 assert 'if (hw.length && f.count > 3) f[3] = hw;' in plugin
 assert 'if (sv.length && f.count > 4) f[4] = sv;' in plugin

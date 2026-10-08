@@ -17,6 +17,8 @@ static UIColor *BDSResetButtonColor(void) {
 @property(nonatomic,copy) NSArray<NSDictionary *> *items;
 @property(nonatomic,copy) NSString *pageSummary;
 @property(nonatomic,copy) NSString *(^summaryProvider)(void);
+@property(nonatomic,copy) NSArray<NSNumber *> *compactFullRowIndexes;
+@property(nonatomic,copy) NSArray<NSArray<NSNumber *> *> *compactPairRows;
 @end
 @implementation BDSActionPage
 - (void)viewDidLoad {
@@ -33,16 +35,67 @@ static UIColor *BDSResetButtonColor(void) {
     [self.tableView reloadData];
 }
 - (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }
-- (NSInteger)compactFullRowsCount { return MAX(0, (NSInteger)self.items.count - 4); }
-- (BOOL)usesCompactActionRow { return self.items.count>=7; }
-- (NSInteger)compactRowCount { return [self compactFullRowsCount]+2; }
+- (BOOL)usesCompactActionRow { return self.compactFullRowIndexes.count>0 && self.compactPairRows.count>0; }
+- (NSInteger)compactRowCount { return (NSInteger)self.compactFullRowIndexes.count + (NSInteger)self.compactPairRows.count; }
+// 把「行号」映射成「这一行有哪些 item 下标」
+- (NSArray<NSNumber *> *)compactItemIndexesForRow:(NSInteger)row {
+    if(row<(NSInteger)self.compactFullRowIndexes.count) return @[self.compactFullRowIndexes[row]];
+    NSInteger pair=row-(NSInteger)self.compactFullRowIndexes.count;
+    if(pair>=(NSInteger)self.compactPairRows.count) return @[];
+    return self.compactPairRows[pair];
+}
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return [self usesCompactActionRow] ? [self compactRowCount] : (NSInteger)self.items.count; }
+// 默认字体（算宽度和排版都用它）
+- (UIFont *)summaryFont { return [UIFont systemFontOfSize:14]; }
+
+// 把摘要文字套上制表位：带 \x01 哨兵的行，右栏从固定的制表位开始，
+// 这样右栏起点完全一致（补空格在比例字体下对不齐）。
+- (NSAttributedString *)summaryAttributedTextForWidth:(CGFloat)textWidth {
+    NSString *raw=self.pageSummary ?: @"";
+    UIFont *font=[self summaryFont];
+    NSArray<NSString *> *rows=[raw componentsSeparatedByString:@"\n"];
+    // 1) 先量出所有两栏行左栏的最大宽度
+    CGFloat leftMax=0;
+    NSDictionary *measure=@{NSFontAttributeName:font};
+    for(NSString *r in rows) {
+        if(![r hasPrefix:@"\x01"]) continue;
+        NSString *body=[r substringFromIndex:1];
+        NSRange tab=[body rangeOfString:@"\t"];
+        if(tab.location==NSNotFound) continue;
+        NSString *left=[body substringToIndex:tab.location];
+        CGFloat w=[left sizeWithAttributes:measure].width;
+        if(w>leftMax) leftMax=w;
+    }
+    // 2) 制表位 = 左栏最大宽度 + 12pt 间距；至少留 90pt
+    CGFloat tabPos=MAX(90.0, ceil(leftMax)+12.0);
+    if(tabPos>textWidth-60.0) tabPos=MAX(60.0, textWidth-60.0);
+
+    NSMutableParagraphStyle *ps=[NSMutableParagraphStyle new];
+    ps.lineBreakMode=NSLineBreakByWordWrapping;
+    NSTextTab *stop=[[NSTextTab alloc] initWithTextAlignment:NSTextAlignmentLeft location:tabPos options:@{}];
+    ps.tabStops=@[stop];
+
+    NSMutableAttributedString *out=[NSMutableAttributedString new];
+    for(NSUInteger i=0;i<rows.count;i++) {
+        NSString *r=rows[i];
+        BOOL marked=[r hasPrefix:@"\x01"];
+        NSString *body=marked ? [r substringFromIndex:1] : r;
+        NSMutableParagraphStyle *rowPs=[ps mutableCopy];
+        NSDictionary *attrs= marked
+            ? @{NSFontAttributeName:font, NSParagraphStyleAttributeName:rowPs}
+            : @{NSFontAttributeName:font};
+        [out appendAttributedString:[[NSAttributedString alloc] initWithString:body attributes:attrs]];
+        if(i+1<rows.count) [out appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n" attributes:attrs]];
+    }
+    return out;
+}
+
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
     CGFloat textWidth=MAX(120, CGRectGetWidth(tableView.bounds)-68);
-    CGRect bounds=[self.pageSummary ?: @"" boundingRectWithSize:CGSizeMake(textWidth,CGFLOAT_MAX)
-                                                    options:NSStringDrawingUsesLineFragmentOrigin|NSStringDrawingUsesFontLeading
-                                                 attributes:@{NSFontAttributeName:[UIFont systemFontOfSize:14]}
-                                                    context:nil];
+    NSAttributedString *attr=[self summaryAttributedTextForWidth:textWidth];
+    CGRect bounds=[attr boundingRectWithSize:CGSizeMake(textWidth,CGFLOAT_MAX)
+                                     options:NSStringDrawingUsesLineFragmentOrigin|NSStringDrawingUsesFontLeading
+                                     context:nil];
     return MAX(44, ceil(bounds.size.height)+44);
 }
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
@@ -56,9 +109,9 @@ static UIColor *BDSResetButtonColor(void) {
     UILabel *label=[[UILabel alloc] initWithFrame:CGRectInset(card.bounds,16,12)];
     label.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
     label.numberOfLines=0;
-    label.font=[UIFont systemFontOfSize:14];
+    label.font=[self summaryFont];
     label.textColor=UIColor.labelColor;
-    label.text=self.pageSummary;
+    label.attributedText=[self summaryAttributedTextForWidth:CGRectGetWidth(label.bounds)];
     [card addSubview:label];
     [header addSubview:card];
     return header;
@@ -67,27 +120,26 @@ static UIColor *BDSResetButtonColor(void) {
     UITableViewCell *cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
     cell.backgroundColor=UIColor.clearColor;
     cell.selectionStyle=UITableViewCellSelectionStyleNone;
-    if([self usesCompactActionRow] && (NSInteger)indexPath.row>=[self compactFullRowsCount]) {
-        NSInteger pair=(NSInteger)indexPath.row-[self compactFullRowsCount];
-        NSUInteger base=[self compactFullRowsCount]+pair*2;
+    NSArray<NSNumber *> *rowIndexes=[self compactItemIndexesForRow:indexPath.row];
+    if([self usesCompactActionRow] && rowIndexes.count>1) {
         UIStackView *row=[[UIStackView alloc] init];
         row.translatesAutoresizingMaskIntoConstraints=NO;
         row.axis=UILayoutConstraintAxisHorizontal;
         row.distribution=UIStackViewDistributionFillEqually;
         row.spacing=6;
-        for(NSUInteger k=0;k<2;k++) {
-            NSUInteger idx=base+k;
-            if(idx>=self.items.count) break;
+        for(NSNumber *num in rowIndexes) {
+            NSUInteger idx=num.unsignedIntegerValue;
+            if(idx>=self.items.count) continue;
             UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem];
             button.tag=idx;
-            button.backgroundColor=UIColor.secondarySystemGroupedBackgroundColor;
+            button.backgroundColor=self.items[idx][@"color"] ?: UIColor.secondarySystemGroupedBackgroundColor;
             button.layer.cornerRadius=11;
             button.layer.masksToBounds=YES;
             button.titleLabel.font=[UIFont boldSystemFontOfSize:15];
             button.titleLabel.adjustsFontSizeToFitWidth=YES;
             button.titleLabel.minimumScaleFactor=0.72;
             [button setTitle:self.items[idx][@"title"] forState:UIControlStateNormal];
-            [button setTitleColor:UIColor.labelColor forState:UIControlStateNormal];
+            [button setTitleColor:self.items[idx][@"color"] ? UIColor.whiteColor : UIColor.labelColor forState:UIControlStateNormal];
             [button addTarget:self action:@selector(runCompactAction:) forControlEvents:UIControlEventTouchUpInside];
             [row addArrangedSubview:button];
         }
@@ -99,7 +151,8 @@ static UIColor *BDSResetButtonColor(void) {
             [row.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-5]]];
         return cell;
     }
-    NSUInteger itemIndex=indexPath.row;
+    NSArray<NSNumber *> *rowIndexes=[self compactItemIndexesForRow:indexPath.row];
+    NSUInteger itemIndex=[self usesCompactActionRow] ? (rowIndexes.count ? rowIndexes[0].unsignedIntegerValue : 0) : indexPath.row;
     NSDictionary *item=self.items[itemIndex];
     UILabel *label=[[UILabel alloc] init];
     label.translatesAutoresizingMaskIntoConstraints=NO;
@@ -126,8 +179,9 @@ static UIColor *BDSResetButtonColor(void) {
     if(action) action();
 }
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    if([self usesCompactActionRow] && (NSInteger)indexPath.row>=[self compactFullRowsCount]) return;
-    NSUInteger itemIndex=indexPath.row;
+    NSArray<NSNumber *> *rowIndexes=[self compactItemIndexesForRow:indexPath.row];
+    if([self usesCompactActionRow] && rowIndexes.count>1) return;
+    NSUInteger itemIndex=[self usesCompactActionRow] ? (rowIndexes.count ? rowIndexes[0].unsignedIntegerValue : 0) : indexPath.row;
     void (^action)(void)=self.items[itemIndex][@"action"];
     if(action) action();
 }

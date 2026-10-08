@@ -299,7 +299,7 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
     return v ? [v integerValue] : def;
 }
 
-// ── 10.01.25 写盘统一：前向声明（定义在下方「写盘统一」段）──
+// ── 10.01.26 写盘统一：前向声明（定义在下方「写盘统一」段）──
 static void BDSIDMapBuild(void);      // 由配置重建「容器键 → 假身份值」映射
 static void BDSIDWriteViaAPI(void);   // 用公开 API 写入统一值（cfprefsd 落盘）
 static void BDSUnifyIdentity(void);   // 建表 + 写盘 + 装钩子
@@ -674,7 +674,7 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 187 || !loaded[@"blockStatCashTelemetry"] || loaded[@"spoofStatCash"]) {
-        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.25 起默认开启。旧试验键不继承。
+        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.26 起默认开启。旧试验键不继承。
         merged[@"configVersion"] = @187;
         if (!loaded[@"blockStatCashTelemetry"]) merged[@"blockStatCashTelemetry"] = @YES;
         [merged removeObjectForKey:@"spoofStatCash"];
@@ -700,7 +700,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.01.25：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
+        // 10.01.26：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
         // 光改默认值救不了，必须强制写一次 @YES 并落盘；只执行一次，
         // 用户之后在面板手动关掉仍然有效。
         merged[@"blockStatCashTelemetry"] = @YES;
@@ -874,7 +874,7 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 }
 
 
-#pragma mark - 写盘统一（10.01.25）
+#pragma mark - 写盘统一（10.01.26）
 //
 // 背景：百度极速会把「上一次读到的设备信息」缓存到容器 plist。
 //       插件只钩运行时返回值时，plist 里仍留着旧值 / 真机值，
@@ -992,7 +992,7 @@ static void BDSIDMapBuild(void) {
 
 // ── ① 用公开 API 写盘（不碰文件）────────────────────────────
 //
-// 教训（10.01.25 前两版实测）：
+// 教训（10.01.26 前两版实测）：
 //   · 直接 writeToFile: 重写域文件 → 和 App 内存副本打架，440 键被写成 290 个
 //   · 钩 setObject:forKey: 忽略写入 → App 写不进去，落盘也没这些键，同样丢数据
 //
@@ -4882,22 +4882,11 @@ static NSString *BDSRandomRunText(NSString *mode) {
 static NSString *BDSConfigSummary(void) {
     NSMutableString *summary = [NSMutableString string];
 
-    // 两栏对齐：按「显示宽度」补空格（中文占 2，英文/数字占 1）
-    // 之前用 a.length 算，中文被当成 1，导致补多了空格、第一栏过长而换行、
-    // 把段落之间的空行挤掉。
+    // 两栏：用制表符分隔，由摘要卡片按字体实测算出制表位，保证右栏对齐。
+    // 不在字符串里补空格 —— 比例字体下空格宽度和中文字宽无关，永远对不齐。
+    // 行首的 \x01 是哨兵，卡片识别到就把这一行套上制表位样式。
     NSMutableString *(^line1)(NSString *, NSString *) = ^NSMutableString *(NSString *a, NSString *b) {
-        NSUInteger width = 0;
-        for (NSUInteger i = 0; i < a.length; i++) {
-            unichar c = [a characterAtIndex:i];
-            width += (c >= 0x1100) ? 2 : 1;
-        }
-        NSUInteger pad = 22;
-        NSMutableString *m = [NSMutableString stringWithString:a];
-        if (width < pad) {
-            [m appendString:[@"" stringByPaddingToLength:(pad - width) withString:@" " startingAtIndex:0]];
-        }
-        [m appendString:b];
-        return m;
+        return [NSMutableString stringWithFormat:@"\x01%@\t%@", a, b];
     };
 
     // ── 基础功能（含机型·系统·是否执行）────────────────────
@@ -4925,8 +4914,8 @@ static NSString *BDSConfigSummary(void) {
     for (NSDictionary *item in associationItems) {
         if (![item[@"off"] boolValue] && cfgBool(item[@"key"], NO)) associationEnabled++;
     }
-    [summary appendFormat:@"\n\n%@", line1(associationEnabled ? @"反关联增强：已开启" : @"反关联增强：已关闭",
-                                            cfgBool(@"blockStatCashTelemetry", YES) ? @"收益额上报：已开启" : @"收益额上报：已关闭")];
+    [summary appendFormat:@"\n\n%@", line1(associationEnabled ? @"关联增强：已开启" : @"关联增强：已关闭",
+                                            cfgBool(@"blockStatCashTelemetry", YES) ? @"收益上报：已开启" : @"收益上报：已关闭")];
 
     // ── 拦截统计 + /ztbox + 全网 ─────────────────────────
     {
@@ -5171,13 +5160,17 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.25";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.26";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
     // 「重置设备编号」一直显示
     NSArray *titles=@[@"一键随机基础",@"一键随机高级",@"一键随机指纹",@"重置设备编号",
                       @"反关联项",@"诊断自检",@"恢复安全",@"关闭页面"];
+    // 布局 C：第 0 行整行；第 1 行放第 1、2 项；第 2 行整行（第 3 项）；
+    //         之后每行放 2 项。见 BDSSettingsUI.h 的 compact 布局。
+    NSArray<NSNumber *> *fullRowIndexes=@[@0,@3];
+    NSArray<NSArray<NSNumber *> *> *pairRows=@[@[@1,@2],@[@4,@5],@[@6,@7]];
     NSMutableArray *items=[NSMutableArray array];
     for(NSUInteger i=0;i<titles.count;i++) {
         NSString *title=titles[i];
@@ -5198,6 +5191,8 @@ static NSString *BDSConfigSummary(void) {
         [items addObject:item];
     }
     page.items=items;
+    page.compactFullRowIndexes=fullRowIndexes;
+    page.compactPairRows=pairRows;
     UINavigationController *nav=[[UINavigationController alloc] initWithRootViewController:page];
     nav.modalPresentationStyle=UIModalPresentationPageSheet;
     [presenter presentViewController:nav animated:YES completion:nil];
@@ -5218,7 +5213,7 @@ static NSString *BDSConfigSummary(void) {
     };
     if(presenter.navigationController) [presenter.navigationController pushViewController:page animated:YES];
     else {
-        page.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"关闭页面" style:UIBarButtonItemStylePlain target:self action:@selector(closeSettingsPage)];
+        page.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"关闭" style:UIBarButtonItemStylePlain target:self action:@selector(closeSettingsPage)];
         [presenter presentViewController:[[UINavigationController alloc] initWithRootViewController:page] animated:YES completion:nil];
     }
 }
@@ -5546,7 +5541,7 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
     page.randomize=^{ [weakPage dismissViewControllerAnimated:YES completion:^{ [self randomizeTargetedProfile]; }]; };
     if(presenter.navigationController) [presenter.navigationController pushViewController:page animated:YES];
     else {
-        page.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"关闭页面" style:UIBarButtonItemStylePlain target:self action:@selector(closeSettingsPage)];
+        page.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"关闭" style:UIBarButtonItemStylePlain target:self action:@selector(closeSettingsPage)];
         [presenter presentViewController:[[UINavigationController alloc] initWithRootViewController:page] animated:YES completion:nil];
     }
 }

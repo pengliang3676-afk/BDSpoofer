@@ -665,7 +665,7 @@ static BOOL BDSWritePlist(NSDictionary *dict, NSString *path) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"卍解 1.0.3 10.01.25";
+    self.title = @"卍解 1.0.3 10.01.26";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];
