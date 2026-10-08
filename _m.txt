@@ -1,1 +1,14 @@
-fix: JS 字符串里的裸换行
+10.01.17: 在 10.01.11 基线上只加「网页屏幕伪装」
+
+背景：面板实测 10.01.09 / 10.01.10 / 10.01.11 均正常（拦截 86 次、观测文件正常写）。
+之前的判断失误源于 App 里同时存在两个 dylib，以及我读错了容器。
+本次以 10.01.11 为基线，只加一件事，不碰其它任何东西。
+
+改动（两处）：
+  ① JS 加 __bdsDefineScreen()，改写 Screen.prototype 的
+       width / height / availWidth / availHeight 与 window.devicePixelRatio
+     值取自 window.__bdsWebSpoof；明确不动 window.innerWidth/Height（布局用值）
+  ② 原生在 BDSCashWKInit 里把 screenWidth/screenHeight/screenScale 注入网页
+  ③ 探测回报加 spoofExists / spoof 两个字段，便于验证
+
+JS 已用 node --check 验证语法通过；innerWidth 仅被读取、未被改写。
