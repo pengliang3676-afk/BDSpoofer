@@ -1,16 +1,15 @@
-10.01.12: 网页侧注入伪装系统版本（改 UA）
+10.01.13: 网页侧注入屏幕上报值（修屏幕矛盾）
 
-10.01.11 基准确认：网页读到的 UA 是
-  Mozilla/5.0 (iPhone; CPU iPhone OS 16_7_2 like Mac OS X) ... (Baidu; P2 16.7.2)
-而插件伪装的是 16.0 —— 网页这层漏了真机系统版本。
+实据（不是推测）：
+  插件配置:  iPhone 11 Pro / 375x812 / @3x
+  网页实报:  375x667 / @2x      <- SE2 的屏
+  => 服务端看到「11 Pro 配 SE2 屏」这种不存在的机器
 
 改动：
-  ① 原生在 WKWebView 初始化时注入 window.__bdsWebSpoof={sv_under,sv_dot}
-     值取自 bdspoofer_config.plist 的 systemVersion
-  ② JS 改写 Navigator.prototype.userAgent / appVersion 的 getter：
-       CPU iPhone OS x_y like  -> 伪装值
-       (Baidu; P2 x.y)          -> 伪装值
-  ③ 探测回报里加 o.spoof（当前伪装配置），便于对照
+  ① JS 改写 Screen.prototype 的 width/height/availWidth/availHeight
+     以及 window.devicePixelRatio
+     值一律取自 window.__bdsWebSpoof（原生注入的配置）
+  ② 原生注入补 sw/sh/sc 三个字段（取自 bdspoofer_config.plist）
 
-不改：screen.width/height、devicePixelRatio、innerWidth/Height
-      （改屏幕尺寸有布局错乱风险，且 UA 里的系统版本才是主要破绽）
+明确不改：window.innerWidth / innerHeight
+  —— 那是布局用值，改了会导致页面排版错乱（同 9.21-01 UIScreen 的教训）

@@ -593,11 +593,6 @@ static WKWebView *BDSCashWKInit(id self, SEL command, CGRect frame, WKWebViewCon
                 injectionTime:WKUserScriptInjectionTimeAtDocumentStart
                 forMainFrameOnly:NO];
             [configuration.userContentController addUserScript:s];
-            WKUserScript *s = [[WKUserScript alloc]
-                initWithSource:js
-                injectionTime:WKUserScriptInjectionTimeAtDocumentStart
-                forMainFrameOnly:NO];
-            [configuration.userContentController addUserScript:s];
         }
     }
     BDSEnsureCashTelemetryBlockScript(configuration.userContentController, YES);
