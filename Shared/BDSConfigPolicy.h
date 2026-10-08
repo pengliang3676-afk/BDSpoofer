@@ -28,7 +28,7 @@ static NSArray<NSArray<NSDictionary *> *> *BDSSettingGroups(void) {
           @{@"key":@"spoofPrivacyPermissions",@"name":@"通讯录与日历保护"},
           @{@"key":@"spoofBattery",@"name":@"电池参数"},
           @{@"key":@"blockLaunchTimeUpload",@"name":@"拦截启动时间上报"},
-          @{@"key":@"blockStatCashTelemetry",@"name":@"阻止金额统计上报",@"off":@YES}]
+          @{@"key":@"blockStatCashTelemetry",@"name":@"阻止金额统计上报"}]
     ];
 }
 static NSArray<NSString *> *BDSRegularKeys(void) {
@@ -126,7 +126,7 @@ static void BDSApplyInitialDefaults(NSMutableDictionary *config, NSDictionary *s
     config[@"targetedScreenHwMachine"]=saved[@"targetedScreenHwMachine"] ?: config[@"targetedHwMachine"] ?: @"iPhone14,6";
     // 必须写当前版本号。写成 @187 会把 loadConfig 里已经抬上去的版本又按回去，
     // 导致 ver < 189 之类的迁移每次启动都重复触发（防越狱检测就踩过这个坑）。
-    config[@"configVersion"]=@189;
+    config[@"configVersion"]=@191;
 }
 
 // ---- 随机 WiFi SSID（一键基础时自动配一个）----

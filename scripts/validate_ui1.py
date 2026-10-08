@@ -11,12 +11,12 @@ config=plistlib.loads((root/'bdspoofer_config.plist').read_bytes())
 items=re.findall(r'@\{@"key":@"([^"]+)",@"name":@"[^"]+"(,@"off":@YES)?\}',policy)
 assert len(items)==27
 regular=[key for key,off in items if not off];risk=[key for key,off in items if off]
-assert len(regular)==21 and len(risk)==6
+assert len(regular)==22 and len(risk)==5
 assert all(config[k] is True for k in regular)
 assert all(config[k] is False for k in risk)
 assert config['bypassJailbreakDetect'] is False  # 10.01.01 起默认关闭
-assert config['spoofScreen'] is False and config['configVersion']==189
-assert config['blockStatCashTelemetry'] is False
+assert config['spoofScreen'] is False and config['configVersion']==191
+assert config['blockStatCashTelemetry'] is True  # 10.01.19 起默认开启
 assert 'blockStatCashTelemetry' in policy and 'blockStatCashTelemetry' in plugin
 assert '收益额上报：%@' in plugin and '? @"已开启" : @"已关闭"' in plugin
 assert all(config['spoofBaiduTargeted'+x] is False for x in ['', 'System','Model','Screen','UA','Push'])
@@ -214,8 +214,10 @@ assert 'merged[@"bypassJailbreakDetect"] = @NO;' in plugin
 _lc = function(plugin, 'loadConfig')
 assert _lc.index('BDSApplyInitialDefaults(merged, loaded);') < _lc.index('if (ver < 189)'), \
     'v189 迁移必须在 BDSApplyInitialDefaults 之后'
+assert _lc.index('BDSApplyInitialDefaults(merged, loaded);') < _lc.index('if (ver < 191)'), \
+    'v191 迁移必须在 BDSApplyInitialDefaults 之后'
 # 策略文件不得把版本号按回旧值，否则迁移每次启动都重复触发
-assert 'config[@"configVersion"]=@189;' in policy
+assert 'config[@"configVersion"]=@191;' in policy
 assert 'config[@"configVersion"]=@188;' not in policy
 assert 'config[@"configVersion"]=@187;' not in policy
 # 默认配置表里防越狱检测必须是关的，与策略一致
@@ -354,4 +356,4 @@ sync=function(plugin,'BDSBaiduScreenSyncValues')
 for bad in ['spoofBaiduTargetedModel','spoofBaiduTargetedSystem',
             'spoofBaiduTargetedPush','spoofBaiduTargeted"']:
     assert bad not in sync, bad
-print('PASS UI1.3 10.01.01: v188, 20 on / 6 off, runtime switch honored by the cash blocker, X/M advanced-random parity, SE2 out of the random pool, boundary-matched dlopen paths, measured C-hook self-check, 9 baseline jailbreak functions unchanged')
+print('PASS UI1.3 10.01.01: v191, %d on / %d off, runtime switch honored by the cash blocker, X/M advanced-random parity, SE2 out of the random pool, boundary-matched dlopen paths, measured C-hook self-check, 9 baseline jailbreak functions unchanged' % (len(regular), len(risk)))
