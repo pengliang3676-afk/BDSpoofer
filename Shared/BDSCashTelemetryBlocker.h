@@ -97,6 +97,27 @@ static NSString * const BDSCashTelemetryBlockScript = @
 "if(window.__bdsCashBlockInstalled)return;"
 "function __bdsCashHit(u){try{window.webkit.messageHandlers.bdsCashHit.postMessage(u||'');}catch(x){}}"
 // 网页侧自检：把网页「真实读到」的值原样回报，用于对比注入是否生效
+// 屏幕「上报值」改写：只动 screen.* / devicePixelRatio，绝不动 window.innerWidth/Height
+// （后者是布局用值，改了会排版错乱 —— 同 9.21-01 UIScreen 的教训）
+"function __bdsDefineScreen(prop,val){"
+"try{"
+"var d=Object.getOwnPropertyDescriptor(Screen.prototype,prop);"
+"if(!d||!d.get)return;"
+"Object.defineProperty(Screen.prototype,prop,{get:function(){"
+"var s=window.__bdsWebSpoof;if(!s||!s.sw)return d.get.call(this);return val(s);"
+"},configurable:true});"
+"}catch(x){}"
+"}"
+"__bdsDefineScreen('width',function(s){return s.sw;});"
+"__bdsDefineScreen('height',function(s){return s.sh;});"
+"__bdsDefineScreen('availWidth',function(s){return s.sw;});"
+"__bdsDefineScreen('availHeight',function(s){return s.sh;});"
+"try{"
+"var _dpr=Object.getOwnPropertyDescriptor(window,'devicePixelRatio');"
+"Object.defineProperty(window,'devicePixelRatio',{get:function(){"
+"var s=window.__bdsWebSpoof;if(!s||!s.sc)return _dpr?_dpr.get.call(window):1;return s.sc;"
+"},configurable:true});"
+"}catch(x){}"
 "function __bdsProbeWeb(){"
 "try{"
 "var o={};"
@@ -108,6 +129,8 @@ static NSString * const BDSCashTelemetryBlockScript = @
 "o.dpr=window.devicePixelRatio;"
 "o.innerW=window.innerWidth;o.innerH=window.innerHeight;"
 "o.href=location.href;"
+"o.spoofExists=!!window.__bdsWebSpoof;"
+"o.spoof=(window.__bdsWebSpoof?JSON.stringify(window.__bdsWebSpoof):'');"
 "window.webkit.messageHandlers.bdsWebProbe.postMessage(JSON.stringify(o));"
 "}catch(x){}"
 "}"
@@ -512,6 +535,27 @@ static WKWebView *BDSCashWKInit(id self, SEL command, CGRect frame, WKWebViewCon
     // 只在这个钩子确实装上时才会走到这里，也就是开关在启动时是打开的。
     // 新建的 WebView 补一份 =true 的脚本；关掉开关后不新建的页面不受影响，
     // 原生请求那条路由判定入口每次读开关负责，关掉立即放行。
+    // 把当前伪装值写进网页（window.__bdsWebSpoof），供 JS 改写 screen.* 使用
+    {
+        NSString *docs2 = [NSSearchPathForDirectoriesInDomains(
+            NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+        NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:
+            [docs2 stringByAppendingPathComponent:@"bdspoofer_config.plist"]] ?: @{};
+        NSNumber *sw = [cfg[@"screenWidth"] isKindOfClass:NSNumber.class] ? cfg[@"screenWidth"] : nil;
+        NSNumber *sh = [cfg[@"screenHeight"] isKindOfClass:NSNumber.class] ? cfg[@"screenHeight"] : nil;
+        NSNumber *sc = [cfg[@"screenScale"] isKindOfClass:NSNumber.class] ? cfg[@"screenScale"] : nil;
+        if (sw && sh) {
+            NSMutableString *js = [NSMutableString stringWithFormat:
+                @"window.__bdsWebSpoof={sw:%@,sh:%@", sw, sh];
+            if (sc && sc.doubleValue > 0) [js appendFormat:@",sc:%@", sc];
+            [js appendString:@"};"];
+            WKUserScript *us = [[WKUserScript alloc]
+                initWithSource:js
+                injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                forMainFrameOnly:NO];
+            @try { [configuration.userContentController addUserScript:us]; } @catch (NSException *e) { (void)e; }
+        }
+    }
     BDSCashInstallHitHandler(configuration.userContentController);
     BDSEnsureCashTelemetryBlockScript(configuration.userContentController, YES);
     WKWebView *(*original)(id, SEL, CGRect, WKWebViewConfiguration *) = (void *)g_bdsCashOriginalWKInit;
