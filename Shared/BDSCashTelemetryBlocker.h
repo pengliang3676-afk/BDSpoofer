@@ -142,7 +142,10 @@ static NSString * const BDSCashTelemetryBlockScript = @
 "var o={};"
 "o.ua=navigator.userAgent||'';"
 "o.appVersion=navigator.appVersion||'';"
-"o.spoof=(window.__bdsWebSpoof?JSON.stringify(window.__bdsWebSpoof):'(无)');"
+"var _sp=window.__bdsWebSpoof;"
+"o.spoofExists=!!_sp;"
+"o.spoof=(_sp?JSON.stringify(_sp):'');"
+"o.uaRaw=Object.getOwnPropertyDescriptor(Navigator.prototype,'userAgent')?(function(){try{return Navigator.prototype.__lookupGetter__('userAgent').call(navigator);}catch(e){return '';}})():'';"
 "o.platform=navigator.platform||'';"
 "o.screenW=screen.width;o.screenH=screen.height;"
 "o.availW=screen.availWidth;o.availH=screen.availHeight;"
@@ -153,7 +156,8 @@ static NSString * const BDSCashTelemetryBlockScript = @
 "}catch(x){}"
 "}"
 "try{if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',__bdsProbeWeb);}else{__bdsProbeWeb();}}catch(x){}"
-"try{setTimeout(__bdsProbeWeb,1200);}catch(x){}"
+"try{setTimeout(__bdsProbeWeb,600);}catch(x){}"
+"try{setTimeout(__bdsProbeWeb,2500);}catch(x){}"
 "function __bdsObs(u,src){"
 "try{"
 "var s=String(u&&u.url?u.url:u);"
@@ -326,6 +330,22 @@ static void BDSWebProbeStore(NSString *json) {
         d[@"total"] = @([d[@"total"] integerValue] + 1);
         d[@"last"] = obj;
         d[@"lastTime"] = [NSDate date];
+        // spoof 注入是否成功：单独计数，一眼看出
+        BOOL hasSpoof = [obj[@"spoofExists"] boolValue];
+        NSString *ck = hasSpoof ? @"withSpoof" : @"noSpoof";
+        d[ck] = @([d[ck] integerValue] + 1);
+        d[@"lastHasSpoof"] = @(hasSpoof);
+        // 最近 20 条
+        NSMutableArray *recs = [d[@"recent"] mutableCopy] ?: [NSMutableArray array];
+        NSMutableDictionary *r = [NSMutableDictionary dictionary];
+        r[@"t"] = [NSDate date];
+        for (NSString *k in @[@"screenW", @"screenH", @"dpr", @"spoofExists",
+                              @"spoof", @"uaRaw", @"href"]) {
+            if (obj[k] != nil) r[k] = obj[k];
+        }
+        [recs insertObject:r atIndex:0];
+        while (recs.count > 20) [recs removeLastObject];
+        d[@"recent"] = recs;
         // 按 ua 去重计数
         NSString *ua = obj[@"ua"];
         if (ua.length) {
