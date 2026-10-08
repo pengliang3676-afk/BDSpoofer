@@ -97,9 +97,8 @@ static NSString * const BDSCashTelemetryBlockScript = @
 "function __bdsObs(u,src){"
 "try{"
 "var s=String(u&&u.url?u.url:u);"
-// 全网观测：任何含 baidu 的请求都记一条（供找上报口）
-"if(s.indexOf('baidu')>=0){
-"  try{window.webkit.messageHandlers.bdsAllObs.postMessage(src+'|'+s);}catch(x){}
+"if(s.indexOf('baidu')>=0){"
+"try{window.webkit.messageHandlers.bdsAllObs.postMessage(src+'|'+s);}catch(x){}"
 "}"
 "if(s.indexOf('h2tcbox.baidu.com')<0)return;"
 "if(s.indexOf('/ztbox')<0)return;"
