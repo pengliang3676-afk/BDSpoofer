@@ -55,9 +55,12 @@ static BOOL BDSCashTelemetryRequestIsTarget(NSURLRequest *request) {
 // 命中记录的前向声明（实现在文件下方，startLoading 里要用）
 static NSString *BDSCashHitLogPath(void);
 static NSString *BDSZtboxObsLogPath(void);
+static NSString *BDSAllObsLogPath(void);
 static void BDSCashRecordHit(NSString *source, NSString *url);
 static void BDSZtboxObserve(NSString *source, NSString *url);
+static void BDSAllObserve(NSString *source, NSString *url);
 static NSDictionary *BDSZtboxExtract(NSString *url);
+static NSArray<NSString *> *BDSAmountLikeNumbers(NSString *url);
 static void BDSCashInstallHitHandler(WKUserContentController *ucc);
 
 @interface BDSCashTelemetryBlockProtocol : NSURLProtocol
@@ -94,6 +97,10 @@ static NSString * const BDSCashTelemetryBlockScript = @
 "function __bdsObs(u,src){"
 "try{"
 "var s=String(u&&u.url?u.url:u);"
+// 全网观测：任何含 baidu 的请求都记一条（供找上报口）
+"if(s.indexOf('baidu')>=0){
+"  try{window.webkit.messageHandlers.bdsAllObs.postMessage(src+'|'+s);}catch(x){}
+"}"
 "if(s.indexOf('h2tcbox.baidu.com')<0)return;"
 "if(s.indexOf('/ztbox')<0)return;"
 "var b=hit(s)?'1':'0';"
@@ -227,6 +234,79 @@ static BOOL BDSZtboxIsTarget(NSDictionary *info) {
     return ty.length && [ty hasPrefix:@"c_pv"];
 }
 
+static NSString *BDSAllObsLogPath(void) {
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    return [docs stringByAppendingPathComponent:@"bdspoofer_all_obs.plist"];
+}
+
+// 从 URL 里挑出「像金额」的数字（小数两位，且不是常见尺寸/版本）
+static NSArray<NSString *> *BDSAmountLikeNumbers(NSString *url) {
+    NSMutableArray *out = [NSMutableArray array];
+    NSError *err = nil;
+    NSRegularExpression *rx = [NSRegularExpression
+        regularExpressionWithPattern:@"[\"=:%2C,]([0-9]{1,3}\\.[0-9]{2})(?![0-9])"
+                             options:0 error:&err];
+    if (!rx) return out;
+    NSString *dec = [url stringByRemovingPercentEncoding] ?: url;
+    for (NSTextCheckingResult *m in [rx matchesInString:dec options:0
+                                                  range:NSMakeRange(0, dec.length)]) {
+        if (m.numberOfRanges >= 2) {
+            NSString *v = [dec substringWithRange:[m rangeAtIndex:1]];
+            if (v.length && ![out containsObject:v] && out.count < 8) [out addObject:v];
+        }
+    }
+    return out;
+}
+
+// 全网观测：按 host+path 聚合，记录带金额样数字的 URL
+static void BDSAllObserve(NSString *source, NSString *url) {
+    if (!url.length) return;
+    static NSLock *lock = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSLock new]; });
+    [lock lock];
+    @autoreleasepool {
+        NSString *p = BDSAllObsLogPath();
+        NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:p]
+                              ?: [NSMutableDictionary dictionary];
+        d[@"total"] = @([d[@"total"] integerValue] + 1);
+
+        // host + path 聚合
+        NSURLComponents *c = [NSURLComponents componentsWithString:url];
+        NSString *host = c.host ?: @"?";
+        NSString *path = c.path ?: @"?";
+        NSString *key = [NSString stringWithFormat:@"%@%@", host, path];
+        NSMutableDictionary *eps = [d[@"endpoints"] mutableCopy]
+                                ?: [NSMutableDictionary dictionary];
+        eps[key] = @([eps[key] integerValue] + 1);
+        d[@"endpoints"] = eps;
+
+        // 带金额样数字的记下来
+        NSArray<NSString *> *nums = BDSAmountLikeNumbers(url);
+        if (nums.count) {
+            d[@"amountHits"] = @([d[@"amountHits"] integerValue] + 1);
+            NSMutableDictionary *an = [d[@"amountEndpoints"] mutableCopy]
+                                   ?: [NSMutableDictionary dictionary];
+            an[key] = @([an[key] integerValue] + 1);
+            d[@"amountEndpoints"] = an;
+
+            NSMutableArray *items = [d[@"amountItems"] mutableCopy] ?: [NSMutableArray array];
+            NSMutableDictionary *it = [NSMutableDictionary dictionary];
+            it[@"t"] = [NSDate date];
+            it[@"src"] = source ?: @"?";
+            it[@"endpoint"] = key;
+            it[@"nums"] = nums;
+            it[@"url"] = url.length > 3000 ? [url substringToIndex:3000] : url;
+            [items insertObject:it atIndex:0];
+            while (items.count > 40) [items removeLastObject];
+            d[@"amountItems"] = items;
+        }
+        [d writeToFile:p atomically:YES];
+    }
+    [lock unlock];
+}
+
 static void BDSZtboxObserve(NSString *source, NSString *url) {
     if (!url.length) return;
     static NSLock *lock = nil;
@@ -317,6 +397,14 @@ static void BDSCashRecordHit(NSString *source, NSString *url) {
         BDSCashRecordHit(@"web", body);
         return;
     }
+    if ([message.name isEqualToString:@"bdsAllObs"]) {
+        NSRange bar = [body rangeOfString:@"|"];
+        if (bar.location != NSNotFound) {
+            BDSAllObserve([body substringToIndex:bar.location],
+                          [body substringFromIndex:NSMaxRange(bar)]);
+        }
+        return;
+    }
     if ([message.name isEqualToString:@"bdsZtboxObs"]) {
         // 格式: blocked(0/1) | source | url
         NSArray<NSString *> *parts = [body componentsSeparatedByString:@"|"];
@@ -345,6 +433,11 @@ static void BDSCashInstallHitHandler(WKUserContentController *ucc) {
     }
     @try {
         [ucc addScriptMessageHandler:g_cashHitHandler name:@"bdsZtboxObs"];
+    } @catch (NSException *e) {
+        (void)e;
+    }
+    @try {
+        [ucc addScriptMessageHandler:g_cashHitHandler name:@"bdsAllObs"];
     } @catch (NSException *e) {
         (void)e;
     }

@@ -1,20 +1,10 @@
-﻿Ship 10.01.08: 拦截条件放宽 + 命中/放过对比
+Ship 10.01.09: 记录上限提高，看清 ext.num 完整结构
 
-10.01.07 观测发现（真机 50 次 /ztbox 请求）：
-  · 原条件写死 type=="c_pv"，只拦到 3/50；c_pv_mission / c_pv_newsub / c_pv_box /
-    c_pv_newuser / c_pv_rule / c_pv_extravideo 等全漏
-  · y_mission_withdraw（提现页）整页漏，含 c_pv / c_pv_coin / c_pv_record / c_pv_ks /
-    c_pv_zfbloading / c_pv_rule
-  · id 17322（activity.baidu.com 活动网页，每次滑动上报一次）完全没拦，
-    且 ext.code 里带一整套真机指纹（iPhone12,3 / iOS 16.7.2 / 750*1334 / 磁盘 / 开机时间）
+10.01.08 已确认拦截生效（src.web=100）。但 url 截断在 2500 字符，
+ext 后半段（含 num=5.82）被丢掉，无法逐字节确认 5.82 那条走了拦截分支。
 
 改动：
-  ① hit 条件放宽：
-       10290 + (y_mission_index | y_mission_withdraw) + type 以 "c_pv" 开头
-       或 id == 17322（活动网页整条拦）
-  ② 原生 BDSZtboxIsTarget() 用同一套判定
-  ③ 观测记录每条加 blocked 字段；另存 hitCount / missCount / hitSigs（命中签名）
-  ④ 面板显示："/ztbox 共 N 次：命中条件 X / 放过 Y" + 命中签名前 6 种
-  ⑤ 消息格式改为 blocked|source|url（向后兼容两段）
-
-待办（下一步）：网页侧注入机型/系统，让 H5 的 navigator/screen 也返回伪装值
+  明细 url      2500 -> 8000
+  cash_hits lastURL / recent  400/600 -> 8000
+  extJSON       1200 -> 6000
+  dataRaw       1500 -> 6000
