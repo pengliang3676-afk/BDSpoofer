@@ -96,7 +96,8 @@ static NSString * const BDSCashTelemetryBlockScript = @
 "var s=String(u&&u.url?u.url:u);"
 "if(s.indexOf('h2tcbox.baidu.com')<0)return;"
 "if(s.indexOf('/ztbox')<0)return;"
-"window.webkit.messageHandlers.bdsZtboxObs.postMessage(src+'|'+s);"
+"var b=hit(s)?'1':'0';"
+"window.webkit.messageHandlers.bdsZtboxObs.postMessage(b+'|'+src+'|'+s);"
 "}catch(x){}"
 "}"
 "window.__bdsCashBlockInstalled=true;"
@@ -111,7 +112,12 @@ static NSString * const BDSCashTelemetryBlockScript = @
 "if(u.pathname!=='/ztbox')return false;"
 "if(u.searchParams.get('action')!=='zpblog')return false;"
 "var a=JSON.parse(u.searchParams.get('data')||'null'),ad=a&&a.actiondata,c=ad&&ad.content,e=c&&c.ext;"
-"var ok=String(ad&&ad.id)==='10290'&&!!c&&c.page==='y_mission_index'&&c.type==='c_pv'&&!!e&&e.num!==undefined&&e.num!==null;"
+"var pid=String(ad&&ad.id),pg=c&&String(c.page),ty=c&&String(c.type);"
+"var ok=false;"
+// 10290 任务页 / 提现页：type 为 c_pv 开头（含 c_pv / c_pv_mission / c_pv_rule ...）
+"if(pid==='10290'&&(pg==='y_mission_index'||pg==='y_mission_withdraw')&&ty&&ty.indexOf('c_pv')===0)ok=true;"
+// 17322 活动网页（提现/激励 H5）：整条都拦
+"if(pid==='17322')ok=true;"
 "if(ok){try{__bdsCashHit(String(v));}catch(x){}}"
 "return ok;"
 "}catch(x){return false;}"
@@ -209,6 +215,18 @@ static NSDictionary *BDSZtboxExtract(NSString *url) {
     return out;
 }
 
+// 命中判定（与 JS 侧一致）：10290 任务/提现页 c_pv* ，或 17322 活动页
+static BOOL BDSZtboxIsTarget(NSDictionary *info) {
+    NSString *pid = info[@"id"];
+    NSString *pg  = info[@"page"];
+    NSString *ty  = info[@"type"];
+    if ([pid isEqualToString:@"17322"]) return YES;
+    if (![pid isEqualToString:@"10290"]) return NO;
+    if (!([pg isEqualToString:@"y_mission_index"] ||
+          [pg isEqualToString:@"y_mission_withdraw"])) return NO;
+    return ty.length && [ty hasPrefix:@"c_pv"];
+}
+
 static void BDSZtboxObserve(NSString *source, NSString *url) {
     if (!url.length) return;
     static NSLock *lock = nil;
@@ -224,11 +242,22 @@ static void BDSZtboxObserve(NSString *source, NSString *url) {
         d[sk] = @([d[sk] integerValue] + 1);
 
         NSDictionary *info = BDSZtboxExtract(url);
+        BOOL isTarget = BDSZtboxIsTarget(info);
         NSString *sig = [NSString stringWithFormat:@"%@/%@/%@",
                          info[@"id"] ?: @"?", info[@"page"] ?: @"?", info[@"type"] ?: @"?"];
         NSMutableDictionary *sigs = [d[@"sigs"] mutableCopy] ?: [NSMutableDictionary dictionary];
         sigs[sig] = @([sigs[sig] integerValue] + 1);
         d[@"sigs"] = sigs;
+        // 命中条件的签名单独统计 —— 与未命中一眼分开
+        if (isTarget) {
+            NSMutableDictionary *hitSigs = [d[@"hitSigs"] mutableCopy]
+                                        ?: [NSMutableDictionary dictionary];
+            hitSigs[sig] = @([hitSigs[sig] integerValue] + 1);
+            d[@"hitSigs"] = hitSigs;
+            d[@"hitCount"] = @([d[@"hitCount"] integerValue] + 1);
+        } else {
+            d[@"missCount"] = @([d[@"missCount"] integerValue] + 1);
+        }
 
         NSMutableArray *items = [d[@"items"] mutableCopy] ?: [NSMutableArray array];
         NSMutableDictionary *item = [NSMutableDictionary dictionary];
@@ -238,6 +267,7 @@ static void BDSZtboxObserve(NSString *source, NSString *url) {
                               @"cateid", @"extPage", @"extJSON", @"dataRaw"]) {
             if (info[k]) item[k] = info[k];
         }
+        item[@"blocked"] = isTarget ? @YES : @NO;
         item[@"url"] = url.length > 2500 ? [url substringToIndex:2500] : url;
         [items insertObject:item atIndex:0];
         while (items.count > 30) [items removeLastObject];
@@ -288,10 +318,16 @@ static void BDSCashRecordHit(NSString *source, NSString *url) {
         return;
     }
     if ([message.name isEqualToString:@"bdsZtboxObs"]) {
-        NSRange bar = [body rangeOfString:@"|"];
-        NSString *src = bar.location == NSNotFound ? @"?" : [body substringToIndex:bar.location];
-        NSString *url = bar.location == NSNotFound ? body : [body substringFromIndex:NSMaxRange(bar)];
-        BDSZtboxObserve(src, url);
+        // 格式: blocked(0/1) | source | url
+        NSArray<NSString *> *parts = [body componentsSeparatedByString:@"|"];
+        if (parts.count >= 3) {
+            NSString *src = parts[1];
+            NSString *url = [[parts subarrayWithRange:NSMakeRange(2, parts.count - 2)]
+                             componentsJoinedByString:@"|"];
+            BDSZtboxObserve(src, url);
+        } else if (parts.count == 2) {
+            BDSZtboxObserve(parts[0], parts[1]);
+        }
     }
 }
 @end

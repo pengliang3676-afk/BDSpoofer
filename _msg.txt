@@ -1,20 +1,20 @@
-Ship 10.01.06: 金额拦截加命中计数（可验证有没有拦到）
+﻿Ship 10.01.08: 拦截条件放宽 + 命中/放过对比
 
-背景：核对 BDSCashTelemetryBlocker 时发现两个问题
-  1. 二进制里搜不到 zpblog / 10290 / y_mission_index —— 目标 URL 由 H5 拼出，
-     原生 NSURLProtocol 那条路基本不会触发（等于摆设）
-  2. 拦截全程静默（原生返 204、网页换空白图/abort），插件面板也不显示命中数
-     → 无法判断到底有没有拦到
+10.01.07 观测发现（真机 50 次 /ztbox 请求）：
+  · 原条件写死 type=="c_pv"，只拦到 3/50；c_pv_mission / c_pv_newsub / c_pv_box /
+    c_pv_newuser / c_pv_rule / c_pv_extravideo 等全漏
+  · y_mission_withdraw（提现页）整页漏，含 c_pv / c_pv_coin / c_pv_record / c_pv_ks /
+    c_pv_zfbloading / c_pv_rule
+  · id 17322（activity.baidu.com 活动网页，每次滑动上报一次）完全没拦，
+    且 ext.code 里带一整套真机指纹（iPhone12,3 / iOS 16.7.2 / 750*1334 / 磁盘 / 开机时间）
 
 改动：
-  ① JS 侧加 window.__bdsCashHit 回传桥（webkit.messageHandlers.bdsCashHit）
-     hit() 命中时把 URL 回传原生
-  ② 原生加 BDSCashRecordHit()，三类命中各记一次：
-       install（拦截已安装）/ web（网页侧拦到）/ native（原生侧拦到）
-     写入 Documents/bdspoofer_cash_hits.plist：
-       total / src.web / src.native / lastTime / lastSource / lastURL / recent(最近8条)
-  ③ WKWebView 初始化时注册 WKScriptMessageHandler
-  ④ 插件面板摘要增显示：拦到次数（网页 x / 原生 y）+ 最近一次时间与来源
-  ⑤ URLProtocol startLoading 里记 native 命中
+  ① hit 条件放宽：
+       10290 + (y_mission_index | y_mission_withdraw) + type 以 "c_pv" 开头
+       或 id == 17322（活动网页整条拦）
+  ② 原生 BDSZtboxIsTarget() 用同一套判定
+  ③ 观测记录每条加 blocked 字段；另存 hitCount / missCount / hitSigs（命中签名）
+  ④ 面板显示："/ztbox 共 N 次：命中条件 X / 放过 Y" + 命中签名前 6 种
+  ⑤ 消息格式改为 blocked|source|url（向后兼容两段）
 
-结果：打开面板就能看到拦了几次、什么时候、从哪条路来的。
+待办（下一步）：网页侧注入机型/系统，让 H5 的 navigator/screen 也返回伪装值
