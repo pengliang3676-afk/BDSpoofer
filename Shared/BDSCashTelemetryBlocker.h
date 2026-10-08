@@ -56,6 +56,8 @@ static BOOL BDSCashTelemetryRequestIsTarget(NSURLRequest *request) {
 static NSString *BDSCashHitLogPath(void);
 static NSString *BDSZtboxObsLogPath(void);
 static NSString *BDSAllObsLogPath(void);
+static NSString *BDSWebProbeLogPath(void);
+static void BDSWebProbeStore(NSString *json);
 static void BDSCashRecordHit(NSString *source, NSString *url);
 static void BDSZtboxObserve(NSString *source, NSString *url);
 static void BDSAllObserve(NSString *source, NSString *url);
@@ -94,6 +96,23 @@ static NSString * const BDSCashTelemetryBlockScript = @
 "(function(){"
 "if(window.__bdsCashBlockInstalled)return;"
 "function __bdsCashHit(u){try{window.webkit.messageHandlers.bdsCashHit.postMessage(u||'');}catch(x){}}"
+// 网页侧自检：把网页「真实读到」的值原样回报，用于对比注入是否生效
+"function __bdsProbeWeb(){"
+"try{"
+"var o={};"
+"o.ua=navigator.userAgent||'';"
+"o.appVersion=navigator.appVersion||'';"
+"o.platform=navigator.platform||'';"
+"o.screenW=screen.width;o.screenH=screen.height;"
+"o.availW=screen.availWidth;o.availH=screen.availHeight;"
+"o.dpr=window.devicePixelRatio;"
+"o.innerW=window.innerWidth;o.innerH=window.innerHeight;"
+"o.href=location.href;"
+"window.webkit.messageHandlers.bdsWebProbe.postMessage(JSON.stringify(o));"
+"}catch(x){}"
+"}"
+"try{if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',__bdsProbeWeb);}else{__bdsProbeWeb();}}catch(x){}"
+"try{setTimeout(__bdsProbeWeb,1200);}catch(x){}"
 "function __bdsObs(u,src){"
 "try{"
 "var s=String(u&&u.url?u.url:u);"
@@ -231,6 +250,43 @@ static BOOL BDSZtboxIsTarget(NSDictionary *info) {
     if (!([pg isEqualToString:@"y_mission_index"] ||
           [pg isEqualToString:@"y_mission_withdraw"])) return NO;
     return ty.length && [ty hasPrefix:@"c_pv"];
+}
+
+static NSString *BDSWebProbeLogPath(void) {
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    return [docs stringByAppendingPathComponent:@"bdspoofer_web_probe.plist"];
+}
+
+// 网页自检：原样存下网页读到的值（不做任何改写）
+static void BDSWebProbeStore(NSString *json) {
+    if (!json.length) return;
+    static NSLock *lock = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSLock new]; });
+    [lock lock];
+    @autoreleasepool {
+        NSData *d0 = [json dataUsingEncoding:NSUTF8StringEncoding];
+        id obj = d0 ? [NSJSONSerialization JSONObjectWithData:d0 options:0 error:nil] : nil;
+        if (![obj isKindOfClass:NSDictionary.class]) { [lock unlock]; return; }
+        NSString *p = BDSWebProbeLogPath();
+        NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:p]
+                              ?: [NSMutableDictionary dictionary];
+        d[@"total"] = @([d[@"total"] integerValue] + 1);
+        d[@"last"] = obj;
+        d[@"lastTime"] = [NSDate date];
+        // 按 ua 去重计数
+        NSString *ua = obj[@"ua"];
+        if (ua.length) {
+            NSMutableDictionary *uas = [d[@"uas"] mutableCopy]
+                                    ?: [NSMutableDictionary dictionary];
+            NSString *key = ua.length > 160 ? [ua substringToIndex:160] : ua;
+            uas[key] = @([uas[key] integerValue] + 1);
+            d[@"uas"] = uas;
+        }
+        [d writeToFile:p atomically:YES];
+    }
+    [lock unlock];
 }
 
 static NSString *BDSAllObsLogPath(void) {
@@ -396,6 +452,10 @@ static void BDSCashRecordHit(NSString *source, NSString *url) {
         BDSCashRecordHit(@"web", body);
         return;
     }
+    if ([message.name isEqualToString:@"bdsWebProbe"]) {
+        BDSWebProbeStore(body);
+        return;
+    }
     if ([message.name isEqualToString:@"bdsAllObs"]) {
         NSRange bar = [body rangeOfString:@"|"];
         if (bar.location != NSNotFound) {
@@ -437,6 +497,11 @@ static void BDSCashInstallHitHandler(WKUserContentController *ucc) {
     }
     @try {
         [ucc addScriptMessageHandler:g_cashHitHandler name:@"bdsAllObs"];
+    } @catch (NSException *e) {
+        (void)e;
+    }
+    @try {
+        [ucc addScriptMessageHandler:g_cashHitHandler name:@"bdsWebProbe"];
     } @catch (NSException *e) {
         (void)e;
     }
