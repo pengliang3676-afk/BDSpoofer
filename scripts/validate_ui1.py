@@ -16,7 +16,7 @@ assert all(config[k] is True for k in regular)
 assert all(config[k] is False for k in risk)
 assert config['bypassJailbreakDetect'] is False  # 10.01.01 起默认关闭
 assert config['spoofScreen'] is False and config['configVersion']==191
-assert config['blockStatCashTelemetry'] is True  # 10.01.21 起默认开启
+assert config['blockStatCashTelemetry'] is True  # 10.01.22 起默认开启
 assert 'blockStatCashTelemetry' in policy and 'blockStatCashTelemetry' in plugin
 assert '收益额上报：%@' in plugin and '? @"已开启" : @"已关闭"' in plugin
 assert all(config['spoofBaiduTargeted'+x] is False for x in ['', 'System','Model','Screen','UA','Push'])
@@ -32,13 +32,13 @@ settings_ui=(root/'Shared/BDSSettingsUI.h').read_text(encoding='utf-8')
 assert 'usesCompactActionRow' in settings_ui and 'UIStackViewDistributionFillEqually' in settings_ui
 assert 'i==5 ? UIColor.systemRedColor' not in settings_ui
 assert 'CGRectMake(0,0,width,8)' in manager and 'CGRectMake(0,0,width,100)' not in manager
-assert 'CGRectMake(0,0,width,232)' in manager and 'layoutFooterButtons' in manager
-assert 'viewWithTag:1003' in manager and 'viewWithTag:1004' in manager and 'viewWithTag:1005' not in manager
+assert 'CGRectMake(0,0,width,290)' in manager and 'layoutFooterButtons' in manager
+assert 'viewWithTag:1003' in manager and 'viewWithTag:1004' in manager and 'viewWithTag:1005' in manager
 assert 'closeApp' not in manager and 'NSSelectorFromString(@"suspend")' not in manager
 assert 'config[@"deviceProfileName"] ?: config[@"hwMachine"]' in manager
 assert 'config[@"targetedDeviceProfileName"] ?: config[@"targetedHwMachine"]' in manager
 assert 'NSString *currentSuffix = @"（当前）"' in manager and 'UIColor.systemRedColor' in manager
-assert 'page.title=@"卐解 1.8.1 UI1.3 10.01.21"' in plugin
+assert 'page.title=@"卐解 1.8.1 UI1.3 10.01.22"' in plugin
 assert 'didRandomize%@%@' in policy
 for text in ['BDSMarkRandomModeRun','BDSRandomModeWasRun','BDSConfigForPersistentStorage']:
     assert text in plugin+manager+policy,text
@@ -58,12 +58,12 @@ for text in ['h2tcbox.baidu.com','/ztbox','zpblog','10290','y_mission_index','c_
 assert 'BDSInstallCashTelemetryBlocking();' in plugin
 assert plugin.count('loadConfig();') >= 3
 assert '0.50' not in release and '触发风控' not in release
-assert 'BDSpoofer_1.8.1_UI1.3_10.01.21.dylib' in build and 'UI1.1.dylib' not in build
-assert 'BDSpooferCraneManager_1.0.3-ui1_10.01.21_RootHide.deb' in build
+assert 'BDSpoofer_1.8.1_UI1.3_10.01.22.dylib' in build and 'UI1.1.dylib' not in build
+assert 'BDSpooferCraneManager_1.0.3-ui1_10.01.22_RootHide.deb' in build
 assert 'BDSLoginDeviceDict' in plugin and 'ssologin' in plugin
 assert 'BDSPassEncryptedDi' in plugin and 'deviceInfoForLogin' in plugin
 assert 'BDSPassEnsureDVIF' in plugin and 'bds_my_uname' in plugin and '{"uname"' in plugin
-assert 'self.title = @"卍解 1.0.3 10.01.21"' in manager
+assert 'self.title = @"卍解 1.0.3 10.01.22"' in manager
 assert '[verified isEqualToDictionary:config]' in manager
 assert 'targetedScreenHwMachine' in plugin and 'targetedScreenHwMachine' in manager
 def function(text,name):
@@ -132,7 +132,7 @@ for name in ['bds_my_stat','bds_my_lstat','bds_my_access','bds_my_fopen','bds_my
     assert strip_guards(plugin,name)==strip_guards(base,name),name
 for path in ['bdspoofer_config.plist','CraneManager/Info.plist','CraneManager/BDSCraneManager.entitlements','CraneManager/BDSCraneManager.libSandy.plist']:plistlib.loads((root/path).read_bytes())
 manager_info=plistlib.loads((root/'CraneManager/Info.plist').read_bytes())
-assert manager_info['CFBundleVersion']=='10.01.21' and manager_info['CFBundleShortVersionString']=='1.0.3-10.01.21'
+assert manager_info['CFBundleVersion']=='10.01.22' and manager_info['CFBundleShortVersionString']=='1.0.3-10.01.22'
 assert 'CPU iPhone OS ' in plugin and 'setCustomUserAgent:' in plugin
 assert 'if (hw.length && f.count > 3) f[3] = hw;' in plugin
 assert 'if (sv.length && f.count > 4) f[4] = sv;' in plugin

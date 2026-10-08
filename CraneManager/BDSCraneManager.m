@@ -502,6 +502,7 @@ static void *BDSLoadCraneLibrary(void) {
 - (void)randomizeBasicForSelectedContainers;
 - (void)showAssociationSettings;
 - (void)restoreSafeSettings;
+- (void)resetDeviceIdentity;
 - (BOOL)saveSwitchChanges:(NSDictionary *)changes;
 - (NSDictionary *)selectedSwitchConfiguration;
 - (void)randomizeAdvancedForSelectedContainers;
@@ -606,11 +607,65 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     return [[NSDictionary dictionaryWithContentsOfFile:path] isEqualToDictionary:config];
 }
 
+
+// ── 重置设备身份 ──────────────────────────────────────────
+// 组容器（group.com.baidu.BaiduMobileInfo）全机只有一个，换数据容器不会重置它。
+// 这里直接改文件：卍解有 no-sandbox 权限，而且自身进程里没有百度那份内存缓存，
+// 改完不会被写回（插件在百度进程里改就会被百度缓存覆盖）。
+static NSArray<NSString *> *BDSIdentityKeys(void) {
+    return @[@"BNPush_cuid", @"BNPush_cacheCuid", @"BNPush_token",
+             @"BNPush_channelid", @"BNPush_status"];
+}
+
+// 扫 AppGroup 目录，按 metadata 里的标识找组容器
+static NSString *BDSFindGroupContainer(void) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *base = @"/var/mobile/Containers/Shared/AppGroup";
+    NSArray<NSString *> *entries = [fm contentsOfDirectoryAtPath:base error:nil];
+    for (NSString *name in entries) {
+        if ([name hasPrefix:@"."]) continue;
+        NSString *dir = [base stringByAppendingPathComponent:name];
+        NSString *metaPath = [dir stringByAppendingPathComponent:
+            @".com.apple.mobile_container_manager.metadata.plist"];
+        NSDictionary *meta = [NSDictionary dictionaryWithContentsOfFile:metaPath];
+        NSString *ident = meta[@"MCMMetadataIdentifier"];
+        if ([ident isKindOfClass:NSString.class] &&
+            [ident isEqualToString:@"group.com.baidu.BaiduMobileInfo"]) {
+            return dir;
+        }
+    }
+    return nil;
+}
+
+// 读当前设备编号
+static NSString *BDSGroupCuid(NSString *groupDir) {
+    if (!groupDir.length) return @"";
+    NSString *pl = [groupDir stringByAppendingPathComponent:
+        @"Library/Preferences/group.com.baidu.BaiduMobileInfo.plist"];
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:pl];
+    NSString *v = d[@"BNPush_cuid"];
+    return [v isKindOfClass:NSString.class] ? v : @"";
+}
+
+// 原子写回 plist（跟本项目写容器配置用的是同一套写法）
+static BOOL BDSWritePlist(NSDictionary *dict, NSString *path) {
+    NSError *error = nil;
+    NSData *data = [NSPropertyListSerialization dataWithPropertyList:dict
+        format:NSPropertyListBinaryFormat_v1_0 options:0 error:&error];
+    if (!data) data = [NSPropertyListSerialization dataWithPropertyList:dict
+        format:NSPropertyListXMLFormat_v1_0 options:0 error:&error];
+    if (!data) return NO;
+    if (![data writeToFile:path options:NSDataWritingAtomic error:&error]) return NO;
+    [[NSFileManager defaultManager] setAttributes:
+        @{NSFilePosixPermissions: @0600} ofItemAtPath:path error:nil];
+    return YES;
+}
+
 @implementation BDSManagerViewController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"卍解 1.0.3 10.01.21";
+    self.title = @"卍解 1.0.3 10.01.22";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];
@@ -647,9 +702,9 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     CGFloat width=CGRectGetWidth(self.tableView.bounds);
     UIView *header=[[UIView alloc] initWithFrame:CGRectMake(0,0,width,8)];
     self.tableView.tableHeaderView=header;
-    UIView *footer=[[UIView alloc] initWithFrame:CGRectMake(0,0,width,232)];
-    NSArray *titles=@[@"一键随机基础整套设置",@"一键随机高级整套设置",@"一键随机定向指纹设置",@"反关联项",@"恢复安全"];
-    NSArray *selectors=@[NSStringFromSelector(@selector(randomizeBasicForSelectedContainers)),NSStringFromSelector(@selector(randomizeAdvancedForSelectedContainers)),NSStringFromSelector(@selector(randomizeTargetedForSelectedContainers)),NSStringFromSelector(@selector(showAssociationSettings)),NSStringFromSelector(@selector(restoreSafeSettings))];
+    UIView *footer=[[UIView alloc] initWithFrame:CGRectMake(0,0,width,290)];
+    NSArray *titles=@[@"一键随机基础整套设置",@"一键随机高级整套设置",@"一键随机定向指纹设置",@"反关联项",@"恢复安全",@"重置设备身份"];
+    NSArray *selectors=@[NSStringFromSelector(@selector(randomizeBasicForSelectedContainers)),NSStringFromSelector(@selector(randomizeAdvancedForSelectedContainers)),NSStringFromSelector(@selector(randomizeTargetedForSelectedContainers)),NSStringFromSelector(@selector(showAssociationSettings)),NSStringFromSelector(@selector(restoreSafeSettings)),NSStringFromSelector(@selector(resetDeviceIdentity))];
     for(NSUInteger i=0;i<titles.count;i++) {
         UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem];
         button.autoresizingMask=UIViewAutoresizingFlexibleWidth;
@@ -694,6 +749,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     CGFloat pairWidth=MAX(0,(buttonWidth-pairGap)/2.0);
     [footer viewWithTag:1003].frame=CGRectMake(sideInset,6+3*rowStep,pairWidth,buttonHeight);
     [footer viewWithTag:1004].frame=CGRectMake(sideInset+pairWidth+pairGap,6+3*rowStep,pairWidth,buttonHeight);
+    [footer viewWithTag:1005].frame=CGRectMake(sideInset,6+4*rowStep,buttonWidth,buttonHeight);
 }
 
 - (void)viewDidLayoutSubviews {
@@ -945,6 +1001,75 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     __weak BDSManagerViewController *weakSelf=self;
     page.saveChanges=^BOOL(NSDictionary *changes) { return [weakSelf saveSwitchChanges:changes]; };
     [self.navigationController pushViewController:page animated:YES];
+}
+
+// 重置设备身份：清掉组容器里的推送编号 + 当前容器里的编号缓存
+- (void)resetDeviceIdentity {
+    UIAlertController *wait = [UIAlertController alertControllerWithTitle:@"正在重置"
+        message:@"请稍候…" preferredStyle:UIAlertControllerStyleAlert];
+    [self presentViewController:wait animated:NO completion:nil];
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSMutableArray<NSString *> *log = [NSMutableArray array];
+        BOOL ok = NO;
+        NSString *groupDir = BDSFindGroupContainer();
+        NSString *oldCuid = BDSGroupCuid(groupDir);
+
+        if (!groupDir.length) {
+            [log addObject:@"找不到百度组容器（无权限或不存在）"];
+        } else {
+            NSString *pl = [groupDir stringByAppendingPathComponent:
+                @"Library/Preferences/group.com.baidu.BaiduMobileInfo.plist"];
+            NSMutableDictionary *d = [[NSDictionary dictionaryWithContentsOfFile:pl] mutableCopy];
+            if (!d) {
+                [log addObject:@"组容器 plist 读不出来"];
+            } else {
+                NSUInteger n = 0;
+                for (NSString *k in BDSIdentityKeys()) {
+                    if (d[k] != nil) { n++; [d removeObjectForKey:k]; }
+                }
+                if (BDSWritePlist(d, pl)) {
+                    ok = YES;
+                    [log addObject:[NSString stringWithFormat:@"组容器：清除 %lu 个键", (unsigned long)n]];
+                    if (oldCuid.length) [log addObject:[NSString stringWithFormat:@"原编号：%@", oldCuid]];
+                } else {
+                    [log addObject:@"组容器 plist 写入失败（可能没权限）"];
+                }
+            }
+        }
+
+        // 顺手清当前容器里的编号缓存，否则百度会写回
+        NSString *cfg = [self configPathForContainerID:self.displayCurrentContainerID ?: @"DEFAULT"];
+        if (cfg.length) {
+            NSString *mainPl = [[[cfg stringByDeletingLastPathComponent]
+                stringByDeletingLastPathComponent]
+                stringByAppendingPathComponent:@"Library/Preferences/com.baidu.BaiduMobileInfo.plist"];
+            NSMutableDictionary *m = [[NSDictionary dictionaryWithContentsOfFile:mainPl] mutableCopy];
+            if (m) {
+                NSUInteger n2 = 0;
+                for (NSString *k in @[@"com.baidu.baidumobile.tempCUID",
+                                      @"BIMPIMLogRegisterKeyCUID"]) {
+                    if (m[k] != nil) { n2++; [m removeObjectForKey:k]; }
+                }
+                if (n2 && BDSWritePlist(m, mainPl)) {
+                    [log addObject:[NSString stringWithFormat:@"容器缓存：清除 %lu 个键", (unsigned long)n2]];
+                }
+            }
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [wait dismissViewControllerAnimated:NO completion:^{
+                NSString *title = ok ? @"已重置" : @"重置失败";
+                NSString *msg = [log componentsJoinedByString:@"\n"];
+                if (ok) msg = [msg stringByAppendingString:
+                    @"\n\n请彻底关闭百度极速版（后台也划掉）后重新打开。\n重新打开后会注册新的设备编号。"];
+                UIAlertController *a = [UIAlertController alertControllerWithTitle:title
+                    message:msg preferredStyle:UIAlertControllerStyleAlert];
+                [a addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:a animated:YES completion:nil];
+            }];
+        });
+    });
 }
 
 - (void)restoreSafeSettings {
