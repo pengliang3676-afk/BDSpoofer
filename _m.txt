@@ -1,28 +1,14 @@
-10.01.28: 拦下支付宝授权链接 -> 弹二维码
+10.01.29: 二维码改全屏显示
 
-背景（10.01.27 实测抓到的链接，已解码）：
-  点提现时百度发给支付宝的是：
-    https://render.alipay.com/p/s/ulink/?scheme=alipay://alipayclient/?{...}
-  内层 JSON 里是一个自包含的授权请求：
-    requestType=SafePay, call_type=authV2
-    dataString: apiname=com.alipay.account.auth
-                method=alipay.open.auth.sdk.code.get
-                product_id=APP_FAST_LOGIN, scope=auth_user
-                pid/app_id/sign(RSA2)/target_id/timestamp 都在里面
+问题：10.01.28 把二维码画成 260px 塞在 alert 里，
+      链接 2710 字符 → 二维码是 177x177 模块，每模块只有 1.5 像素，
+      另一台手机支付宝扫了「完全没反应」（识别不出，不是授权失败）。
 
-  也就是说「请求本身就能独立执行」，理论上另一台手机的支付宝拿到
-  同一串就能完成授权 —— 但 timestamp 会过期，必须当场生成当场扫。
-
-本次改动：
-  ① BDSIsAlipayAuthURL()：识别 alipay:// alipays:// render.alipay.com/p/s/ulink
-  ② BDSMakeQRCode()：用 iOS 自带 CoreImage 的 CIQRCodeGenerator 生成二维码
-     （纠错级别用 L，容量最大，长链接才放得下）
-  ③ BDSShowAuthQRCode()：弹窗显示二维码 + 原始链接，
-     按钮：取消（正常跳支付宝）/ 复制链接
-  ④ openURL: 与 openURL:options: 两个钩子里：
-     命中支付宝授权链接且 payQRCode 开启时 -> 弹二维码、不跳支付宝
-  ⑤ 新增开关 payQRCode，默认开启（配置 configVersion 192）
-  ⑥ 摘要加一行「支付宝二维码：已开启/已关闭」
-  ⑦ 构建脚本链接 CoreImage 框架
-
-注意：这只是把链接搬到二维码里。能不能真授权，要实测。
+改动：
+  ① 新增 BDSQRPage（UIViewController 子类，自己处理两个按钮的点击）
+  ② BDSShowAuthQRCode 改成全屏页面：
+       二维码边长 = 屏幕短边 - 32（SE2 上是 343pt，模块约 1.9pt）
+       显示「链接 N 字符 · 二维码 NxN」便于判断密度
+       按钮：复制链接 / 关闭
+  ③ BDSMakeQRCode 加静区（四周留白，扫码器需要）
+     并改成纯白不透明底
