@@ -299,7 +299,7 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
     return v ? [v integerValue] : def;
 }
 
-// ── 10.01.26 写盘统一：前向声明（定义在下方「写盘统一」段）──
+// ── 10.01.27 写盘统一：前向声明（定义在下方「写盘统一」段）──
 static void BDSIDMapBuild(void);      // 由配置重建「容器键 → 假身份值」映射
 static void BDSIDWriteViaAPI(void);   // 用公开 API 写入统一值（cfprefsd 落盘）
 static void BDSUnifyIdentity(void);   // 建表 + 写盘 + 装钩子
@@ -674,7 +674,7 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 187 || !loaded[@"blockStatCashTelemetry"] || loaded[@"spoofStatCash"]) {
-        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.26 起默认开启。旧试验键不继承。
+        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.27 起默认开启。旧试验键不继承。
         merged[@"configVersion"] = @187;
         if (!loaded[@"blockStatCashTelemetry"]) merged[@"blockStatCashTelemetry"] = @YES;
         [merged removeObjectForKey:@"spoofStatCash"];
@@ -700,7 +700,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.01.26：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
+        // 10.01.27：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
         // 光改默认值救不了，必须强制写一次 @YES 并落盘；只执行一次，
         // 用户之后在面板手动关掉仍然有效。
         merged[@"blockStatCashTelemetry"] = @YES;
@@ -874,7 +874,7 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 }
 
 
-#pragma mark - 写盘统一（10.01.26）
+#pragma mark - 写盘统一（10.01.27）
 //
 // 背景：百度极速会把「上一次读到的设备信息」缓存到容器 plist。
 //       插件只钩运行时返回值时，plist 里仍留着旧值 / 真机值，
@@ -992,7 +992,7 @@ static void BDSIDMapBuild(void) {
 
 // ── ① 用公开 API 写盘（不碰文件）────────────────────────────
 //
-// 教训（10.01.26 前两版实测）：
+// 教训（10.01.27 前两版实测）：
 //   · 直接 writeToFile: 重写域文件 → 和 App 内存副本打架，440 键被写成 290 个
 //   · 钩 setObject:forKey: 忽略写入 → App 写不进去，落盘也没这些键，同样丢数据
 //
@@ -4293,6 +4293,68 @@ static int bds_my_dlopen_preflight(const char *path) {
 
 #pragma mark - C 函数 hook 安装（fishhook）
 
+// ── 抓第三方 App 跳转链接（诊断用，只记录不改行为）──────────────
+// 目的：取出百度提现时发给支付宝的那串 alipays:// 链接
+static NSString *BDSURLDumpPath(void) {
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    return [docs stringByAppendingPathComponent:@"bdspoofer_url_dump.plist"];
+}
+static void BDSDumpURL(NSString *src, NSString *url) {
+    if (!url.length) return;
+    static NSLock *lk = nil;
+    static dispatch_once_t onceLk;
+    dispatch_once(&onceLk, ^{ lk = [NSLock new]; });
+    [lk lock];
+    NSString *p = BDSURLDumpPath();
+    NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:p]
+                          ?: [NSMutableDictionary dictionary];
+    NSMutableArray *items = [d[@"items"] mutableCopy] ?: [NSMutableArray array];
+    [items insertObject:@{@"t": [NSDate date], @"src": src ?: @"?", @"url": url} atIndex:0];
+    while (items.count > 30) [items removeLastObject];
+    d[@"items"] = items;
+    d[@"total"] = @([d[@"total"] integerValue] + 1);
+    d[@"lastSrc"] = src ?: @"?";
+    d[@"lastURL"] = url;
+    [d writeToFile:p atomically:YES];
+    [lk unlock];
+}
+static IMP orig_openURL_opt = NULL;
+static IMP orig_openURL = NULL;
+static void new_openURL_opt(id self, SEL _cmd, NSURL *url, NSDictionary *opts, id handler) {
+    @try { BDSDumpURL(@"UIApplication openURL:options:", url.absoluteString); } @catch (NSException *e) {}
+    typedef void (*F)(id, SEL, NSURL *, NSDictionary *, id);
+    if (orig_openURL_opt) ((F)orig_openURL_opt)(self, _cmd, url, opts, handler);
+}
+static BOOL new_openURL(id self, SEL _cmd, NSURL *url) {
+    @try { BDSDumpURL(@"UIApplication openURL:", url.absoluteString); } @catch (NSException *e) {}
+    typedef BOOL (*F)(id, SEL, NSURL *);
+    return orig_openURL ? ((F)orig_openURL)(self, _cmd, url) : NO;
+}
+static void BDSInstallURLDump(void) {
+    Class app = NSClassFromString(@"UIApplication");
+    if (!app) return;
+    SEL s1 = NSSelectorFromString(@"openURL:options:completionHandler:");
+    Method m1 = class_getInstanceMethod(app, s1);
+    if (m1) {
+        IMP cur = method_getImplementation(m1);
+        if (cur != (IMP)new_openURL_opt) {
+            orig_openURL_opt = cur;
+            method_setImplementation(m1, (IMP)new_openURL_opt);
+        }
+    }
+    SEL s2 = NSSelectorFromString(@"openURL:");
+    Method m2 = class_getInstanceMethod(app, s2);
+    if (m2) {
+        IMP cur = method_getImplementation(m2);
+        if (cur != (IMP)new_openURL) {
+            orig_openURL = cur;
+            method_setImplementation(m2, (IMP)new_openURL);
+        }
+    }
+}
+
+
 static void installCHooks(void) {
     // IOKit 的电源接口只有在 IOKit.framework 已加载时才存在于符号表里。
     // 显式加载一次，保证下面的 rebinding 一定能找到它（否则钩子会静默失效）。
@@ -5160,7 +5222,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.26";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.27";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -6378,6 +6440,7 @@ static void bds_initialize() {
         // 调用 orig 不经过 GOT，结构上不可能递归。
         BOOL hasCHookFeature = BDSHasEnabledCHookFeature();
         if (hasCHookFeature) installCHooks();
+        BDSInstallURLDump();
 
         // 同步 C 全局开关
         // g_enabledC 表示插件 C 层基础设施已加载，不映射基础总开关。
