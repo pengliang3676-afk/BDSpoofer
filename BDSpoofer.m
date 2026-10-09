@@ -4511,30 +4511,6 @@ static void BDSShowAuthQRCode(NSString *url) {
     });
 }
 
-// 弹二维码：内层 alipay:// 优先，外层 https 备用
-static void BDSShowAuthQRCode(NSString *url) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIViewController *top = nil;
-        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-            if (![scene isKindOfClass:UIWindowScene.class]) continue;
-            for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-                UIViewController *r = w.rootViewController;
-                while (r.presentedViewController) r = r.presentedViewController;
-                if (r) { top = r; break; }
-            }
-            if (top) break;
-        }
-        if (!top) return;
-
-        NSString *inner = BDSCompactJSON(BDSInnerAlipayURL(url));
-        BDSQRPage *vc = [[BDSQRPage alloc] init];
-        vc.innerURL = inner;
-        vc.outerURL = url;
-        vc.modalPresentationStyle = UIModalPresentationFullScreen;
-        [top presentViewController:vc animated:YES completion:nil];
-    });
-}
-
 // 测试用：不经过提现，直接看二维码长什么样
 static void BDSShowTestQRCode(void) {
     NSString *demo = @"https://render.alipay.com/p/s/ulink/?scheme=alipay%3A%2F%2Falipayclient%2F%3F%7B%22requestType%22%3A%22SafePay%22%7D";
