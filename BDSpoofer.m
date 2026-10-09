@@ -300,7 +300,7 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
     return v ? [v integerValue] : def;
 }
 
-// ── 10.01.28 写盘统一：前向声明（定义在下方「写盘统一」段）──
+// ── 10.01.29 写盘统一：前向声明（定义在下方「写盘统一」段）──
 static void BDSIDMapBuild(void);      // 由配置重建「容器键 → 假身份值」映射
 static void BDSIDWriteViaAPI(void);   // 用公开 API 写入统一值（cfprefsd 落盘）
 static void BDSUnifyIdentity(void);   // 建表 + 写盘 + 装钩子
@@ -675,7 +675,7 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 187 || !loaded[@"blockStatCashTelemetry"] || loaded[@"spoofStatCash"]) {
-        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.28 起默认开启。旧试验键不继承。
+        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.29 起默认开启。旧试验键不继承。
         merged[@"configVersion"] = @187;
         if (!loaded[@"blockStatCashTelemetry"]) merged[@"blockStatCashTelemetry"] = @YES;
         [merged removeObjectForKey:@"spoofStatCash"];
@@ -701,7 +701,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.01.28：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
+        // 10.01.29：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
         // 光改默认值救不了，必须强制写一次 @YES 并落盘；只执行一次，
         // 用户之后在面板手动关掉仍然有效。
         merged[@"blockStatCashTelemetry"] = @YES;
@@ -875,7 +875,7 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 }
 
 
-#pragma mark - 写盘统一（10.01.28）
+#pragma mark - 写盘统一（10.01.29）
 //
 // 背景：百度极速会把「上一次读到的设备信息」缓存到容器 plist。
 //       插件只钩运行时返回值时，plist 里仍留着旧值 / 真机值，
@@ -993,7 +993,7 @@ static void BDSIDMapBuild(void) {
 
 // ── ① 用公开 API 写盘（不碰文件）────────────────────────────
 //
-// 教训（10.01.28 前两版实测）：
+// 教训（10.01.29 前两版实测）：
 //   · 直接 writeToFile: 重写域文件 → 和 App 内存副本打架，440 键被写成 290 个
 //   · 钩 setObject:forKey: 忽略写入 → App 写不进去，落盘也没这些键，同样丢数据
 //
@@ -4378,17 +4378,40 @@ static UIImage *BDSMakeQRCode(NSString *text, CGFloat size) {
     UIImage *img = [UIImage imageWithCGImage:cg];
     CGImageRelease(cg);
     if (!img) return nil;
-    // 放大到指定尺寸（最近邻，保持清晰）
-    UIGraphicsBeginImageContextWithOptions(CGSizeMake(size, size), NO, 1.0);
+    // 放大到指定尺寸（最近邻，保持锐利），四周留白（扫码需要静区）
+    CGFloat quiet = MAX(4.0, size * 0.02);
+    CGFloat total = size + quiet * 2;
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(total, total), YES, 1.0);
     CGContextRef c = UIGraphicsGetCurrentContext();
+    CGContextSetFillColorWithColor(c, UIColor.whiteColor.CGColor);
+    CGContextFillRect(c, CGRectMake(0, 0, total, total));
     CGContextSetInterpolationQuality(c, kCGInterpolationNone);
-    [img drawInRect:CGRectMake(0, 0, size, size)];
+    [img drawInRect:CGRectMake(quiet, quiet, size, size)];
     UIImage *scaled = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
     return scaled ?: img;
 }
 
+// ── 二维码全屏页（带两个按钮，自己处理点击）──────────────
+@interface BDSQRPage : UIViewController
+@end
+@implementation BDSQRPage
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = UIColor.whiteColor;
+}
+- (void)copyTapped {
+    NSString *u = objc_getAssociatedObject(self, "bdsQRURL");
+    if (u.length) UIPasteboard.generalPasteboard.string = u;
+}
+- (void)closeTapped {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+@end
+
 // 弹二维码：显示授权链接，让另一台手机的支付宝扫
+// 全屏显示 —— 链接 2700 字符时二维码是 177x177 模块，
+// 小窗口画出来每格不到 2 像素，扫码器识别不了。
 static void BDSShowAuthQRCode(NSString *url) {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIViewController *top = nil;
@@ -4403,34 +4426,83 @@ static void BDSShowAuthQRCode(NSString *url) {
         }
         if (!top) return;
 
-        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"支付宝授权二维码"
-            message:@"用【另一台手机的支付宝】扫这个码完成授权。\n\n注意：链接有时效，请尽快扫。"
-            preferredStyle:UIAlertControllerStyleAlert];
+        CGRect screen = UIScreen.mainScreen.bounds;
+        CGFloat side = MIN(screen.size.width, screen.size.height) - 32.0;
+        UIImage *qr = BDSMakeQRCode(url, side);
 
-        UIImage *qr = BDSMakeQRCode(url, 260);
+        BDSQRPage *vc = [[BDSQRPage alloc] init];
+        vc.view.frame = screen;
+        objc_setAssociatedObject(vc, "bdsQRURL", url, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+        UIScrollView *sv = [[UIScrollView alloc] initWithFrame:screen];
+        sv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [vc.view addSubview:sv];
+
+        CGFloat W = screen.size.width;
+        CGFloat y = 54.0;
+
+        UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, y, W - 32, 30)];
+        title.text = @"支付宝授权二维码";
+        title.font = [UIFont boldSystemFontOfSize:20];
+        title.textAlignment = NSTextAlignmentCenter;
+        [sv addSubview:title];
+        y += 36;
+
+        UILabel *tip = [[UILabel alloc] initWithFrame:CGRectMake(16, y, W - 32, 44)];
+        tip.text = @"用另一台手机的支付宝扫下面这个码。\n链接有时效，请尽快扫。";
+        tip.font = [UIFont systemFontOfSize:14];
+        tip.textColor = UIColor.darkGrayColor;
+        tip.numberOfLines = 0;
+        tip.textAlignment = NSTextAlignmentCenter;
+        [sv addSubview:tip];
+        y += 52;
+
         if (qr) {
-            UIViewController *vc = [[UIViewController alloc] init];
-            vc.view.backgroundColor = UIColor.whiteColor;
             UIImageView *iv = [[UIImageView alloc] initWithImage:qr];
-            iv.frame = CGRectMake(10, 10, 260, 260);
+            CGFloat w = qr.size.width;
+            iv.frame = CGRectMake((W - w) / 2.0, y, w, qr.size.height);
             iv.contentMode = UIViewContentModeScaleAspectFit;
-            vc.view.frame = CGRectMake(0, 0, 280, 280);
-            [vc.view addSubview:iv];
-            vc.preferredContentSize = CGSizeMake(280, 280);
-            [a setValue:vc forKey:@"contentViewController"];
+            [sv addSubview:iv];
+            y += qr.size.height + 10;
+            UILabel *meta = [[UILabel alloc] initWithFrame:CGRectMake(16, y, W - 32, 20)];
+            meta.text = [NSString stringWithFormat:@"链接 %lu 字符 · 二维码 %dx%d",
+                (unsigned long)url.length, (int)w, (int)qr.size.height];
+            meta.font = [UIFont systemFontOfSize:12];
+            meta.textColor = UIColor.grayColor;
+            meta.textAlignment = NSTextAlignmentCenter;
+            [sv addSubview:meta];
+            y += 28;
         } else {
-            a.message = [NSString stringWithFormat:
-                @"二维码生成失败（链接太长）。\n\n链接已存到 Documents/bdspoofer_url_dump.plist。\n\n%@",
-                [url substringToIndex:MIN((NSUInteger)200, url.length)]];
+            UILabel *err = [[UILabel alloc] initWithFrame:CGRectMake(16, y, W - 32, 60)];
+            err.text = @"二维码生成失败（链接太长）\n链接已存到 bdspoofer_url_dump.plist";
+            err.numberOfLines = 0;
+            err.textAlignment = NSTextAlignmentCenter;
+            [sv addSubview:err];
+            y += 68;
         }
 
-        [a addAction:[UIAlertAction actionWithTitle:@"取消（正常跳支付宝）"
-            style:UIAlertActionStyleCancel handler:nil]];
-        [a addAction:[UIAlertAction actionWithTitle:@"复制链接"
-            style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
-                UIPasteboard.generalPasteboard.string = url;
-            }]];
-        [top presentViewController:a animated:YES completion:nil];
+        UIButton *copy = [UIButton buttonWithType:UIButtonTypeSystem];
+        copy.frame = CGRectMake(16, y, W - 32, 44);
+        copy.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+        copy.layer.cornerRadius = 11;
+        [copy setTitle:@"复制链接" forState:UIControlStateNormal];
+        [copy addTarget:vc action:@selector(copyTapped) forControlEvents:UIControlEventTouchUpInside];
+        [sv addSubview:copy];
+        y += 52;
+
+        UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
+        close.frame = CGRectMake(16, y, W - 32, 44);
+        close.backgroundColor = [UIColor colorWithRed:0.95 green:0.55 blue:0.10 alpha:1.0];
+        close.layer.cornerRadius = 11;
+        [close setTitle:@"关闭" forState:UIControlStateNormal];
+        [close setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+        [close addTarget:vc action:@selector(closeTapped) forControlEvents:UIControlEventTouchUpInside];
+        [sv addSubview:close];
+        y += 60;
+
+        sv.contentSize = CGSizeMake(W, y + 20);
+        vc.modalPresentationStyle = UIModalPresentationFullScreen;
+        [top presentViewController:vc animated:YES completion:nil];
     });
 }
 
@@ -5327,7 +5399,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.28";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.29";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
