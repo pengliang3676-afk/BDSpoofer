@@ -1,16 +1,28 @@
-10.01.27: 挂钩 openURL 抓第三方跳转链接（诊断用）
+10.01.28: 拦下支付宝授权链接 -> 弹二维码
 
-目的：
-  取出百度提现时发给支付宝的那串 alipays:// 链接，
-  用来验证「把链接做成二维码、另一台手机的支付宝扫」这条路走不走得通。
-  （Frida 被 RootHide 挡死：attach 报 dyld probing 失败，spawn 直接被拒。
-   插件本来就在百度进程里，不受这个限制。）
+背景（10.01.27 实测抓到的链接，已解码）：
+  点提现时百度发给支付宝的是：
+    https://render.alipay.com/p/s/ulink/?scheme=alipay://alipayclient/?{...}
+  内层 JSON 里是一个自包含的授权请求：
+    requestType=SafePay, call_type=authV2
+    dataString: apiname=com.alipay.account.auth
+                method=alipay.open.auth.sdk.code.get
+                product_id=APP_FAST_LOGIN, scope=auth_user
+                pid/app_id/sign(RSA2)/target_id/timestamp 都在里面
 
-改动：
-  ① BDSDumpURL()：把 URL + 来源 + 时间追加写进
-     Documents/bdspoofer_url_dump.plist（保留最近 30 条）
-  ② 钩 UIApplication 的 openURL: 与 openURL:options:completionHandler:
-     —— 只记录，然后原样透传给系统，不改任何行为
-  ③ 在 installCHooks 之后装钩子
+  也就是说「请求本身就能独立执行」，理论上另一台手机的支付宝拿到
+  同一串就能完成授权 —— 但 timestamp 会过期，必须当场生成当场扫。
 
-拿到链接后下一步：生成二维码 → 另一台手机支付宝扫 → 看能不能授权。
+本次改动：
+  ① BDSIsAlipayAuthURL()：识别 alipay:// alipays:// render.alipay.com/p/s/ulink
+  ② BDSMakeQRCode()：用 iOS 自带 CoreImage 的 CIQRCodeGenerator 生成二维码
+     （纠错级别用 L，容量最大，长链接才放得下）
+  ③ BDSShowAuthQRCode()：弹窗显示二维码 + 原始链接，
+     按钮：取消（正常跳支付宝）/ 复制链接
+  ④ openURL: 与 openURL:options: 两个钩子里：
+     命中支付宝授权链接且 payQRCode 开启时 -> 弹二维码、不跳支付宝
+  ⑤ 新增开关 payQRCode，默认开启（配置 configVersion 192）
+  ⑥ 摘要加一行「支付宝二维码：已开启/已关闭」
+  ⑦ 构建脚本链接 CoreImage 框架
+
+注意：这只是把链接搬到二维码里。能不能真授权，要实测。

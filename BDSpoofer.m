@@ -4296,6 +4296,10 @@ static int bds_my_dlopen_preflight(const char *path) {
 
 // ── 抓第三方 App 跳转链接（诊断用，只记录不改行为）──────────────
 // 目的：取出百度提现时发给支付宝的那串 alipays:// 链接
+// 前向声明（定义在下方，openURL 钩子要用）
+static BOOL BDSIsAlipayAuthURL(NSString *u);
+static void BDSShowAuthQRCode(NSString *url);
+
 static NSString *BDSURLDumpPath(void) {
     NSString *docs = [NSSearchPathForDirectoriesInDomains(
         NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
