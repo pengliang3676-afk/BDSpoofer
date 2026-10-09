@@ -4431,23 +4431,6 @@ static UIImage *BDSMakeQRCode(NSString *text, CGFloat size) {
     return scaled ?: img;
 }
 
-// ── 二维码全屏页（带两个按钮，自己处理点击）──────────────
-@interface BDSQRPage : UIViewController
-@end
-@implementation BDSQRPage
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.view.backgroundColor = UIColor.whiteColor;
-}
-- (void)copyTapped {
-    NSString *u = objc_getAssociatedObject(self, "bdsQRURL");
-    if (u.length) UIPasteboard.generalPasteboard.string = u;
-}
-- (void)closeTapped {
-    [self dismissViewControllerAnimated:YES completion:nil];
-}
-@end
-
 // ── 二维码全屏页（双码：内层 alipay:// 优先，外层 https 备用）──
 @interface BDSQRPage : UIViewController
 @property(nonatomic, copy) NSString *innerURL;
