@@ -13,7 +13,7 @@
 	<key>carrierName</key>
 	<string>涓浗绉诲姩</string>
 	<key>configVersion</key>
-	<integer>191</integer>
+	<integer>192</integer>
 	<key>cuid</key>
 	<string></string>
 	<key>deviceID</key>
@@ -60,6 +60,8 @@
 	<integer>1334</integer>
 	<key>nativeScreenWidth</key>
 	<integer>750</integer>
+	<key>payQRCode</key>
+	<true/>
 	<key>screenHeight</key>
 	<integer>667</integer>
 	<key>screenScale</key>

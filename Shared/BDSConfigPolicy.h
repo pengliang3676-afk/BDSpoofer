@@ -126,7 +126,7 @@ static void BDSApplyInitialDefaults(NSMutableDictionary *config, NSDictionary *s
     config[@"targetedScreenHwMachine"]=saved[@"targetedScreenHwMachine"] ?: config[@"targetedHwMachine"] ?: @"iPhone14,6";
     // 必须写当前版本号。写成 @187 会把 loadConfig 里已经抬上去的版本又按回去，
     // 导致 ver < 189 之类的迁移每次启动都重复触发（防越狱检测就踩过这个坑）。
-    config[@"configVersion"]=@191;
+    config[@"configVersion"]=@192;
 }
 
 // ---- 随机 WiFi SSID（一键基础时自动配一个）----
