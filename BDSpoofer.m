@@ -300,7 +300,7 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
     return v ? [v integerValue] : def;
 }
 
-// ── 10.01.30 写盘统一：前向声明（定义在下方「写盘统一」段）──
+// ── 10.01.31 写盘统一：前向声明（定义在下方「写盘统一」段）──
 static void BDSIDMapBuild(void);      // 由配置重建「容器键 → 假身份值」映射
 static void BDSIDWriteViaAPI(void);   // 用公开 API 写入统一值（cfprefsd 落盘）
 static void BDSUnifyIdentity(void);   // 建表 + 写盘 + 装钩子
@@ -675,7 +675,7 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 187 || !loaded[@"blockStatCashTelemetry"] || loaded[@"spoofStatCash"]) {
-        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.30 起默认开启。旧试验键不继承。
+        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.31 起默认开启。旧试验键不继承。
         merged[@"configVersion"] = @187;
         if (!loaded[@"blockStatCashTelemetry"]) merged[@"blockStatCashTelemetry"] = @YES;
         [merged removeObjectForKey:@"spoofStatCash"];
@@ -701,7 +701,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.01.30：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
+        // 10.01.31：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
         // 光改默认值救不了，必须强制写一次 @YES 并落盘；只执行一次，
         // 用户之后在面板手动关掉仍然有效。
         merged[@"blockStatCashTelemetry"] = @YES;
@@ -875,7 +875,7 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 }
 
 
-#pragma mark - 写盘统一（10.01.30）
+#pragma mark - 写盘统一（10.01.31）
 //
 // 背景：百度极速会把「上一次读到的设备信息」缓存到容器 plist。
 //       插件只钩运行时返回值时，plist 里仍留着旧值 / 真机值，
@@ -993,7 +993,7 @@ static void BDSIDMapBuild(void) {
 
 // ── ① 用公开 API 写盘（不碰文件）────────────────────────────
 //
-// 教训（10.01.30 前两版实测）：
+// 教训（10.01.31 前两版实测）：
 //   · 直接 writeToFile: 重写域文件 → 和 App 内存副本打架，440 键被写成 290 个
 //   · 钩 setObject:forKey: 忽略写入 → App 写不进去，落盘也没这些键，同样丢数据
 //
@@ -4433,112 +4433,83 @@ static UIImage *BDSMakeQRCode(NSString *text, CGFloat size) {
 
 // ── 二维码全屏页（双码：内层 alipay:// 优先，外层 https 备用）──
 @interface BDSQRPage : UIViewController
-@property(nonatomic, copy) NSString *innerURL;
-@property(nonatomic, copy) NSString *outerURL;
+@property(nonatomic, copy) NSString *qrText;
+@property(nonatomic, copy) NSString *label;
 @end
 @implementation BDSQRPage
+- (BOOL)prefersStatusBarHidden { return YES; }
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.whiteColor;
 
     CGRect screen = UIScreen.mainScreen.bounds;
     CGFloat W = screen.size.width;
-    UIScrollView *sv = [[UIScrollView alloc] initWithFrame:screen];
-    sv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [self.view addSubview:sv];
+    CGFloat H = screen.size.height;
 
-    CGFloat y = 50.0;
-    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(12, y, W - 24, 28)];
-    title.text = @"支付宝授权";
-    title.font = [UIFont boldSystemFontOfSize:20];
-    title.textAlignment = NSTextAlignmentCenter;
-    [sv addSubview:title];
-    y += 34;
+    // 尽量把整屏都给二维码：顶部只留一行标签，底部只留一个关闭按钮
+    CGFloat top = 34.0;
+    CGFloat bottom = 62.0;
+    CGFloat side = MIN(W, H - top - bottom) - 8.0;
 
-    UILabel *tip = [[UILabel alloc] initWithFrame:CGRectMake(12, y, W - 24, 40)];
-    tip.text = @"先扫上面的（内层指令）；不行再试下面的（网页中转）。\n链接有时效，弹出来就赶紧扫。";
-    tip.font = [UIFont systemFontOfSize:13];
-    tip.textColor = UIColor.darkGrayColor;
-    tip.numberOfLines = 0;
-    tip.textAlignment = NSTextAlignmentCenter;
-    [sv addSubview:tip];
-    y += 46;
+    UIImage *qr = BDSMakeQRCode(self.qrText ?: @"", side);
 
-    // 两个二维码并排
-    CGFloat gap = 10.0;
-    CGFloat cell = (W - 24 - gap) / 2.0;
-    NSArray *labels = @[@"① 内层 alipay://", @"② 外层 https"];
-    NSArray *uris = @[self.innerURL ?: @"", self.outerURL ?: @""];
-    for (NSUInteger i = 0; i < 2; i++) {
-        NSString *u = uris[i];
-        UIImage *qr = BDSMakeQRCode(u, cell);
-        CGFloat x = 12 + i * (cell + gap);
-        UILabel *lb = [[UILabel alloc] initWithFrame:CGRectMake(x, y, cell, 20)];
-        lb.text = labels[i];
-        lb.font = [UIFont boldSystemFontOfSize:13];
-        lb.textAlignment = NSTextAlignmentCenter;
-        [sv addSubview:lb];
-        if (qr) {
-            UIImageView *iv = [[UIImageView alloc] initWithImage:qr];
-            iv.frame = CGRectMake(x, y + 22, qr.size.width, qr.size.height);
-            iv.contentMode = UIViewContentModeScaleAspectFit;
-            [sv addSubview:iv];
-        } else {
-            UILabel *er = [[UILabel alloc] initWithFrame:CGRectMake(x, y + 22, cell, 60)];
-            er.text = @"生成失败";
-            er.numberOfLines = 0;
-            er.textAlignment = NSTextAlignmentCenter;
-            [sv addSubview:er];
-        }
-        UILabel *m = [[UILabel alloc] initWithFrame:CGRectMake(x, y + 22 + cell, cell, 32)];
-        m.text = [NSString stringWithFormat:@"%lu 字符", (unsigned long)u.length];
-        m.font = [UIFont systemFontOfSize:11];
-        m.textColor = UIColor.grayColor;
-        m.textAlignment = NSTextAlignmentCenter;
-        m.numberOfLines = 2;
-        [sv addSubview:m];
+    UILabel *lb = [[UILabel alloc] initWithFrame:CGRectMake(8, 4, W - 16, 28)];
+    lb.text = self.label ?: @"";
+    lb.font = [UIFont boldSystemFontOfSize:15];
+    lb.textAlignment = NSTextAlignmentCenter;
+    [self.view addSubview:lb];
+
+    if (qr) {
+        UIImageView *iv = [[UIImageView alloc] initWithImage:qr];
+        iv.frame = CGRectMake((W - qr.size.width) / 2.0, top, qr.size.width, qr.size.height);
+        iv.contentMode = UIViewContentModeScaleAspectFit;
+        [self.view addSubview:iv];
+    } else {
+        UILabel *er = [[UILabel alloc] initWithFrame:CGRectMake(16, top + 60, W - 32, 80)];
+        er.text = @"二维码生成失败（内容太长）";
+        er.numberOfLines = 0;
+        er.textAlignment = NSTextAlignmentCenter;
+        [self.view addSubview:er];
     }
-    y += 22 + cell + 40;
-
-    // 内层链接文本（可选中复制）
-    UITextView *tv = [[UITextView alloc] initWithFrame:CGRectMake(12, y, W - 24, 130)];
-    tv.text = self.innerURL ?: @"";
-    tv.font = [UIFont systemFontOfSize:9];
-    tv.editable = NO;
-    tv.selectable = YES;
-    tv.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
-    tv.layer.cornerRadius = 8;
-    [sv addSubview:tv];
-    y += 138;
-
-    UIButton *copy = [UIButton buttonWithType:UIButtonTypeSystem];
-    copy.frame = CGRectMake(12, y, W - 24, 42);
-    copy.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
-    copy.layer.cornerRadius = 11;
-    [copy setTitle:@"复制内层链接" forState:UIControlStateNormal];
-    [copy addTarget:self action:@selector(copyTapped) forControlEvents:UIControlEventTouchUpInside];
-    [sv addSubview:copy];
-    y += 50;
 
     UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
-    close.frame = CGRectMake(12, y, W - 24, 42);
+    close.frame = CGRectMake(12, H - bottom + 6, W - 24, 46);
     close.backgroundColor = [UIColor colorWithRed:0.95 green:0.55 blue:0.10 alpha:1.0];
     close.layer.cornerRadius = 11;
     [close setTitle:@"关闭" forState:UIControlStateNormal];
     [close setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
     [close addTarget:self action:@selector(closeTapped) forControlEvents:UIControlEventTouchUpInside];
-    [sv addSubview:close];
-    y += 58;
-
-    sv.contentSize = CGSizeMake(W, y + 16);
-}
-- (void)copyTapped {
-    if (self.innerURL.length) UIPasteboard.generalPasteboard.string = self.innerURL;
+    [self.view addSubview:close];
 }
 - (void)closeTapped {
     [self dismissViewControllerAnimated:YES completion:nil];
 }
 @end
+
+// 弹二维码：整屏单个，内容越短越好扫
+static void BDSShowAuthQRCode(NSString *url) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *top = nil;
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (![scene isKindOfClass:UIWindowScene.class]) continue;
+            for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+                UIViewController *r = w.rootViewController;
+                while (r.presentedViewController) r = r.presentedViewController;
+                if (r) { top = r; break; }
+            }
+            if (top) break;
+        }
+        if (!top) return;
+
+        NSString *inner = BDSCompactJSON(BDSInnerAlipayURL(url));
+        BDSQRPage *vc = [[BDSQRPage alloc] init];
+        vc.qrText = inner;
+        vc.label = [NSString stringWithFormat:@"%lu 字符 · 用另一台手机支付宝扫",
+                    (unsigned long)inner.length];
+        vc.modalPresentationStyle = UIModalPresentationFullScreen;
+        [top presentViewController:vc animated:YES completion:nil];
+    });
+}
 
 // 弹二维码：内层 alipay:// 优先，外层 https 备用
 static void BDSShowAuthQRCode(NSString *url) {
@@ -5463,7 +5434,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.30";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.31";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;

@@ -1,1 +1,1 @@
-fix: 给 BDSIsAlipayAuthURL / BDSShowAuthQRCode 加前向声明（openURL 钩子在它们定义之前）
+fix: 删掉重复的 BDSQRPage 定义（10.01.29 的旧版没替换干净）
