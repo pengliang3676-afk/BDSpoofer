@@ -302,7 +302,7 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
     return v ? [v integerValue] : def;
 }
 
-// ── 10.01.36 写盘统一：前向声明（定义在下方「写盘统一」段）──
+// ── 10.01.37 写盘统一：前向声明（定义在下方「写盘统一」段）──
 static void BDSIDMapBuild(void);      // 由配置重建「容器键 → 假身份值」映射
 static void BDSIDWriteViaAPI(void);   // 用公开 API 写入统一值（cfprefsd 落盘）
 static void BDSUnifyIdentity(void);   // 建表 + 写盘 + 装钩子
@@ -677,7 +677,7 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 187 || !loaded[@"blockStatCashTelemetry"] || loaded[@"spoofStatCash"]) {
-        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.36 起默认开启。旧试验键不继承。
+        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.37 起默认开启。旧试验键不继承。
         merged[@"configVersion"] = @187;
         if (!loaded[@"blockStatCashTelemetry"]) merged[@"blockStatCashTelemetry"] = @YES;
         [merged removeObjectForKey:@"spoofStatCash"];
@@ -703,7 +703,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.01.36：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
+        // 10.01.37：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
         // 光改默认值救不了，必须强制写一次 @YES 并落盘；只执行一次，
         // 用户之后在面板手动关掉仍然有效。
         merged[@"blockStatCashTelemetry"] = @YES;
@@ -877,7 +877,7 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 }
 
 
-#pragma mark - 写盘统一（10.01.36）
+#pragma mark - 写盘统一（10.01.37）
 //
 // 背景：百度极速会把「上一次读到的设备信息」缓存到容器 plist。
 //       插件只钩运行时返回值时，plist 里仍留着旧值 / 真机值，
@@ -995,7 +995,7 @@ static void BDSIDMapBuild(void) {
 
 // ── ① 用公开 API 写盘（不碰文件）────────────────────────────
 //
-// 教训（10.01.36 前两版实测）：
+// 教训（10.01.37 前两版实测）：
 //   · 直接 writeToFile: 重写域文件 → 和 App 内存副本打架，440 键被写成 290 个
 //   · 钩 setObject:forKey: 忽略写入 → App 写不进去，落盘也没这些键，同样丢数据
 //
@@ -4117,13 +4117,22 @@ static unsigned int bds_my_if_nametoindex(const char *name) {
 }
 
 static int bds_my_getifaddrs(struct ifaddrs **ifap) {
-    int result = orig_getifaddrs(ifap);
-    if (result != 0 || !ifap || !*ifap) {
+    // ★ 判空保护：rebinding 没抓到符号时 orig_getifaddrs 是 NULL，
+    //   直接跳 NULL 会 EXC_BAD_ACCESS@0x0（其他 hook 都有这条，这里漏了）。
+    if (!orig_getifaddrs) { errno = ENOSYS; return -1; }
+
+    // ★ iOS 的 getifaddrs 整条链表 = 一个 malloc 块，freeifaddrs 只认基址。
+    //   所以先拿基址 base，在 base 上做遮蔽/摘链，摘链后把
+    //   (head -> base) 登记进 map，freeifaddrs 时按基址释放一次。
+    struct ifaddrs *base = NULL;
+    int result = orig_getifaddrs(&base);
+    if (result != 0 || !ifap || !base) {
         BDS_DIAG_RECORD(g_diagLocalIP, BDSDiagStatePassed);
         return result;
     }
     if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofLocalIPC)) {
         BDS_DIAG_RECORD(g_diagLocalIP, BDSDiagStatePassed);
+        *ifap = base;
         return result;
     }
     // 纯拦截：不生成任何假 IP，只把 en0 的地址项标记为未指定（查不到）。
@@ -4131,7 +4140,7 @@ static int bds_my_getifaddrs(struct ifaddrs **ifap) {
     // 而是让"本机本地 IP"这条读取路径拿不到值。
     // 调用方仍可按原约定 freeifaddrs() 释放完整链表。
     int modified = 0;
-    for (struct ifaddrs *ifa = *ifap; ifa; ifa = ifa->ifa_next) {
+    for (struct ifaddrs *ifa = base; ifa; ifa = ifa->ifa_next) {
         if (!ifa->ifa_name || !ifa->ifa_addr) continue;
         if (strcmp(ifa->ifa_name, "en0") != 0) continue;
         sa_family_t family = ifa->ifa_addr->sa_family;
@@ -4145,16 +4154,28 @@ static int bds_my_getifaddrs(struct ifaddrs **ifap) {
     // ★ 网络层伪装：把 utun/tun/tap/ppp 这类隧道网卡从链表里摘掉。
     // 百度会遍历 en0 / pdp_ip0 / utun0 取 IP，utun0 就是 VPN 隧道，
     // 越狱环境（Dopamine/RootHide）下通常存在，藏不住就会被记一笔。
-    BDSNetSpoofFilterIfaddrs(ifap);
+    // 只改链不 free；摘过头节点就把 (head -> base) 登记，登记失败宁可
+    // 放弃摘链返回基址 —— 绝不崩。
+    struct ifaddrs *head = base;
+    BDSNetSpoofFilterIfaddrs(&head);
+    if (head != base) {
+        if (!BDSNetSpoofMapPut(base, head)) {
+            BDS_DIAG_RECORD(g_diagLocalIP, modified ? BDSDiagStateChanged : BDSDiagStatePassed);
+            *ifap = base;
+            return result;
+        }
+    }
+    *ifap = head;
     BDS_DIAG_RECORD(g_diagLocalIP, modified ? BDSDiagStateChanged : BDSDiagStatePassed);
     return result;
 }
 
 static void bds_my_freeifaddrs(struct ifaddrs *ifa) {
-    // 先释放「隧道网卡过滤」摘下来的那些节点，再交给系统释放主链。
-    // 顺序不能反：摘下来的节点已经不在主链里了，系统不会碰到它们。
-    BDSNetSpoofReleaseDetached();
-    if (orig_freeifaddrs) orig_freeifaddrs(ifa);
+    // 把摘链后的头指针翻译回基址，再交给系统一次性释放整块。
+    // 摘下来的节点和主链在同一个 malloc 块里，随基址一起释放，
+    // 绝不能逐个 free（那是非法释放，会 malloc 断言直接崩）。
+    struct ifaddrs *base = BDSNetSpoofMapTake(ifa);
+    if (orig_freeifaddrs) orig_freeifaddrs(base ? base : ifa);
 }
 
 
@@ -5243,7 +5264,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.36";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.37";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;

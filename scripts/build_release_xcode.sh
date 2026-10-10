@@ -7,11 +7,11 @@ BDS_COMMON=(-isysroot "$BDS_SDK" -miphoneos-version-min=15.0 -fobjc-arc -fblocks
 BDS_FRAMEWORKS=(-framework Foundation -framework UIKit -framework CoreGraphics -framework AdSupport -framework CoreTelephony -framework Security -framework WebKit -framework SystemConfiguration -framework CoreLocation -framework Contacts -framework EventKit -framework CoreImage)
 mkdir -p build-ui1 dist-ui1
 for BDS_ARCH in arm64 arm64e; do
-    xcrun --sdk iphoneos clang -arch "$BDS_ARCH" "${BDS_COMMON[@]}" "${BDS_FRAMEWORKS[@]}" -dynamiclib -install_name @rpath/BDSpoofer_1.8.1_UI1.3_10.01.36.dylib BDSpoofer.m -o "build-ui1/BDSpoofer_$BDS_ARCH.dylib"
+    xcrun --sdk iphoneos clang -arch "$BDS_ARCH" "${BDS_COMMON[@]}" "${BDS_FRAMEWORKS[@]}" -dynamiclib -install_name @rpath/BDSpoofer_1.8.1_UI1.3_10.01.37.dylib BDSpoofer.m -o "build-ui1/BDSpoofer_$BDS_ARCH.dylib"
     xcrun --sdk iphoneos clang -arch "$BDS_ARCH" "${BDS_COMMON[@]}" -framework Foundation -framework UIKit -framework CoreGraphics CraneManager/BDSCraneManager.m -o "build-ui1/BDSCraneManager_$BDS_ARCH"
 done
-lipo -create build-ui1/BDSpoofer_arm64.dylib build-ui1/BDSpoofer_arm64e.dylib -output dist-ui1/BDSpoofer_1.8.1_UI1.3_10.01.36.dylib
-codesign --force --sign - --timestamp=none dist-ui1/BDSpoofer_1.8.1_UI1.3_10.01.36.dylib
+lipo -create build-ui1/BDSpoofer_arm64.dylib build-ui1/BDSpoofer_arm64e.dylib -output dist-ui1/BDSpoofer_1.8.1_UI1.3_10.01.37.dylib
+codesign --force --sign - --timestamp=none dist-ui1/BDSpoofer_1.8.1_UI1.3_10.01.37.dylib
 BDS_APP=build-ui1/package/Applications/BDSCraneManager.app
 mkdir -p "$BDS_APP" build-ui1/package/Library/libSandy build-ui1/package/DEBIAN build-ui1/deb
 lipo -create build-ui1/BDSCraneManager_arm64 build-ui1/BDSCraneManager_arm64e -output "$BDS_APP/BDSCraneManager"
@@ -23,19 +23,19 @@ codesign --force --sign - --timestamp=none --entitlements CraneManager/BDSCraneM
 printf '2.0\n' > build-ui1/deb/debian-binary
 COPYFILE_DISABLE=1 tar -C build-ui1/package/DEBIAN -czf build-ui1/deb/control.tar.gz .
 COPYFILE_DISABLE=1 tar -C build-ui1/package --exclude='./DEBIAN' -czf build-ui1/deb/data.tar.gz .
-(cd build-ui1/deb && ar -rc ../../dist-ui1/BDSpooferCraneManager_1.0.3-ui1_10.01.36_RootHide.deb debian-binary control.tar.gz data.tar.gz)
-codesign --verify --strict dist-ui1/BDSpoofer_1.8.1_UI1.3_10.01.36.dylib
+(cd build-ui1/deb && ar -rc ../../dist-ui1/BDSpooferCraneManager_1.0.3-ui1_10.01.37_RootHide.deb debian-binary control.tar.gz data.tar.gz)
+codesign --verify --strict dist-ui1/BDSpoofer_1.8.1_UI1.3_10.01.37.dylib
 codesign --verify --strict "$BDS_APP"
-lipo -info dist-ui1/BDSpoofer_1.8.1_UI1.3_10.01.36.dylib
+lipo -info dist-ui1/BDSpoofer_1.8.1_UI1.3_10.01.37.dylib
 lipo -info "$BDS_APP/BDSCraneManager"
-otool -hv dist-ui1/BDSpoofer_1.8.1_UI1.3_10.01.36.dylib
-otool -L dist-ui1/BDSpoofer_1.8.1_UI1.3_10.01.36.dylib
-ar -t dist-ui1/BDSpooferCraneManager_1.0.3-ui1_10.01.36_RootHide.deb
+otool -hv dist-ui1/BDSpoofer_1.8.1_UI1.3_10.01.37.dylib
+otool -L dist-ui1/BDSpoofer_1.8.1_UI1.3_10.01.37.dylib
+ar -t dist-ui1/BDSpooferCraneManager_1.0.3-ui1_10.01.37_RootHide.deb
 tar -tzf build-ui1/deb/data.tar.gz
 cp RELEASE_UI1.md bdspoofer_config.plist dist-ui1/
-cp dist-ui1/BDSpoofer_1.8.1_UI1.3_10.01.36.dylib "dist-ui1/鍗愯В_1.8.1_UI1.3_10.01.36.dylib"
-cp dist-ui1/BDSpooferCraneManager_1.0.3-ui1_10.01.36_RootHide.deb "dist-ui1/鍗嶈В_1.0.2_UI1.3_10.01.36_RootHide.deb"
+cp dist-ui1/BDSpoofer_1.8.1_UI1.3_10.01.37.dylib "dist-ui1/鍗愯В_1.8.1_UI1.3_10.01.37.dylib"
+cp dist-ui1/BDSpooferCraneManager_1.0.3-ui1_10.01.37_RootHide.deb "dist-ui1/鍗嶈В_1.0.2_UI1.3_10.01.37_RootHide.deb"
 # 浜や粯鍛藉悕锛歁 = 鎻掍欢 dylib锛孹 = 绠＄悊鍣?deb锛岀増鏈彿閫掑
-cp dist-ui1/BDSpoofer_1.8.1_UI1.3_10.01.36.dylib "dist-ui1/M-10.01.36.dylib"
-cp dist-ui1/BDSpooferCraneManager_1.0.3-ui1_10.01.36_RootHide.deb "dist-ui1/X-10.01.36.deb"
-(cd dist-ui1 && shasum -a 256 M-10.01.36.dylib X-10.01.36.deb BDSpoofer_1.8.1_UI1.3_10.01.36.dylib BDSpooferCraneManager_1.0.3-ui1_10.01.36_RootHide.deb > SHA256SUMS.txt)
+cp dist-ui1/BDSpoofer_1.8.1_UI1.3_10.01.37.dylib "dist-ui1/M-10.01.37.dylib"
+cp dist-ui1/BDSpooferCraneManager_1.0.3-ui1_10.01.37_RootHide.deb "dist-ui1/X-10.01.37.deb"
+(cd dist-ui1 && shasum -a 256 M-10.01.37.dylib X-10.01.37.deb BDSpoofer_1.8.1_UI1.3_10.01.37.dylib BDSpooferCraneManager_1.0.3-ui1_10.01.37_RootHide.deb > SHA256SUMS.txt)

@@ -40,6 +40,7 @@
 #import <fcntl.h>
 #import <limits.h>
 #import <stdarg.h>
+#import <pthread.h>
 #import <notify.h>
 
 #pragma mark - 配置
@@ -108,7 +109,6 @@ static int BDSNetSpoofResolvConf(char *out, size_t cap) {
 #pragma mark - 对外接口（宿主与模块内部共用）
 
 void BDSNetSpoofFilterIfaddrs(struct ifaddrs **ifap);
-void BDSNetSpoofReleaseDetached(void);
 const char *BDSNetSpoofResolvPath(void);
 int  BDSNetSpoofIsResolvConf(const char *path);
 int  BDSNetSpoofInterfaceVisible(const char *name);
@@ -142,24 +142,86 @@ static int   (*BDSNetSpoof_orig_open)(const char *, int, ...) = NULL;
 static int   (*BDSNetSpoof_orig_openat)(int, const char *, int, ...) = NULL;
 static FILE *(*BDSNetSpoof_orig_fopen)(const char *, const char *) = NULL;
 
-#pragma mark - getifaddrs / freeifaddrs
+#pragma mark - getifaddrs / freeifaddrs（单块分配安全版）
 
-// 摘下来的节点留在这里，等 freeifaddrs 统一释放。
-// 不能就地 free —— 调用方还要拿这条链表去 freeifaddrs，链表被破坏就会崩。
-static struct ifaddrs *g_bdsNetDetached = NULL;
+// ══════════════════════════════════════════════════════════════════════
+// ★ iOS 的 getifaddrs 把整条链表放在【一个 malloc 块】里（Libinfo 源码）：
+//      data = malloc(sizeof(struct ifaddrs) * icnt + dcnt + ncnt);
+//      ift  = (ift->ifa_next = ift + 1);          ← 节点靠指针算术串联
+//      freeifaddrs(ifp) { free(ifp); }            ← 只接受基址，只释放一次
+//   所以「摘下来的节点」绝不能逐个 free —— 那是非法释放（malloc 断言 → abort）。
+//   正确做法：摘链只改 ifa_next 指针；释放时把调用方传回的头指针
+//   翻译回【基址】，按基址释放一次。摘下的节点随整块一起释放。
+//   （10.01.35/36 的崩溃日志：BDSNetSpoofReleaseDetached -> bds_my_freeifaddrs
+//     -> find_zone_and_free -> malloc_report -> abort，就是踩了这个。）
+// ══════════════════════════════════════════════════════════════════════
+
+// 头指针 → 基址 映射表（多线程下 getifaddrs/freeifaddrs 会并发，必须加锁）
+#define BDS_NET_MAP_MAX 64
+static pthread_mutex_t g_bdsNetMapLock = PTHREAD_MUTEX_INITIALIZER;
+static struct { struct ifaddrs *head; struct ifaddrs *base; }
+    g_bdsNetMap[BDS_NET_MAP_MAX];
+
+/// 登记 head→base。成功返回 1；表满或参数非法返回 0。
+/// 返回 0 时调用方必须放弃摘链（把基址原样返回），绝不崩。
+int BDSNetSpoofMapPut(struct ifaddrs *base, struct ifaddrs *head) {
+    if (!base || !head) return 0;
+    pthread_mutex_lock(&g_bdsNetMapLock);
+    for (int i = 0; i < BDS_NET_MAP_MAX; i++) {
+        if (g_bdsNetMap[i].head == NULL) {
+            g_bdsNetMap[i].head = head;
+            g_bdsNetMap[i].base = base;
+            pthread_mutex_unlock(&g_bdsNetMapLock);
+            return 1;
+        }
+    }
+    pthread_mutex_unlock(&g_bdsNetMapLock);
+    return 0;
+}
+
+/// 用调用方传回的指针（我们摘链后返回的 head）查出基址，并清除登记。
+/// 没登记（可能是别的代码自己 malloc 的链表，或 head==base 没摘链）
+/// 返回 NULL —— 调用方必须原样传 ifa。
+struct ifaddrs *BDSNetSpoofMapTake(struct ifaddrs *ifa) {
+    if (!ifa) return NULL;
+    pthread_mutex_lock(&g_bdsNetMapLock);
+    for (int i = 0; i < BDS_NET_MAP_MAX; i++) {
+        if (g_bdsNetMap[i].head == ifa) {
+            struct ifaddrs *base = g_bdsNetMap[i].base;
+            g_bdsNetMap[i].head = NULL;
+            g_bdsNetMap[i].base = NULL;
+            pthread_mutex_unlock(&g_bdsNetMapLock);
+            return base;
+        }
+    }
+    pthread_mutex_unlock(&g_bdsNetMapLock);
+    return NULL;
+}
 
 static int BDSNetSpoof_getifaddrs(struct ifaddrs **ifap) {
     if (!BDSNetSpoof_orig_getifaddrs) { errno = ENOSYS; return -1; }
-    int r = BDSNetSpoof_orig_getifaddrs(ifap);
-    if (r != 0 || !ifap || !*ifap) return r;
-    BDSNetSpoofFilterIfaddrs(ifap);
+    struct ifaddrs *base = NULL;
+    int r = BDSNetSpoof_orig_getifaddrs(&base);
+    if (r != 0 || !ifap || !base) return r;
+    struct ifaddrs *head = base;
+    BDSNetSpoofFilterIfaddrs(&head);
+    if (head != base) {
+        if (!BDSNetSpoofMapPut(base, head)) {
+            // 登记失败（表满）：放弃这次摘链，返回基址 —— 宁可少藏一次，不可崩
+            *ifap = base;
+            return r;
+        }
+    }
+    *ifap = head;
     return r;
 }
 
 static void BDSNetSpoof_freeifaddrs(struct ifaddrs *ifa) {
-    // 先把摘下来的节点释放掉，再让系统释放主链
-    BDSNetSpoofReleaseDetached();
-    if (BDSNetSpoof_orig_freeifaddrs) BDSNetSpoof_orig_freeifaddrs(ifa);
+    // 把摘链后的头指针翻译回基址；翻译不到就原样释放。
+    // 摘下来的节点不在这里 free —— 它们和整条链表在同一个块里，
+    // 随基址释放一次，天然无泄漏、无非法释放。
+    struct ifaddrs *base = BDSNetSpoofMapTake(ifa);
+    if (BDSNetSpoof_orig_freeifaddrs) BDSNetSpoof_orig_freeifaddrs(base ? base : ifa);
 }
 
 static unsigned int BDSNetSpoof_if_nametoindex(const char *name) {
@@ -177,12 +239,10 @@ static unsigned int BDSNetSpoof_if_nametoindex(const char *name) {
 
 #pragma mark - 隧道网卡过滤（getifaddrs 摘链）
 
-// 摘下来的节点留在 g_bdsNetDetached（变量本体定义在上面的 getifaddrs 段），
-// 等 freeifaddrs 统一释放。不能就地 free —— 调用方还要拿这条链表去
-// freeifaddrs，链表被破坏就会崩。
-
 /// 把隧道网卡（utun/tun/tap/ppp/...）从链表里摘掉。
 /// 宿主在 bds_my_getifaddrs 末尾调用。
+/// ★ 只改 ifa_next 指针，绝不 free 任何节点 —— 整条链表是一个 malloc 块，
+///   摘下来的节点随基址释放（见上方 map 机制），free 内部指针会崩。
 void BDSNetSpoofFilterIfaddrs(struct ifaddrs **ifap) {
     if (!ifap || !*ifap) return;
     if (!g_bdsNetCfg.enabled || !g_bdsNetCfg.hideVPN) return;
@@ -194,8 +254,7 @@ void BDSNetSpoofFilterIfaddrs(struct ifaddrs **ifap) {
             struct ifaddrs *next = cur->ifa_next;
             if (prev) prev->ifa_next = next;
             else *ifap = next;
-            cur->ifa_next = g_bdsNetDetached;   // 挂到待释放链
-            g_bdsNetDetached = cur;
+            cur->ifa_next = NULL;   // 摘下的节点不再被遍历；整块随基址释放
             cur = next;
             continue;
         }
@@ -204,25 +263,23 @@ void BDSNetSpoofFilterIfaddrs(struct ifaddrs **ifap) {
     }
 }
 
-/// 释放摘下来的那些节点。宿主在 bds_my_freeifaddrs 里先调这个，再交系统释放主链。
-void BDSNetSpoofReleaseDetached(void) {
-    struct ifaddrs *p = g_bdsNetDetached;
-    while (p) {
-        struct ifaddrs *n = p->ifa_next;
-        free(p);
-        p = n;
-    }
-    g_bdsNetDetached = NULL;
-}
-
 #pragma mark - /etc/resolv.conf 接管
 
 /// 懒加载：第一次用到时把假内容写进 App 的 tmp 目录，之后复用同一个文件。
+/// 用 mutex 保护初始化：多线程并发 open(resolv.conf) 时不能读到写了一半的路径。
 const char *BDSNetSpoofResolvPath(void) {
     static char cachedPath[PATH_MAX] = {0};
     static int tried = 0;
-    if (tried) return cachedPath[0] ? cachedPath : NULL;
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
+    pthread_mutex_lock(&lock);
+    if (tried) {
+        const char *out = cachedPath[0] ? cachedPath : NULL;
+        pthread_mutex_unlock(&lock);
+        return out;
+    }
     tried = 1;
+    pthread_mutex_unlock(&lock);
 
     const char *tmp = getenv("TMPDIR");
     if (!tmp || !tmp[0]) tmp = "/tmp";
@@ -240,7 +297,10 @@ const char *BDSNetSpoofResolvPath(void) {
     close(fd);
     chmod(tmpl, 0644);
 
+    // 先写局部完成，再一次发布，读方拿到的永远是完整路径
+    pthread_mutex_lock(&lock);
     strncpy(cachedPath, tmpl, sizeof(cachedPath) - 1);
+    pthread_mutex_unlock(&lock);
     return cachedPath;
 }
 
@@ -422,15 +482,13 @@ static NSString *BDSNetSpoofDiagnosticsBody(void) {
         [r appendString:@"\n"];
     }
 
-    // 走插件 hook 再读一次 —— App 实际看到的就是这个
-    // （open 已被 bds_my_open 接管，这里读的是假文件）
+    // App 实际看到的：直接读模块生成的假文件（open 已被 bds_my_open 接管，
+    // 百度 open(/etc/resolv.conf) 拿到的就是这个文件的内容）
     BOOL resolvHooked = BDSNetSpoofIsResolvConf("/etc/resolv.conf");
-    FILE *fp = BDSNetSpoof_orig_fopen ? BDSNetSpoof_orig_fopen("/etc/resolv.conf", "r") : NULL;
-    if (fp) {
-        char seen[512] = {0};
-        size_t got = fread(seen, 1, sizeof(seen) - 1, fp);
-        seen[got] = '\0';
-        fclose(fp);
+    const char *fakePath = BDSNetSpoofResolvPath();
+    char seen[512] = {0};
+    int seenLen = fakePath ? BDSNetSpoofRawRead(fakePath, seen, sizeof(seen)) : -1;
+    if (seenLen >= 0) {
         char fakeNS[6][64] = {{0}};
         int fakeCount = BDSNetSpoofParseNameservers(seen, fakeNS, 6);
         [r appendString:@"  App 看到："];
@@ -440,7 +498,7 @@ static NSString *BDSNetSpoofDiagnosticsBody(void) {
         }
         [r appendString:@"\n"];
     } else {
-        [r appendString:@"  App 看到：读取失败\n"];
+        [r appendString:@"  App 看到：假文件创建失败\n"];
     }
 
     // 判定
@@ -448,12 +506,11 @@ static NSString *BDSNetSpoofDiagnosticsBody(void) {
         [r appendString:@"  → 未生效（DNS 伪造开关是关的）\n"];
     } else if (!resolvHooked) {
         [r appendString:@"  → ★未生效（路径判定没通过）\n"];
-    } else if (realCount > 0 && realCount == 0) {
-        [r appendString:@"  → ?\n"];
+    } else if (!fakePath) {
+        [r appendString:@"  → ★假文件没建成（mkstemp 失败）\n"];
     } else {
-        const char *fakePath = BDSNetSpoofResolvPath();
         [r appendFormat:@"  → 已生效；假文件：%@\n",
-            fakePath ? [NSString stringWithUTF8String:fakePath] : @"（创建失败！）"];
+            [NSString stringWithUTF8String:fakePath]];
     }
 
     // ── ② 网卡 ──
