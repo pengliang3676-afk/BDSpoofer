@@ -104,6 +104,15 @@ static int BDSNetSpoofResolvConf(char *out, size_t cap) {
     return lines;
 }
 
+#pragma mark - 对外接口（宿主与模块内部共用）
+
+static void BDSNetSpoofFilterIfaddrs(struct ifaddrs **ifap);
+static void BDSNetSpoofReleaseDetached(void);
+static const char *BDSNetSpoofResolvPath(void);
+static int  BDSNetSpoofIsResolvConf(const char *path);
+static int  BDSNetSpoofInterfaceVisible(const char *name);
+static int  BDSNetSpoofIsTunnelInterface(const char *name);
+
 #pragma mark - 隧道网卡判定
 
 static int BDSNetSpoofIsTunnelInterface(const char *name) {
@@ -356,16 +365,17 @@ static void BDSNetSpoofLoadFromConfig(void) {
 
 #pragma mark - 独立运行入口
 
-// 由本模块自己的初始化函数指针调用（宿主提供）
-static void (*BDSNetSpoofRebindFn)(const BDSNetSpoofHook *, size_t) = NULL;
-
-/// 宿主调用：把本模块的 hook 表交给宿主的 rebinding 实现，并载入配置。
-/// 宿主侧只需要：BDSNetSpoofStart(^(const BDSNetSpoofHook *t, size_t n){ ...填表... });
-static void BDSNetSpoofStart(void (*rebind)(const BDSNetSpoofHook *, size_t)) {
-    if (!rebind) return;
+/// 宿主调用：载入配置（开关 + DNS 列表）。
+/// hook 表由宿主自己在 rebinding 表里登记（见 BDSNetSpoofHookTable），
+/// 这里不做回调，避免 block / 函数指针签名不一致的麻烦。
+static void BDSNetSpoofStart(void) {
     BDSNetSpoofLoadFromConfig();
-    BDSNetSpoofRebindFn = rebind;
-    rebind(BDSNetSpoofHookTable, BDSNetSpoofHookCount);
+}
+
+/// hook 表的只读访问（宿主想遍历登记时用）
+static const BDSNetSpoofHook *BDSNetSpoofHooks(size_t *countOut) {
+    if (countOut) *countOut = BDSNetSpoofHookCount;
+    return BDSNetSpoofHookTable;
 }
 
 /// 配置变了（卍解改了 plist）时调一下，重新读取开关。

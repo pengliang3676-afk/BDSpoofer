@@ -4649,10 +4649,7 @@ static void installCHooks(void) {
     // ★ 网络层伪装：载入开关（netSpoofEnabled / netSpoofDNS / netSpoofHideVPN）
     //   并自定义 DNS 服务器列表。hook 已经在上面那张表里装好了，
     //   这里只是把配置读进来 —— 判定入口每次都看配置，改完不用重启。
-    BDSNetSpoofStart(^(const BDSNetSpoofHook *table, size_t n) {
-        // 表里的 hook 已经在上面手工登记过了；这里只负责载入配置。
-        (void)table; (void)n;
-    });
+    BDSNetSpoofStart();
 }
 
 #pragma mark - 悬浮配置入口
