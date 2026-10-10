@@ -30,6 +30,7 @@
 #import <arpa/inet.h>
 #import <sys/socket.h>
 #import <sys/stat.h>
+#import <dlfcn.h>
 #import <netinet/in.h>
 #import <string.h>
 #import <stdlib.h>
@@ -39,7 +40,6 @@
 #import <fcntl.h>
 #import <limits.h>
 #import <stdarg.h>
-#import <sys/syscall.h>
 #import <notify.h>
 
 #pragma mark - 配置
@@ -319,11 +319,25 @@ static const size_t BDSNetSpoofHookCount =
 
 #pragma mark - 自检报告
 
-// 读真实文件用的原函数（绕开插件自己的 hook）：直接用 syscall 级 open
+// 读真实文件用的原函数（绕开插件自己的 hook）。
+// 用 dlsym(RTLD_NEXT, "open") 拿 libc 真身：
+//   · 不走 GOT，所以 fishhook 换不掉它
+//   · 比 syscall(SYS_open, ...) 安全 —— iOS 上直接发系统调用可能触发 SIGSYS
+//     （那是直接崩，不是返回错误），自检不该冒这个险
 static int BDSNetSpoofRawRead(const char *path, char *out, size_t cap) {
-    if (!out || cap == 0) return -1;
+    if (!path || !out || cap == 0) return -1;
     out[0] = '\0';
-    int fd = (int)syscall(SYS_open, path, O_RDONLY, 0);
+
+    static int (*realOpen)(const char *, int, ...) = NULL;
+    static int tried = 0;
+    if (!tried) {
+        tried = 1;
+        realOpen = (int (*)(const char *, int, ...))dlsym(RTLD_NEXT, "open");
+        if (!realOpen) realOpen = (int (*)(const char *, int, ...))dlsym(RTLD_DEFAULT, "open");
+    }
+    if (!realOpen) return -1;
+
+    int fd = realOpen(path, O_RDONLY);
     if (fd < 0) return -1;
     ssize_t n = read(fd, out, cap - 1);
     close(fd);
@@ -361,7 +375,19 @@ static int BDSNetSpoofParseNameservers(const char *text, char out[][64], int max
 }
 
 /// 网络层伪装自检报告。返回一段可以直接显示的多行文本。
+/// 整个函数包在 @try 里：自检是用来查问题的，自己绝不能把 App 搞崩。
+static NSString *BDSNetSpoofDiagnosticsBody(void);
+
 static NSString *BDSNetSpoofDiagnostics(void) {
+    @try {
+        return BDSNetSpoofDiagnosticsBody();
+    } @catch (NSException *e) {
+        return [NSString stringWithFormat:@"自检自身出错（不影响插件功能）：\n  %@\n  %@",
+                e.name ?: @"?", e.reason ?: @"?"];
+    }
+}
+
+static NSString *BDSNetSpoofDiagnosticsBody(void) {
     NSMutableString *r = [NSMutableString string];
 
     [r appendString:@"【当前状态】\n"];
@@ -379,7 +405,7 @@ static NSString *BDSNetSpoofDiagnostics(void) {
     // ── ① DNS ──
     [r appendString:@"\n【DNS】\n"];
 
-    // 真值：syscall 直接读，绕开插件 hook
+    // 真值：dlsym(RTLD_NEXT) 拿的 libc open 直接读，绕开插件 hook
     char real[512] = {0};
     int realLen = BDSNetSpoofRawRead("/etc/resolv.conf", real, sizeof(real));
     char realNS[6][64] = {{0}};
@@ -461,7 +487,7 @@ static NSString *BDSNetSpoofDiagnostics(void) {
         [r appendString:@"  → 百度遍历时拿不到上面「已隐藏」那几块\n"];
     }
 
-    [r appendString:@"\n说明：真机 DNS 用 syscall 直读，App 看到的是走插件 hook 的结果；\n"];
+    [r appendString:@"\n说明：真机 DNS 用 dlsym(RTLD_NEXT) 直读，App 看到的是走插件 hook 的结果；\n"];
     [r appendString:@"两边不一样就说明生效了。"];
     return r;
 }
