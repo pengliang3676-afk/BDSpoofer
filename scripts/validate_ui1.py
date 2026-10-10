@@ -9,16 +9,14 @@ release=(root/'RELEASE_UI1.md').read_text(encoding='utf-8')
 build=(root/'scripts/build_release_xcode.sh').read_text(encoding='utf-8')
 config=plistlib.loads((root/'bdspoofer_config.plist').read_bytes())
 items=re.findall(r'@\{@"key":@"([^"]+)",@"name":@"[^"]+"(,@"off":@YES)?\}',policy)
-assert len(items)==30
+assert len(items)==27
 regular=[key for key,off in items if not off];risk=[key for key,off in items if off]
-assert len(regular)==25 and len(risk)==5
+assert len(regular)==22 and len(risk)==5
 assert all(config[k] is True for k in regular)
 assert all(config[k] is False for k in risk)
 assert config['bypassJailbreakDetect'] is False  # 10.01.01 起默认关闭
-assert config['spoofScreen'] is False and config['configVersion']==193
-assert config['blockStatCashTelemetry'] is True  # 10.01.39 起默认开启
-assert config['netSpoofEnabled'] is True and config['netSpoofDNS'] is True
-assert config['netSpoofHideVPN'] is True  # 10.01.39 起默认开启
+assert config['spoofScreen'] is False and config['configVersion']==194
+assert config['blockStatCashTelemetry'] is True  # 10.01.40 起默认开启
 assert 'blockStatCashTelemetry' in policy and 'blockStatCashTelemetry' in plugin
 assert '收益上报：已开启' in plugin and '? @"已开启" : @"已关闭"' in plugin
 assert all(config['spoofBaiduTargeted'+x] is False for x in ['', 'System','Model','Screen','UA','Push'])
@@ -29,7 +27,7 @@ for text in ['基础功能：当前功能状态 %@','高级功能：已开启','
 assert '百度身份参数 · 系统硬件参数 · 防越狱检测' not in plugin
 assert '已开启（%lu 项）' not in plugin
 assert 'cfgStr(@"deviceProfileName", cfgStr(@"hwMachine", @"未设置"))' in plugin
-# 10.01.39 起摘要不再显示定向指纹的机型/系统详情，只显示 已执行/未执行，故此断言移除
+# 10.01.40 起摘要不再显示定向指纹的机型/系统详情，只显示 已执行/未执行，故此断言移除
 settings_ui=(root/'Shared/BDSSettingsUI.h').read_text(encoding='utf-8')
 assert 'usesCompactActionRow' in settings_ui and 'UIStackViewDistributionFillEqually' in settings_ui
 assert 'i==5 ? UIColor.systemRedColor' not in settings_ui
@@ -40,7 +38,7 @@ assert 'closeApp' not in manager and 'NSSelectorFromString(@"suspend")' not in m
 assert 'config[@"deviceProfileName"] ?: config[@"hwMachine"]' in manager
 assert 'config[@"targetedDeviceProfileName"] ?: config[@"targetedHwMachine"]' in manager
 assert 'NSString *currentSuffix = @"（当前）"' in manager and 'UIColor.systemRedColor' in manager
-assert 'page.title=@"卐解 1.8.1 UI1.3 10.01.39"' in plugin
+assert 'page.title=@"卐解 1.8.1 UI1.3 10.01.40"' in plugin
 assert 'didRandomize%@%@' in policy
 for text in ['BDSMarkRandomModeRun','BDSRandomModeWasRun','BDSConfigForPersistentStorage']:
     assert text in plugin+manager+policy,text
@@ -60,12 +58,12 @@ for text in ['h2tcbox.baidu.com','/ztbox','zpblog','10290','y_mission_index','c_
 assert 'BDSInstallCashTelemetryBlocking();' in plugin
 assert plugin.count('loadConfig();') >= 3
 assert '0.50' not in release and '触发风控' not in release
-assert 'BDSpoofer_1.8.1_UI1.3_10.01.39.dylib' in build and 'UI1.1.dylib' not in build
-assert 'BDSpooferCraneManager_1.0.3-ui1_10.01.39_RootHide.deb' in build
+assert 'BDSpoofer_1.8.1_UI1.3_10.01.40.dylib' in build and 'UI1.1.dylib' not in build
+assert 'BDSpooferCraneManager_1.0.3-ui1_10.01.40_RootHide.deb' in build
 assert 'BDSLoginDeviceDict' in plugin and 'ssologin' in plugin
 assert 'BDSPassEncryptedDi' in plugin and 'deviceInfoForLogin' in plugin
 assert 'BDSPassEnsureDVIF' in plugin and 'bds_my_uname' in plugin and '{"uname"' in plugin
-assert 'self.title = @"卍解 1.0.3 10.01.39"' in manager
+assert 'self.title = @"卍解 1.0.3 10.01.40"' in manager
 assert '[verified isEqualToDictionary:config]' in manager
 assert 'targetedScreenHwMachine' in plugin and 'targetedScreenHwMachine' in manager
 def function(text,name):
@@ -130,77 +128,12 @@ assert function(plugin,'bds_c_is_jailbreak_path')==function(base,'bds_c_is_jailb
 def strip_guards(text, name):
     body=function(text,name)
     return '\n'.join(l.strip() for l in body.splitlines() if 'if (!orig_' not in l)
-# 10.01.39 起 bds_my_fopen 属于“故意改动”的函数（新增 /etc/resolv.conf 接管，
-# 只换路径拿假文件句柄，判越狱路径那段原样保留），因此不再做整函数基线比对。
-# 改成逐条校验：越狱路径拦截必须还在，resolv.conf 接管必须存在。
-for name in ['bds_my_stat','bds_my_lstat','bds_my_access','bds_my_opendir']:
+# bds_my_stat/lstat/access/fopen/opendir（新增 orig 判空，属于纯增量加固）
+for name in ['bds_my_stat','bds_my_lstat','bds_my_access','bds_my_fopen','bds_my_opendir']:
     assert strip_guards(plugin,name)==strip_guards(base,name),name
-fopen_body=function(plugin,'bds_my_fopen')
-assert 'bds_c_is_jailbreak_path(path)' in fopen_body, 'bds_my_fopen 丢了越狱路径拦截'
-assert 'errno = ENOENT;' in fopen_body, 'bds_my_fopen 丢了 ENOENT'
-assert 'BDSNetSpoofIsResolvConf(path)' in fopen_body, 'bds_my_fopen 缺 resolv.conf 接管'
-assert 'orig_fopen(fake, mode)' in fopen_body, 'bds_my_fopen 缺假文件分流'
-# ---- 10.01.39：网络层伪装模块 ----
-net=function(plugin,'bds_my_open')
-assert 'BDSNetSpoofIsResolvConf(path)' in net, 'bds_my_open 缺 resolv.conf 接管'
-assert '(oflag & O_ACCMODE) == O_RDONLY' in net, 'bds_my_open 必须限定只读语义'
-neta=function(plugin,'bds_my_openat')
-assert 'BDSNetSpoofIsResolvConf(path)' in neta, 'bds_my_openat 缺 resolv.conf 接管'
-gia=function(plugin,'bds_my_getifaddrs')
-assert 'BDSNetSpoofFilterIfaddrs(&head);' in gia, 'getifaddrs 缺隧道网卡过滤'
-fia=function(plugin,'bds_my_freeifaddrs')
-assert 'BDSNetSpoofMapTake(ifa)' in fia, 'freeifaddrs 必须把头指针翻译回基址'
-assert 'BDSNetSpoofMapPut(' in plugin, 'getifaddrs 摘链后必须登记 head->base'
-assert 'BDSNetSpoofReleaseDetached' not in plugin, '旧的逐个 free 机制必须删干净'
-assert 'if (!orig_getifaddrs) { errno = ENOSYS; return -1; }' in plugin, 'orig_getifaddrs 缺判空'
-ini=function(plugin,'bds_my_if_nametoindex')
-assert 'BDSNetSpoofInterfaceVisible(name)' in ini, 'if_nametoindex 缺隧道网卡判定'
-assert 'errno = ENXIO;' in ini, 'if_nametoindex 应回 ENXIO'
-assert 'struct bds_rebinding rebindings[]' in plugin
-for need in ['"freeifaddrs"','"if_nametoindex"','"open"','"openat"']:
-    assert need in plugin, 'rebinding 表缺 %s' % need
-assert 'BDSNetSpoofStart(' in plugin, 'installCHooks 缺 BDSNetSpoofStart'
-module=(root/'Shared'/'NetworkSpoofer.h').read_text(encoding='utf-8')
-assert 'g_bdsNetDetached' not in module, '旧 detach 链必须删掉'
-assert 'pthread_mutex' in module, 'map 必须加锁'
-assert 'BDSNetSpoofMapPut' in module and 'BDSNetSpoofMapTake' in module, 'map 机制必须在模块里'
-assert 'BDSNetSpoofRawRead(fakePath' in module, '自检必须直读假文件'
-assert 'BDSNetSpoofRewriteDNSList' in module, '模块缺 res_9_getservers 改写'
-assert 'union res_sockaddr_union' in module, 'resolv.h 类型必须在模块里'
-assert 'BDSNetSpoofObserve' in module, '模块缺观测函数'
-assert 'BDSNetSpoofObsLogPath' in module, '模块缺观测日志路径'
-assert 'bdspoofer_net_obs.plist' in module, '观测日志文件名不对'
-assert 'bds_my_res_9_getservers' in plugin, '宿主缺 res_9_getservers hook'
-assert '"res_9_getservers"' in plugin, 'rebinding 表缺 res_9_getservers'
-assert 'BDSNetSpoofDescribeDNSList' in module, '模块缺列表描述函数'
-assert '百度实际拿到的网络参数' in module, '自检缺观测摘要'
-assert 'static int BDSNetSpoof_getifaddrs' in module
-assert 'static void BDSNetSpoof_freeifaddrs' in module
-assert 'static unsigned int BDSNetSpoof_if_nametoindex' in module
-assert 'static int BDSNetSpoof_open(' in module
-assert 'static FILE *BDSNetSpoof_fopen' in module
-assert 'BDSNetSpoofInterfaceVisible' in module and 'BDSNetSpoofIsResolvConf' in module
-# 隧道网卡前缀必须覆盖 utun（VPN）与 ppp（蜂窝拨号）
-for pfx in ['"utun"','"tun"','"tap"','"ppp"','"ipsec"']:
-    assert pfx in module, '隧道网卡前缀缺 %s' % pfx
-# 默认 DNS 必须是国内公共 DNS，且 resolv.conf 生成格式正确
-assert 'nameserver %s\\n' in module, 'resolv.conf 生成格式不对'
-assert '223.5.5.5' in module and '119.29.29.29' in module, '默认 DNS 不对'
-assert 'netSpoofEnabled' in module and 'netSpoofDNS' in module and 'netSpoofHideVPN' in module
-assert 'BDSNetSpoofDiagnostics' in module, '模块缺自检报告函数'
-assert 'BDSNetSpoofRawRead' in module, '自检必须用 syscall 直读真机 DNS'
-assert 'BDSNetSpoofParseNameservers' in module, '自检缺 nameserver 解析'
-assert 'BDSNetSpoofDiagnostics()' in plugin, '面板没调自检报告'
-assert '- (void)showNetworkSpoofTest {' in plugin, '缺自检面板实现'
-assert 'showNetworkSpoofTest];' in plugin, '自检入口没接线'
-assert '网络层伪装自检' in plugin, '自检面板没加入口'
-# 三个网络开关必须能在 plist 里读到
-cfgpol=(root/'Shared'/'BDSConfigPolicy.h').read_text(encoding='utf-8')
-for k in ['netSpoofEnabled','netSpoofDNS','netSpoofHideVPN']:
-    assert k in cfgpol, '配置策略缺 %s' % k
 for path in ['bdspoofer_config.plist','CraneManager/Info.plist','CraneManager/BDSCraneManager.entitlements','CraneManager/BDSCraneManager.libSandy.plist']:plistlib.loads((root/path).read_bytes())
 manager_info=plistlib.loads((root/'CraneManager/Info.plist').read_bytes())
-assert manager_info['CFBundleVersion']=='10.01.39' and manager_info['CFBundleShortVersionString']=='1.0.3-10.01.39'
+assert manager_info['CFBundleVersion']=='10.01.40' and manager_info['CFBundleShortVersionString']=='1.0.3-10.01.40'
 assert 'CPU iPhone OS ' in plugin and 'setCustomUserAgent:' in plugin
 assert 'if (hw.length && f.count > 3) f[3] = hw;' in plugin
 assert 'if (sv.length && f.count > 4) f[4] = sv;' in plugin

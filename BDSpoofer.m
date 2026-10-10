@@ -83,7 +83,6 @@
 //
 
 // 网络层伪装模块（DNS 服务器列表 / 隧道网卡隐藏）
-#import "Shared/NetworkSpoofer.h"
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -302,7 +301,7 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
     return v ? [v integerValue] : def;
 }
 
-// ── 10.01.39 写盘统一：前向声明（定义在下方「写盘统一」段）──
+// ── 10.01.40 写盘统一：前向声明（定义在下方「写盘统一」段）──
 static void BDSIDMapBuild(void);      // 由配置重建「容器键 → 假身份值」映射
 static void BDSIDWriteViaAPI(void);   // 用公开 API 写入统一值（cfprefsd 落盘）
 static void BDSUnifyIdentity(void);   // 建表 + 写盘 + 装钩子
@@ -677,7 +676,7 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 187 || !loaded[@"blockStatCashTelemetry"] || loaded[@"spoofStatCash"]) {
-        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.39 起默认开启。旧试验键不继承。
+        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.40 起默认开启。旧试验键不继承。
         merged[@"configVersion"] = @187;
         if (!loaded[@"blockStatCashTelemetry"]) merged[@"blockStatCashTelemetry"] = @YES;
         [merged removeObjectForKey:@"spoofStatCash"];
@@ -703,7 +702,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.01.39：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
+        // 10.01.40：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
         // 光改默认值救不了，必须强制写一次 @YES 并落盘；只执行一次，
         // 用户之后在面板手动关掉仍然有效。
         merged[@"blockStatCashTelemetry"] = @YES;
@@ -877,7 +876,7 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 }
 
 
-#pragma mark - 写盘统一（10.01.39）
+#pragma mark - 写盘统一（10.01.40）
 //
 // 背景：百度极速会把「上一次读到的设备信息」缓存到容器 plist。
 //       插件只钩运行时返回值时，plist 里仍留着旧值 / 真机值，
@@ -995,7 +994,7 @@ static void BDSIDMapBuild(void) {
 
 // ── ① 用公开 API 写盘（不碰文件）────────────────────────────
 //
-// 教训（10.01.39 前两版实测）：
+// 教训（10.01.40 前两版实测）：
 //   · 直接 writeToFile: 重写域文件 → 和 App 内存副本打架，440 键被写成 290 个
 //   · 钩 setObject:forKey: 忽略写入 → App 写不进去，落盘也没这些键，同样丢数据
 //
@@ -3493,9 +3492,6 @@ static int (*orig_lstat)(const char *, struct stat *);
 static int (*orig_access)(const char *, int);
 static FILE *(*orig_fopen)(const char *, const char *);
 static DIR *(*orig_opendir)(const char *);
-// ── 网络层伪装用到的原函数指针（必须在 bds_my_* 之前定义）──
-static void (*orig_freeifaddrs)(struct ifaddrs *) = NULL;
-static unsigned int (*orig_if_nametoindex)(const char *) = NULL;
 
 static int bds_my_stat(const char *path, struct stat *buf) {
     if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC) &&
@@ -3533,67 +3529,12 @@ static int bds_my_access(const char *path, int mode) {
     return orig_access(path, mode);
 }
 
-// ── 网络层伪装：open / openat 接管 /etc/resolv.conf ──
-// 百度有些路径不走 fopen，直接 open + read。
-// 只换路径拿到假文件句柄，不碰 read（read 是热路径，百度二进制里出现 6000+ 次）。
-static int (*orig_open)(const char *, int, ...) = NULL;
-static int (*orig_openat)(int, const char *, int, ...) = NULL;
-
-static int bds_my_open(const char *path, int oflag, ...) {
-    mode_t mode = 0;
-    if (oflag & O_CREAT) {
-        va_list ap; va_start(ap, oflag);
-        mode = (mode_t)va_arg(ap, int);
-        va_end(ap);
-    }
-    if (BDSNetSpoofIsResolvConf(path) && (oflag & O_ACCMODE) == O_RDONLY && orig_open) {
-        const char *fake = BDSNetSpoofResolvPath();
-        if (fake) {
-            BDSNetSpoofObserve(@"file", @"open /etc/resolv.conf",
-                [NSString stringWithFormat:@"换假文件 %s", fake]);
-            return orig_open(fake, oflag);
-        }
-    }
-    if (!orig_open) { errno = ENOSYS; return -1; }
-    return orig_open(path, oflag, mode);
-}
-
-static int bds_my_openat(int fd, const char *path, int oflag, ...) {
-    mode_t mode = 0;
-    if (oflag & O_CREAT) {
-        va_list ap; va_start(ap, oflag);
-        mode = (mode_t)va_arg(ap, int);
-        va_end(ap);
-    }
-    if (BDSNetSpoofIsResolvConf(path) && (oflag & O_ACCMODE) == O_RDONLY && orig_openat) {
-        const char *fake = BDSNetSpoofResolvPath();
-        if (fake) {
-            BDSNetSpoofObserve(@"file", @"openat /etc/resolv.conf",
-                [NSString stringWithFormat:@"换假文件 %s", fake]);
-            return orig_openat(fd, fake, oflag);
-        }
-    }
-    if (!orig_openat) { errno = ENOSYS; return -1; }
-    return orig_openat(fd, path, oflag, mode);
-}
-
 static FILE *bds_my_fopen(const char *path, const char *mode) {
     if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC) &&
         bds_c_is_jailbreak_path(path)) {
         BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStateBlocked);
         errno = ENOENT;
         return NULL;
-    }
-    // ★ 网络层伪装：百度直接 fopen("/etc/resolv.conf") 读 nameserver，
-    // 这里换成装着假 DNS 的临时文件（只读语义才换）。
-    if (BDSNetSpoofIsResolvConf(path) && mode && mode[0] == 'r' && orig_fopen) {
-        const char *fake = BDSNetSpoofResolvPath();
-        if (fake) {
-            BDSNetSpoofObserve(@"file", @"fopen /etc/resolv.conf",
-                [NSString stringWithFormat:@"换假文件 %s", fake]);
-            BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStateChanged);
-            return orig_fopen(fake, mode);
-        }
     }
     BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStatePassed);
     if (!orig_fopen) { errno = ENOENT; return NULL; }
@@ -4116,55 +4057,15 @@ static NSString *bds_format_duration(NSTimeInterval seconds) {
 static int (*orig_getifaddrs)(struct ifaddrs **);
 
 
-// ── res_9_getservers：百度走系统 API 拿 DNS 服务器列表 ──
-// 这是「文件路」之外的 API 路。res_9_getservers 把列表写进调用方给的
-// sockaddr 数组（公开结构），改写输出缓冲区即可，不需要碰 res_state 内部，
-// 所以这里是安全的。
-static int (*orig_res_9_getservers)(res_state, union res_sockaddr_union *, int) = NULL;
-
-static int bds_my_res_9_getservers(res_state s, union res_sockaddr_union *set, int cnt) {
-    if (!orig_res_9_getservers) { errno = ENOSYS; return -1; }
-    int n = orig_res_9_getservers(s, set, cnt);
-    if (n <= 0 || !set) return n;
-    NSString *realList = BDSNetSpoofDescribeDNSList(set, n);
-    if (BDSNetSpoofRewriteDNSList(set, cnt)) {
-        BDSNetSpoofObserve(@"res9", @"res_9_getservers",
-            [NSString stringWithFormat:@"真列表 %@ → 返回 %@",
-                realList, BDSNetSpoofDescribeDNSList(set, n)]);
-    } else {
-        BDSNetSpoofObserve(@"res9", @"res_9_getservers(未改写)",
-            [NSString stringWithFormat:@"返回真列表 %@", realList]);
-    }
-    return n;
-}
-
-// 百度用 if_nametoindex 按名字取网卡序号（en0 等）。
-// 隧道网卡直接回 0 + ENXIO，和系统对不存在网卡的行为一致。
-static unsigned int bds_my_if_nametoindex(const char *name) {
-    if (!BDSNetSpoofInterfaceVisible(name)) {
-        errno = ENXIO;
-        return 0;
-    }
-    return orig_if_nametoindex ? orig_if_nametoindex(name) : 0;
-}
-
 static int bds_my_getifaddrs(struct ifaddrs **ifap) {
-    // ★ 判空保护：rebinding 没抓到符号时 orig_getifaddrs 是 NULL，
-    //   直接跳 NULL 会 EXC_BAD_ACCESS@0x0（其他 hook 都有这条，这里漏了）。
     if (!orig_getifaddrs) { errno = ENOSYS; return -1; }
-
-    // ★ iOS 的 getifaddrs 整条链表 = 一个 malloc 块，freeifaddrs 只认基址。
-    //   所以先拿基址 base，在 base 上做遮蔽/摘链，摘链后把
-    //   (head -> base) 登记进 map，freeifaddrs 时按基址释放一次。
-    struct ifaddrs *base = NULL;
-    int result = orig_getifaddrs(&base);
-    if (result != 0 || !ifap || !base) {
+    int result = orig_getifaddrs(ifap);
+    if (result != 0 || !ifap || !*ifap) {
         BDS_DIAG_RECORD(g_diagLocalIP, BDSDiagStatePassed);
         return result;
     }
     if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofLocalIPC)) {
         BDS_DIAG_RECORD(g_diagLocalIP, BDSDiagStatePassed);
-        *ifap = base;
         return result;
     }
     // 纯拦截：不生成任何假 IP，只把 en0 的地址项标记为未指定（查不到）。
@@ -4172,7 +4073,7 @@ static int bds_my_getifaddrs(struct ifaddrs **ifap) {
     // 而是让"本机本地 IP"这条读取路径拿不到值。
     // 调用方仍可按原约定 freeifaddrs() 释放完整链表。
     int modified = 0;
-    for (struct ifaddrs *ifa = base; ifa; ifa = ifa->ifa_next) {
+    for (struct ifaddrs *ifa = *ifap; ifa; ifa = ifa->ifa_next) {
         if (!ifa->ifa_name || !ifa->ifa_addr) continue;
         if (strcmp(ifa->ifa_name, "en0") != 0) continue;
         sa_family_t family = ifa->ifa_addr->sa_family;
@@ -4183,42 +4084,11 @@ static int bds_my_getifaddrs(struct ifaddrs **ifap) {
             if (ifa->ifa_dstaddr) ifa->ifa_dstaddr->sa_family = AF_UNSPEC;
         }
     }
-    // ★ 网络层伪装：把 utun/tun/tap/ppp 这类隧道网卡从链表里摘掉。
-    // 百度会遍历 en0 / pdp_ip0 / utun0 取 IP，utun0 就是 VPN 隧道，
-    // 越狱环境（Dopamine/RootHide）下通常存在，藏不住就会被记一笔。
-    // 只改链不 free；摘过头节点就把 (head -> base) 登记，登记失败宁可
-    // 放弃摘链返回基址 —— 绝不崩。
-    struct ifaddrs *head = base;
-    BDSNetSpoofFilterIfaddrs(&head);
-    if (head != base) {
-        if (!BDSNetSpoofMapPut(base, head)) {
-            BDS_DIAG_RECORD(g_diagLocalIP, modified ? BDSDiagStateChanged : BDSDiagStatePassed);
-            *ifap = base;
-            return result;
-        }
-        // 记录：百度来拿网卡列表，隧道网卡被摘掉了
-        NSMutableArray *names = [NSMutableArray array];
-        for (struct ifaddrs *ifa = head; ifa; ifa = ifa->ifa_next) {
-            if (ifa->ifa_name) [names addObject:[NSString stringWithUTF8String:ifa->ifa_name]];
-        }
-        BDSNetSpoofObserve(@"ifaddrs", @"getifaddrs(已摘隧道网卡)",
-            [NSString stringWithFormat:@"返回 %lu 块：%@",
-                (unsigned long)names.count, [names componentsJoinedByString:@" "]]);
-    } else {
-        BDSNetSpoofObserve(@"ifaddrs", @"getifaddrs(无隧道网卡)", @"原样返回");
-    }
-    *ifap = head;
     BDS_DIAG_RECORD(g_diagLocalIP, modified ? BDSDiagStateChanged : BDSDiagStatePassed);
     return result;
 }
 
-static void bds_my_freeifaddrs(struct ifaddrs *ifa) {
-    // 把摘链后的头指针翻译回基址，再交给系统一次性释放整块。
-    // 摘下来的节点和主链在同一个 malloc 块里，随基址一起释放，
-    // 绝不能逐个 free（那是非法释放，会 malloc 断言直接崩）。
-    struct ifaddrs *base = BDSNetSpoofMapTake(ifa);
-    if (orig_freeifaddrs) orig_freeifaddrs(base ? base : ifa);
-}
+
 
 
 // ---- 本地 IP：真值 / 当前值（供自检面板显示）----
@@ -4446,11 +4316,6 @@ static void installCHooks(void) {
         {"opendir", (void *)bds_my_opendir, (void **)&orig_opendir},
         {"CNCopyCurrentNetworkInfo", (void *)bds_my_CNCopyCurrentNetworkInfo, (void **)&orig_CNCopyCurrentNetworkInfo},
         {"getifaddrs", (void *)bds_my_getifaddrs, (void **)&orig_getifaddrs},
-        {"freeifaddrs", (void *)bds_my_freeifaddrs, (void **)&orig_freeifaddrs},
-        {"if_nametoindex", (void *)bds_my_if_nametoindex, (void **)&orig_if_nametoindex},
-        {"res_9_getservers", (void *)bds_my_res_9_getservers, (void **)&orig_res_9_getservers},
-        {"open", (void *)bds_my_open, (void **)&orig_open},
-        {"openat", (void *)bds_my_openat, (void **)&orig_openat},
         {"IOPSGetPowerSourceDescription", (void *)bds_my_IOPSGetPowerSourceDescription, (void **)&orig_IOPSGetPowerSourceDescription},
         {"CFNetworkCopySystemProxySettings", (void *)bds_my_CFNetworkCopySystemProxySettings, (void **)&orig_CFNetworkCopySystemProxySettings},
         {"SCDynamicStoreCopyProxies", (void *)bds_my_SCDynamicStoreCopyProxies, (void **)&orig_SCDynamicStoreCopyProxies},
@@ -4461,10 +4326,6 @@ static void installCHooks(void) {
     };
     bds_rebind_symbols(rebindings, sizeof(rebindings) / sizeof(rebindings[0]));
 
-    // ★ 网络层伪装：载入开关（netSpoofEnabled / netSpoofDNS / netSpoofHideVPN）
-    //   并自定义 DNS 服务器列表。hook 已经在上面那张表里装好了，
-    //   这里只是把配置读进来 —— 判定入口每次都看配置，改完不用重启。
-    BDSNetSpoofStart();
 }
 
 #pragma mark - 悬浮配置入口
@@ -4504,7 +4365,6 @@ static const NSTimeInterval BDSButtonCollapseDelay = 10.0;
 - (void)showSelfTest;
 - (void)showPublicAPITest;
 - (void)showHookDiagnostics;
-- (void)showNetworkSpoofTest;
 - (void)copyDiagnosticText:(NSString *)text;
 - (void)shareDiagnosticText:(NSString *)text;
 - (void)presentMessage:(NSString *)message title:(NSString *)title;
@@ -5071,7 +4931,7 @@ static NSString *BDSConfigSummary(void) {
         NSDictionary *hits = [NSDictionary dictionaryWithContentsOfFile:
             [docs stringByAppendingPathComponent:@"bdspoofer_cash_hits.plist"]];
         if (hits) {
-            // 10.01.39：拦到次数 = 网页 + 原生 之和。
+            // 10.01.40：拦到次数 = 网页 + 原生 之和。
             // 之前直接用 total，但 total 里混进了「安装」计数（每次装 hook
             // 记一条"金额拦截已安装"），导致面板数字对不上（4 ≠ 网页2+原生0）。
             NSInteger webN = [hits[@"src.web"] integerValue];
@@ -5312,7 +5172,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.39";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.40";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -6071,11 +5931,6 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{ [self showHookDiagnostics]; });
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"网络层伪装自检  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        (void)action;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{ [self showNetworkSpoofTest]; });
-    }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"开始新诊断（清零统计）" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         bds_diag_reset_all();
@@ -6093,15 +5948,6 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
             CGRectGetMidX(presenter.view.bounds), CGRectGetMidY(presenter.view.bounds), 1, 1);
     }
     [presenter presentViewController:sheet animated:YES completion:nil];
-}
-
-// 网络层伪装自检：不用计数器，直接现场验一遍
-//   真机 DNS   → syscall 直读 /etc/resolv.conf，绕开插件自己的 hook
-//   App 看到   → 走 bds_my_open / bds_my_fopen 那条路读回来
-//   两边不一样 = 生效
-- (void)showNetworkSpoofTest {
-    NSString *report = BDSNetSpoofDiagnostics();
-    [self presentMessage:report title:@"网络层伪装自检"];
 }
 
 - (void)showHookDiagnostics {
