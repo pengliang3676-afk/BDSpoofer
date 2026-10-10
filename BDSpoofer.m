@@ -301,7 +301,7 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
     return v ? [v integerValue] : def;
 }
 
-// ── 10.01.41 写盘统一：前向声明（定义在下方「写盘统一」段）──
+// ── 10.01.42 写盘统一：前向声明（定义在下方「写盘统一」段）──
 static void BDSIDMapBuild(void);      // 由配置重建「容器键 → 假身份值」映射
 static void BDSIDWriteViaAPI(void);   // 用公开 API 写入统一值（cfprefsd 落盘）
 static void BDSUnifyIdentity(void);   // 建表 + 写盘 + 装钩子
@@ -676,7 +676,7 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 187 || !loaded[@"blockStatCashTelemetry"] || loaded[@"spoofStatCash"]) {
-        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.41 起默认开启。旧试验键不继承。
+        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.42 起默认开启。旧试验键不继承。
         merged[@"configVersion"] = @187;
         if (!loaded[@"blockStatCashTelemetry"]) merged[@"blockStatCashTelemetry"] = @YES;
         [merged removeObjectForKey:@"spoofStatCash"];
@@ -702,7 +702,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.01.41：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
+        // 10.01.42：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
         // 光改默认值救不了，必须强制写一次 @YES 并落盘；只执行一次，
         // 用户之后在面板手动关掉仍然有效。
         merged[@"blockStatCashTelemetry"] = @YES;
@@ -876,7 +876,7 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 }
 
 
-#pragma mark - 写盘统一（10.01.41）
+#pragma mark - 写盘统一（10.01.42）
 //
 // 背景：百度极速会把「上一次读到的设备信息」缓存到容器 plist。
 //       插件只钩运行时返回值时，plist 里仍留着旧值 / 真机值，
@@ -994,7 +994,7 @@ static void BDSIDMapBuild(void) {
 
 // ── ① 用公开 API 写盘（不碰文件）────────────────────────────
 //
-// 教训（10.01.41 前两版实测）：
+// 教训（10.01.42 前两版实测）：
 //   · 直接 writeToFile: 重写域文件 → 和 App 内存副本打架，440 键被写成 290 个
 //   · 钩 setObject:forKey: 忽略写入 → App 写不进去，落盘也没这些键，同样丢数据
 //
@@ -4931,7 +4931,7 @@ static NSString *BDSConfigSummary(void) {
         NSDictionary *hits = [NSDictionary dictionaryWithContentsOfFile:
             [docs stringByAppendingPathComponent:@"bdspoofer_cash_hits.plist"]];
         if (hits) {
-            // 10.01.41：拦到次数 = 网页 + 原生 之和。
+            // 10.01.42：拦到次数 = 网页 + 原生 之和。
             // 之前直接用 total，但 total 里混进了「安装」计数（每次装 hook
             // 记一条"金额拦截已安装"），导致面板数字对不上（4 ≠ 网页2+原生0）。
             NSInteger webN = [hits[@"src.web"] integerValue];
@@ -4960,9 +4960,24 @@ static NSString *BDSConfigSummary(void) {
 
         // ── 设备编号 + 上次重置（放最后）──────────────────
         {
-            NSString *cur = BDSDevicePushCuid();
-            if (cur.length) {
-                [summary appendFormat:@"\n\n设备编号：%@", cur];
+            // 优先显示伪装后的设备编号（百度 SDK 实际读到的 cuid），
+            // 推送编号（组容器 BNPush_cuid）作为次要信息。
+            // 之前这里只显示推送编号：新容器里推送还没注册就显示空，
+            // 用户点完重置也看不到新 cuid，以为没生效。
+            NSString *fake = bds_cuid_value();
+            NSString *push = BDSDevicePushCuid();
+            if (fake.length) {
+                [summary appendFormat:@"\n\n设备编号：%@", fake];
+                if (push.length) {
+                    [summary appendFormat:@"\n推送编号：%@", push];
+                } else {
+                    [summary appendString:@"\n推送编号：未注册（重启后百度会注册）"];
+                }
+            } else if (push.length) {
+                [summary appendFormat:@"\n\n设备编号：%@", push];
+                [summary appendString:@"\n（身份伪装未开启，这是真实值）"];
+            } else {
+                [summary appendString:@"\n\n设备编号：还没有（点「重置设备编号」生成）"];
             }
             NSDictionary *rl = [NSDictionary dictionaryWithContentsOfFile:BDSResetLogPath()];
             NSDate *rt = rl[@"lastResetAt"];
@@ -5193,7 +5208,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.41";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.42";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
