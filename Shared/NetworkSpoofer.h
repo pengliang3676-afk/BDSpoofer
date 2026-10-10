@@ -176,9 +176,9 @@ static unsigned int BDSNetSpoof_if_nametoindex(const char *name) {
 
 #pragma mark - 隧道网卡过滤（getifaddrs 摘链）
 
-// 摘下来的节点留在这里，等 freeifaddrs 统一释放。
-// 不能就地 free —— 调用方还要拿这条链表去 freeifaddrs，链表被破坏就会崩。
-static struct ifaddrs *g_bdsNetDetached = NULL;
+// 摘下来的节点留在 g_bdsNetDetached（变量本体定义在上面的 getifaddrs 段），
+// 等 freeifaddrs 统一释放。不能就地 free —— 调用方还要拿这条链表去
+// freeifaddrs，链表被破坏就会崩。
 
 /// 把隧道网卡（utun/tun/tap/ppp/...）从链表里摘掉。
 /// 宿主在 bds_my_getifaddrs 末尾调用。
