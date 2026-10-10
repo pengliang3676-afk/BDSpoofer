@@ -106,16 +106,16 @@ static int BDSNetSpoofResolvConf(char *out, size_t cap) {
 
 #pragma mark - 对外接口（宿主与模块内部共用）
 
-static void BDSNetSpoofFilterIfaddrs(struct ifaddrs **ifap);
-static void BDSNetSpoofReleaseDetached(void);
-static const char *BDSNetSpoofResolvPath(void);
-static int  BDSNetSpoofIsResolvConf(const char *path);
-static int  BDSNetSpoofInterfaceVisible(const char *name);
-static int  BDSNetSpoofIsTunnelInterface(const char *name);
+void BDSNetSpoofFilterIfaddrs(struct ifaddrs **ifap);
+void BDSNetSpoofReleaseDetached(void);
+const char *BDSNetSpoofResolvPath(void);
+int  BDSNetSpoofIsResolvConf(const char *path);
+int  BDSNetSpoofInterfaceVisible(const char *name);
+int  BDSNetSpoofIsTunnelInterface(const char *name);
 
 #pragma mark - 隧道网卡判定
 
-static int BDSNetSpoofIsTunnelInterface(const char *name) {
+int BDSNetSpoofIsTunnelInterface(const char *name) {
     if (!name || !name[0]) return 0;
     static const char *prefixes[] = {
         "utun", "tun", "tap", "ppp", "ipsec", "gpd", "wg", NULL
@@ -126,7 +126,7 @@ static int BDSNetSpoofIsTunnelInterface(const char *name) {
     return 0;
 }
 
-static int BDSNetSpoofInterfaceVisible(const char *name) {
+int BDSNetSpoofInterfaceVisible(const char *name) {
     if (!g_bdsNetCfg.enabled) return 1;
     if (BDSNetSpoofIsTunnelInterface(name)) return 0;
     return 1;
@@ -151,35 +151,13 @@ static int BDSNetSpoof_getifaddrs(struct ifaddrs **ifap) {
     if (!BDSNetSpoof_orig_getifaddrs) { errno = ENOSYS; return -1; }
     int r = BDSNetSpoof_orig_getifaddrs(ifap);
     if (r != 0 || !ifap || !*ifap) return r;
-    if (!g_bdsNetCfg.enabled || !g_bdsNetCfg.hideVPN) return r;
-
-    struct ifaddrs *prev = NULL;
-    struct ifaddrs *cur = *ifap;
-    while (cur) {
-        if (!BDSNetSpoofInterfaceVisible(cur->ifa_name)) {
-            struct ifaddrs *next = cur->ifa_next;
-            if (prev) prev->ifa_next = next;
-            else *ifap = next;
-            cur->ifa_next = g_bdsNetDetached;   // 挂到待释放链
-            g_bdsNetDetached = cur;
-            cur = next;
-            continue;
-        }
-        prev = cur;
-        cur = cur->ifa_next;
-    }
+    BDSNetSpoofFilterIfaddrs(ifap);
     return r;
 }
 
 static void BDSNetSpoof_freeifaddrs(struct ifaddrs *ifa) {
     // 先把摘下来的节点释放掉，再让系统释放主链
-    struct ifaddrs *p = g_bdsNetDetached;
-    while (p) {
-        struct ifaddrs *n = p->ifa_next;
-        free(p);
-        p = n;
-    }
-    g_bdsNetDetached = NULL;
+    BDSNetSpoofReleaseDetached();
     if (BDSNetSpoof_orig_freeifaddrs) BDSNetSpoof_orig_freeifaddrs(ifa);
 }
 
@@ -196,10 +174,50 @@ static unsigned int BDSNetSpoof_if_nametoindex(const char *name) {
          ? BDSNetSpoof_orig_if_nametoindex(name) : 0;
 }
 
+#pragma mark - 隧道网卡过滤（getifaddrs 摘链）
+
+// 摘下来的节点留在这里，等 freeifaddrs 统一释放。
+// 不能就地 free —— 调用方还要拿这条链表去 freeifaddrs，链表被破坏就会崩。
+static struct ifaddrs *g_bdsNetDetached = NULL;
+
+/// 把隧道网卡（utun/tun/tap/ppp/...）从链表里摘掉。
+/// 宿主在 bds_my_getifaddrs 末尾调用。
+void BDSNetSpoofFilterIfaddrs(struct ifaddrs **ifap) {
+    if (!ifap || !*ifap) return;
+    if (!g_bdsNetCfg.enabled || !g_bdsNetCfg.hideVPN) return;
+
+    struct ifaddrs *prev = NULL;
+    struct ifaddrs *cur = *ifap;
+    while (cur) {
+        if (!BDSNetSpoofInterfaceVisible(cur->ifa_name)) {
+            struct ifaddrs *next = cur->ifa_next;
+            if (prev) prev->ifa_next = next;
+            else *ifap = next;
+            cur->ifa_next = g_bdsNetDetached;   // 挂到待释放链
+            g_bdsNetDetached = cur;
+            cur = next;
+            continue;
+        }
+        prev = cur;
+        cur = cur->ifa_next;
+    }
+}
+
+/// 释放摘下来的那些节点。宿主在 bds_my_freeifaddrs 里先调这个，再交系统释放主链。
+void BDSNetSpoofReleaseDetached(void) {
+    struct ifaddrs *p = g_bdsNetDetached;
+    while (p) {
+        struct ifaddrs *n = p->ifa_next;
+        free(p);
+        p = n;
+    }
+    g_bdsNetDetached = NULL;
+}
+
 #pragma mark - /etc/resolv.conf 接管
 
 /// 懒加载：第一次用到时把假内容写进 App 的 tmp 目录，之后复用同一个文件。
-static const char *BDSNetSpoofResolvPath(void) {
+const char *BDSNetSpoofResolvPath(void) {
     static char cachedPath[PATH_MAX] = {0};
     static int tried = 0;
     if (tried) return cachedPath[0] ? cachedPath : NULL;
@@ -225,7 +243,7 @@ static const char *BDSNetSpoofResolvPath(void) {
     return cachedPath;
 }
 
-static int BDSNetSpoofIsResolvConf(const char *path) {
+int BDSNetSpoofIsResolvConf(const char *path) {
     if (!g_bdsNetCfg.enabled || !g_bdsNetCfg.spoofDNS || !path) return 0;
     return strcmp(path, "/etc/resolv.conf") == 0 ||
            strcmp(path, "/private/etc/resolv.conf") == 0;
