@@ -302,7 +302,7 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
     return v ? [v integerValue] : def;
 }
 
-// ── 10.01.34 写盘统一：前向声明（定义在下方「写盘统一」段）──
+// ── 10.01.35 写盘统一：前向声明（定义在下方「写盘统一」段）──
 static void BDSIDMapBuild(void);      // 由配置重建「容器键 → 假身份值」映射
 static void BDSIDWriteViaAPI(void);   // 用公开 API 写入统一值（cfprefsd 落盘）
 static void BDSUnifyIdentity(void);   // 建表 + 写盘 + 装钩子
@@ -677,7 +677,7 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 187 || !loaded[@"blockStatCashTelemetry"] || loaded[@"spoofStatCash"]) {
-        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.34 起默认开启。旧试验键不继承。
+        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.35 起默认开启。旧试验键不继承。
         merged[@"configVersion"] = @187;
         if (!loaded[@"blockStatCashTelemetry"]) merged[@"blockStatCashTelemetry"] = @YES;
         [merged removeObjectForKey:@"spoofStatCash"];
@@ -703,7 +703,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.01.34：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
+        // 10.01.35：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
         // 光改默认值救不了，必须强制写一次 @YES 并落盘；只执行一次，
         // 用户之后在面板手动关掉仍然有效。
         merged[@"blockStatCashTelemetry"] = @YES;
@@ -877,7 +877,7 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 }
 
 
-#pragma mark - 写盘统一（10.01.34）
+#pragma mark - 写盘统一（10.01.35）
 //
 // 背景：百度极速会把「上一次读到的设备信息」缓存到容器 plist。
 //       插件只钩运行时返回值时，plist 里仍留着旧值 / 真机值，
@@ -995,7 +995,7 @@ static void BDSIDMapBuild(void) {
 
 // ── ① 用公开 API 写盘（不碰文件）────────────────────────────
 //
-// 教训（10.01.34 前两版实测）：
+// 教训（10.01.35 前两版实测）：
 //   · 直接 writeToFile: 重写域文件 → 和 App 内存副本打架，440 键被写成 290 个
 //   · 钩 setObject:forKey: 忽略写入 → App 写不进去，落盘也没这些键，同样丢数据
 //
@@ -4440,6 +4440,7 @@ static const NSTimeInterval BDSButtonCollapseDelay = 10.0;
 - (void)showSelfTest;
 - (void)showPublicAPITest;
 - (void)showHookDiagnostics;
+- (void)showNetworkSpoofTest;
 - (void)copyDiagnosticText:(NSString *)text;
 - (void)shareDiagnosticText:(NSString *)text;
 - (void)presentMessage:(NSString *)message title:(NSString *)title;
@@ -5242,7 +5243,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.34";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.35";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -6001,6 +6002,11 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{ [self showHookDiagnostics]; });
     }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"网络层伪装自检  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self showNetworkSpoofTest]; });
+    }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"开始新诊断（清零统计）" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         bds_diag_reset_all();
@@ -6018,6 +6024,15 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
             CGRectGetMidX(presenter.view.bounds), CGRectGetMidY(presenter.view.bounds), 1, 1);
     }
     [presenter presentViewController:sheet animated:YES completion:nil];
+}
+
+// 网络层伪装自检：不用计数器，直接现场验一遍
+//   真机 DNS   → syscall 直读 /etc/resolv.conf，绕开插件自己的 hook
+//   App 看到   → 走 bds_my_open / bds_my_fopen 那条路读回来
+//   两边不一样 = 生效
+- (void)showNetworkSpoofTest {
+    NSString *report = BDSNetSpoofDiagnostics();
+    [self presentMessage:report title:@"网络层伪装自检"];
 }
 
 - (void)showHookDiagnostics {

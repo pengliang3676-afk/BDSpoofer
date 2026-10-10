@@ -39,6 +39,7 @@
 #import <fcntl.h>
 #import <limits.h>
 #import <stdarg.h>
+#import <sys/syscall.h>
 #import <notify.h>
 
 #pragma mark - 配置
@@ -315,6 +316,155 @@ static const BDSNetSpoofHook BDSNetSpoofHookTable[] = {
 };
 static const size_t BDSNetSpoofHookCount =
     sizeof(BDSNetSpoofHookTable) / sizeof(BDSNetSpoofHookTable[0]);
+
+#pragma mark - 自检报告
+
+// 读真实文件用的原函数（绕开插件自己的 hook）：直接用 syscall 级 open
+static int BDSNetSpoofRawRead(const char *path, char *out, size_t cap) {
+    if (!out || cap == 0) return -1;
+    out[0] = '\0';
+    int fd = (int)syscall(SYS_open, path, O_RDONLY, 0);
+    if (fd < 0) return -1;
+    ssize_t n = read(fd, out, cap - 1);
+    close(fd);
+    if (n < 0) { out[0] = '\0'; return -1; }
+    out[n] = '\0';
+    return (int)n;
+}
+
+// 从 resolv.conf 文本里收集 nameserver（按出现顺序，去重）
+static int BDSNetSpoofParseNameservers(const char *text, char out[][64], int maxn) {
+    if (!text || !out || maxn <= 0) return 0;
+    int n = 0;
+    const char *p = text;
+    while (p && *p && n < maxn) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        if (len > 11 && strncmp(p, "nameserver", 10) == 0) {
+            const char *q = p + 10;
+            while (*q == ' ' || *q == '\t') q++;
+            size_t ipLen = len - (size_t)(q - p);
+            while (ipLen > 0 && (q[ipLen-1] == ' ' || q[ipLen-1] == '\t' ||
+                                 q[ipLen-1] == '\r')) ipLen--;
+            if (ipLen > 0 && ipLen < 64) {
+                char buf[64] = {0};
+                memcpy(buf, q, ipLen);
+                int dup = 0;
+                for (int i = 0; i < n; i++) if (strcmp(out[i], buf) == 0) { dup = 1; break; }
+                if (!dup) { strncpy(out[n], buf, 63); n++; }
+            }
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+    return n;
+}
+
+/// 网络层伪装自检报告。返回一段可以直接显示的多行文本。
+static NSString *BDSNetSpoofDiagnostics(void) {
+    NSMutableString *r = [NSMutableString string];
+
+    [r appendString:@"【当前状态】\n"];
+    [r appendFormat:@"  总开关 %@｜伪造 DNS %@｜隐藏隧道网卡 %@\n",
+        g_bdsNetCfg.enabled   ? @"开" : @"关",
+        g_bdsNetCfg.spoofDNS  ? @"开" : @"关",
+        g_bdsNetCfg.hideVPN   ? @"开" : @"关"];
+    [r appendString:@"  要伪装的 DNS："];
+    for (int i = 0; i < g_bdsNetCfg.dnsServerCount; i++) {
+        [r appendFormat:@"%@%@", i ? @" / " : @"",
+            [NSString stringWithUTF8String:g_bdsNetCfg.dnsServers[i]]];
+    }
+    [r appendString:@"\n"];
+
+    // ── ① DNS ──
+    [r appendString:@"\n【DNS】\n"];
+
+    // 真值：syscall 直接读，绕开插件 hook
+    char real[512] = {0};
+    int realLen = BDSNetSpoofRawRead("/etc/resolv.conf", real, sizeof(real));
+    char realNS[6][64] = {{0}};
+    int realCount = realLen >= 0 ? BDSNetSpoofParseNameservers(real, realNS, 6) : 0;
+    if (realLen < 0) {
+        [r appendString:@"  真机 /etc/resolv.conf：读不到\n"];
+    } else if (realCount == 0) {
+        [r appendString:@"  真机 /etc/resolv.conf：里面没有 nameserver 行\n"];
+    } else {
+        [r appendString:@"  真机 DNS："];
+        for (int i = 0; i < realCount; i++) {
+            [r appendFormat:@"%@%s", i ? @" / " : @"", realNS[i]];
+        }
+        [r appendString:@"\n"];
+    }
+
+    // 走插件 hook 再读一次 —— App 实际看到的就是这个
+    // （open 已被 bds_my_open 接管，这里读的是假文件）
+    BOOL resolvHooked = BDSNetSpoofIsResolvConf("/etc/resolv.conf");
+    FILE *fp = BDSNetSpoof_orig_fopen ? BDSNetSpoof_orig_fopen("/etc/resolv.conf", "r") : NULL;
+    if (fp) {
+        char seen[512] = {0};
+        size_t got = fread(seen, 1, sizeof(seen) - 1, fp);
+        seen[got] = '\0';
+        fclose(fp);
+        char fakeNS[6][64] = {{0}};
+        int fakeCount = BDSNetSpoofParseNameservers(seen, fakeNS, 6);
+        [r appendString:@"  App 看到："];
+        if (fakeCount == 0) [r appendString:@"（读不到 nameserver）"];
+        for (int i = 0; i < fakeCount; i++) {
+            [r appendFormat:@"%@%s", i ? @" / " : @"", fakeNS[i]];
+        }
+        [r appendString:@"\n"];
+    } else {
+        [r appendString:@"  App 看到：读取失败\n"];
+    }
+
+    // 判定
+    if (!g_bdsNetCfg.enabled || !g_bdsNetCfg.spoofDNS) {
+        [r appendString:@"  → 未生效（DNS 伪造开关是关的）\n"];
+    } else if (!resolvHooked) {
+        [r appendString:@"  → ★未生效（路径判定没通过）\n"];
+    } else if (realCount > 0 && realCount == 0) {
+        [r appendString:@"  → ?\n"];
+    } else {
+        const char *fakePath = BDSNetSpoofResolvPath();
+        [r appendFormat:@"  → 已生效；假文件：%@\n",
+            fakePath ? [NSString stringWithUTF8String:fakePath] : @"（创建失败！）"];
+    }
+
+    // ── ② 网卡 ──
+    [r appendString:@"\n【网卡】\n"];
+    struct ifaddrs *list = NULL;
+    if (getifaddrs(&list) == 0 && list) {
+        NSMutableArray *visible = [NSMutableArray array];
+        NSMutableArray *hidden  = [NSMutableArray array];
+        for (struct ifaddrs *ifa = list; ifa; ifa = ifa->ifa_next) {
+            if (!ifa->ifa_name) continue;
+            NSString *nm = [NSString stringWithUTF8String:ifa->ifa_name];
+            if (!nm || [visible containsObject:nm] || [hidden containsObject:nm]) continue;
+            if (BDSNetSpoofInterfaceVisible(ifa->ifa_name)) [visible addObject:nm];
+            else [hidden addObject:nm];
+        }
+        [r appendFormat:@"  可见（%lu）：%@\n", (unsigned long)visible.count,
+            visible.count ? [visible componentsJoinedByString:@" "] : @"（无）"];
+        if (hidden.count) {
+            [r appendFormat:@"  已隐藏（%lu）：%@\n", (unsigned long)hidden.count,
+                [hidden componentsJoinedByString:@" "]];
+        } else {
+            [r appendString:@"  已隐藏：无（这台机器上没有 utun/tun/tap/ppp 这类网卡）\n"];
+        }
+        freeifaddrs(list);
+    } else {
+        [r appendString:@"  枚举失败\n"];
+    }
+    if (!g_bdsNetCfg.enabled || !g_bdsNetCfg.hideVPN) {
+        [r appendString:@"  → 未生效（隐藏隧道网卡开关是关的）\n"];
+    } else {
+        [r appendString:@"  → 百度遍历时拿不到上面「已隐藏」那几块\n"];
+    }
+
+    [r appendString:@"\n说明：真机 DNS 用 syscall 直读，App 看到的是走插件 hook 的结果；\n"];
+    [r appendString:@"两边不一样就说明生效了。"];
+    return r;
+}
 
 #pragma mark - 配置加载（不依赖宿主）
 
