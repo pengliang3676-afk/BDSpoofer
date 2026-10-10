@@ -1,1 +1,1 @@
-fix: 删掉重复的 BDSQRPage 定义（10.01.29 的旧版没替换干净）
+fix: 删掉残留的旧 BDSShowAuthQRCode（用了已删除的 innerURL/outerURL 属性）

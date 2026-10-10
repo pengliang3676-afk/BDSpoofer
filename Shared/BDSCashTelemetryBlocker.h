@@ -45,11 +45,28 @@ static BOOL BDSCashTelemetryRequestIsTarget(NSURLRequest *request) {
     id page = content[@"page"];
     id type = content[@"type"];
     id amount = ext[@"num"];
-    BOOL amountTypeOK = [amount isKindOfClass:NSString.class] || [amount isKindOfClass:NSNumber.class];
-    return [[eventID description] isEqualToString:@"10290"] &&
-           [page isKindOfClass:NSString.class] && [page isEqualToString:@"y_mission_index"] &&
-           [type isKindOfClass:NSString.class] && [type isEqualToString:@"c_pv"] &&
-           amountTypeOK;
+
+    // ★ 只拦「任务页浏览 + 带金额」这一条上报
+    //   事件 ID 必须是 10290，页面必须是 y_mission_index，
+    //   type 必须严格等于 c_pv（不接受 c_pv_mission / c_pv_rule 等前缀变体），
+    //   并且 ext.num 必须是个真金额（形如 12.34 / 0.30）。
+    //   以前只看类型不看金额，导致把不带金额的浏览埋点也一起拦了。
+    if (![[eventID description] isEqualToString:@"10290"]) return NO;
+    if (![page isKindOfClass:NSString.class] || ![page isEqualToString:@"y_mission_index"]) return NO;
+    if (![type isKindOfClass:NSString.class] || ![type isEqualToString:@"c_pv"]) return NO;
+    if (amount == nil) return NO;
+
+    NSString *amountText = [amount description];
+    if (!amountText.length) return NO;
+    // 金额形态：数字开头，最多两位小数（0 / 0.3 / 12.34 / "0.30" 都算）
+    NSRegularExpression *rx = [NSRegularExpression
+        regularExpressionWithPattern:@"^[0-9]+(\\.[0-9]{1,2})?$"
+                             options:0 error:NULL];
+    NSUInteger whole = [rx numberOfMatchesInString:amountText options:0
+                                             range:NSMakeRange(0, amountText.length)];
+    if (whole == 0) return NO;
+
+    return YES;
 }
 
 // 命中记录的前向声明（实现在文件下方，startLoading 里要用）
@@ -162,10 +179,15 @@ static NSString * const BDSCashTelemetryBlockScript = @
 "var a=JSON.parse(u.searchParams.get('data')||'null'),ad=a&&a.actiondata,c=ad&&ad.content,e=c&&c.ext;"
 "var pid=String(ad&&ad.id),pg=c&&String(c.page),ty=c&&String(c.type);"
 "var ok=false;"
-// 10290 任务页 / 提现页：type 为 c_pv 开头（含 c_pv / c_pv_mission / c_pv_rule ...）
-"if(pid==='10290'&&(pg==='y_mission_index'||pg==='y_mission_withdraw')&&ty&&ty.indexOf('c_pv')===0)ok=true;"
-// 17322 活动网页（提现/激励 H5）：整条都拦
-"if(pid==='17322')ok=true;"
+// ★ 只拦「任务页浏览 + 带金额」这一条，判定与原生侧逐条对齐：
+//   10290 / y_mission_index / type 严格等于 c_pv / ext.num 是金额
+//   （原来还拦 17322 整条、还接受 c_pv_ 前缀和 y_mission_withdraw，
+//    把不带金额的浏览埋点也拦了 —— 已去掉）
+"var num=e&&e.num;"
+"if(pid==='10290'&&pg==='y_mission_index'&&ty==='c_pv'&&num!==undefined&&num!==null){"
+"var ns=String(num);"
+"if(/^[0-9]+(\\.[0-9]{1,2})?$/.test(ns))ok=true;"
+"}"
 "if(ok){try{__bdsCashHit(String(v));}catch(x){}}"
 "return ok;"
 "}catch(x){return false;}"
@@ -263,16 +285,24 @@ static NSDictionary *BDSZtboxExtract(NSString *url) {
     return out;
 }
 
-// 命中判定（与 JS 侧一致）：10290 任务/提现页 c_pv* ，或 17322 活动页
+// 命中判定（与 JS 侧、原生 URLProtocol 侧三处一致）：
+//   只认 10290 / y_mission_index / type 严格等于 c_pv / ext.num 是金额
+//   原来的 17322 整条拦截、y_mission_withdraw、c_pv 前缀匹配都已去掉 ——
+//   那些会把不带金额的浏览埋点一起拦掉。
 static BOOL BDSZtboxIsTarget(NSDictionary *info) {
     NSString *pid = info[@"id"];
     NSString *pg  = info[@"page"];
     NSString *ty  = info[@"type"];
-    if ([pid isEqualToString:@"17322"]) return YES;
+    NSString *num = info[@"num"];
     if (![pid isEqualToString:@"10290"]) return NO;
-    if (!([pg isEqualToString:@"y_mission_index"] ||
-          [pg isEqualToString:@"y_mission_withdraw"])) return NO;
-    return ty.length && [ty hasPrefix:@"c_pv"];
+    if (![pg isEqualToString:@"y_mission_index"]) return NO;
+    if (![ty isEqualToString:@"c_pv"]) return NO;
+    if (!num.length) return NO;
+    NSRegularExpression *rx = [NSRegularExpression
+        regularExpressionWithPattern:@"^[0-9]+(\\.[0-9]{1,2})?$"
+                             options:0 error:NULL];
+    return [rx numberOfMatchesInString:num options:0
+                                 range:NSMakeRange(0, num.length)] > 0;
 }
 
 static NSString *BDSWebProbeLogPath(void) {
