@@ -28,7 +28,10 @@ static NSArray<NSArray<NSDictionary *> *> *BDSSettingGroups(void) {
           @{@"key":@"spoofPrivacyPermissions",@"name":@"通讯录与日历保护"},
           @{@"key":@"spoofBattery",@"name":@"电池参数"},
           @{@"key":@"blockLaunchTimeUpload",@"name":@"拦截启动时间上报"},
-          @{@"key":@"blockStatCashTelemetry",@"name":@"阻止金额统计上报"}]
+          @{@"key":@"blockStatCashTelemetry",@"name":@"阻止金额统计上报"},
+          @{@"key":@"netSpoofEnabled",@"name":@"网络层伪装（DNS/网卡）"},
+          @{@"key":@"netSpoofDNS",@"name":@"伪造 DNS 服务器"},
+          @{@"key":@"netSpoofHideVPN",@"name":@"隐藏隧道网卡"}]
     ];
 }
 static NSArray<NSString *> *BDSRegularKeys(void) {
@@ -104,6 +107,9 @@ static NSDictionary *BDSSafeSwitchValues(void) {
     for(NSString *key in BDSRiskKeys()) values[key]=@NO;
     for(NSString *key in BDSSelectedTargetKeys()) values[key]=@NO;
     values[@"spoofScreen"]=@NO;
+    values[@"netSpoofEnabled"]=@YES;
+    values[@"netSpoofDNS"]=@YES;
+    values[@"netSpoofHideVPN"]=@YES;
     values[@"spoofBaiduTargeted"]=@NO;
     return values;
 }
@@ -123,6 +129,9 @@ static void BDSApplyInitialDefaults(NSMutableDictionary *config, NSDictionary *s
     for(NSString *key in BDSSelectedTargetKeys()) config[key]=saved[key] ?: @NO;
     config[@"spoofBaiduTargeted"]=saved[@"spoofBaiduTargeted"] ?: @NO;
     config[@"spoofScreen"]=@NO;
+    config[@"netSpoofEnabled"]=@YES;
+    config[@"netSpoofDNS"]=@YES;
+    config[@"netSpoofHideVPN"]=@YES;
     config[@"targetedScreenHwMachine"]=saved[@"targetedScreenHwMachine"] ?: config[@"targetedHwMachine"] ?: @"iPhone14,6";
     // 必须写当前版本号。写成 @187 会把 loadConfig 里已经抬上去的版本又按回去，
     // 导致 ver < 189 之类的迁移每次启动都重复触发（防越狱检测就踩过这个坑）。

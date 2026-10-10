@@ -300,7 +300,7 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
     return v ? [v integerValue] : def;
 }
 
-// ── 10.01.32 写盘统一：前向声明（定义在下方「写盘统一」段）──
+// ── 10.01.33 写盘统一：前向声明（定义在下方「写盘统一」段）──
 static void BDSIDMapBuild(void);      // 由配置重建「容器键 → 假身份值」映射
 static void BDSIDWriteViaAPI(void);   // 用公开 API 写入统一值（cfprefsd 落盘）
 static void BDSUnifyIdentity(void);   // 建表 + 写盘 + 装钩子
@@ -675,7 +675,7 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 187 || !loaded[@"blockStatCashTelemetry"] || loaded[@"spoofStatCash"]) {
-        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.32 起默认开启。旧试验键不继承。
+        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.33 起默认开启。旧试验键不继承。
         merged[@"configVersion"] = @187;
         if (!loaded[@"blockStatCashTelemetry"]) merged[@"blockStatCashTelemetry"] = @YES;
         [merged removeObjectForKey:@"spoofStatCash"];
@@ -701,7 +701,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.01.32：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
+        // 10.01.33：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
         // 光改默认值救不了，必须强制写一次 @YES 并落盘；只执行一次，
         // 用户之后在面板手动关掉仍然有效。
         merged[@"blockStatCashTelemetry"] = @YES;
@@ -875,7 +875,7 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 }
 
 
-#pragma mark - 写盘统一（10.01.32）
+#pragma mark - 写盘统一（10.01.33）
 //
 // 背景：百度极速会把「上一次读到的设备信息」缓存到容器 plist。
 //       插件只钩运行时返回值时，plist 里仍留着旧值 / 真机值，
@@ -993,7 +993,7 @@ static void BDSIDMapBuild(void) {
 
 // ── ① 用公开 API 写盘（不碰文件）────────────────────────────
 //
-// 教训（10.01.32 前两版实测）：
+// 教训（10.01.33 前两版实测）：
 //   · 直接 writeToFile: 重写域文件 → 和 App 内存副本打架，440 键被写成 290 个
 //   · 钩 setObject:forKey: 忽略写入 → App 写不进去，落盘也没这些键，同样丢数据
 //
@@ -3491,6 +3491,9 @@ static int (*orig_lstat)(const char *, struct stat *);
 static int (*orig_access)(const char *, int);
 static FILE *(*orig_fopen)(const char *, const char *);
 static DIR *(*orig_opendir)(const char *);
+// ── 网络层伪装用到的原函数指针（必须在 bds_my_* 之前定义）──
+static void (*orig_freeifaddrs)(struct ifaddrs *) = NULL;
+static unsigned int (*orig_if_nametoindex)(const char *) = NULL;
 
 static int bds_my_stat(const char *path, struct stat *buf) {
     if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC) &&
@@ -3528,12 +3531,57 @@ static int bds_my_access(const char *path, int mode) {
     return orig_access(path, mode);
 }
 
+// ── 网络层伪装：open / openat 接管 /etc/resolv.conf ──
+// 百度有些路径不走 fopen，直接 open + read。
+// 只换路径拿到假文件句柄，不碰 read（read 是热路径，百度二进制里出现 6000+ 次）。
+static int (*orig_open)(const char *, int, ...) = NULL;
+static int (*orig_openat)(int, const char *, int, ...) = NULL;
+
+static int bds_my_open(const char *path, int oflag, ...) {
+    mode_t mode = 0;
+    if (oflag & O_CREAT) {
+        va_list ap; va_start(ap, oflag);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+    }
+    if (BDSNetSpoofIsResolvConf(path) && (oflag & O_ACCMODE) == O_RDONLY && orig_open) {
+        const char *fake = BDSNetSpoofResolvPath();
+        if (fake) return orig_open(fake, oflag);
+    }
+    if (!orig_open) { errno = ENOSYS; return -1; }
+    return orig_open(path, oflag, mode);
+}
+
+static int bds_my_openat(int fd, const char *path, int oflag, ...) {
+    mode_t mode = 0;
+    if (oflag & O_CREAT) {
+        va_list ap; va_start(ap, oflag);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+    }
+    if (BDSNetSpoofIsResolvConf(path) && (oflag & O_ACCMODE) == O_RDONLY && orig_openat) {
+        const char *fake = BDSNetSpoofResolvPath();
+        if (fake) return orig_openat(fd, fake, oflag);
+    }
+    if (!orig_openat) { errno = ENOSYS; return -1; }
+    return orig_openat(fd, path, oflag, mode);
+}
+
 static FILE *bds_my_fopen(const char *path, const char *mode) {
     if (BDS_ATOMIC_GET(g_enabledC) && BDS_ATOMIC_GET(g_bypassJailbreakC) &&
         bds_c_is_jailbreak_path(path)) {
         BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStateBlocked);
         errno = ENOENT;
         return NULL;
+    }
+    // ★ 网络层伪装：百度直接 fopen("/etc/resolv.conf") 读 nameserver，
+    // 这里换成装着假 DNS 的临时文件（只读语义才换）。
+    if (BDSNetSpoofIsResolvConf(path) && mode && mode[0] == 'r' && orig_fopen) {
+        const char *fake = BDSNetSpoofResolvPath();
+        if (fake) {
+            BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStateChanged);
+            return orig_fopen(fake, mode);
+        }
     }
     BDS_DIAG_RECORD(g_diagCFiles, BDSDiagStatePassed);
     if (!orig_fopen) { errno = ENOENT; return NULL; }
@@ -4055,6 +4103,17 @@ static NSString *bds_format_duration(NSTimeInterval seconds) {
 
 static int (*orig_getifaddrs)(struct ifaddrs **);
 
+
+// 百度用 if_nametoindex 按名字取网卡序号（en0 等）。
+// 隧道网卡直接回 0 + ENXIO，和系统对不存在网卡的行为一致。
+static unsigned int bds_my_if_nametoindex(const char *name) {
+    if (!BDSNetSpoofInterfaceVisible(name)) {
+        errno = ENXIO;
+        return 0;
+    }
+    return orig_if_nametoindex ? orig_if_nametoindex(name) : 0;
+}
+
 static int bds_my_getifaddrs(struct ifaddrs **ifap) {
     int result = orig_getifaddrs(ifap);
     if (result != 0 || !ifap || !*ifap) {
@@ -4081,8 +4140,19 @@ static int bds_my_getifaddrs(struct ifaddrs **ifap) {
             if (ifa->ifa_dstaddr) ifa->ifa_dstaddr->sa_family = AF_UNSPEC;
         }
     }
+    // ★ 网络层伪装：把 utun/tun/tap/ppp 这类隧道网卡从链表里摘掉。
+    // 百度会遍历 en0 / pdp_ip0 / utun0 取 IP，utun0 就是 VPN 隧道，
+    // 越狱环境（Dopamine/RootHide）下通常存在，藏不住就会被记一笔。
+    BDSNetSpoofFilterIfaddrs(ifap);
     BDS_DIAG_RECORD(g_diagLocalIP, modified ? BDSDiagStateChanged : BDSDiagStatePassed);
     return result;
+}
+
+static void bds_my_freeifaddrs(struct ifaddrs *ifa) {
+    // 先释放「隧道网卡过滤」摘下来的那些节点，再交给系统释放主链。
+    // 顺序不能反：摘下来的节点已经不在主链里了，系统不会碰到它们。
+    BDSNetSpoofReleaseDetached();
+    if (orig_freeifaddrs) orig_freeifaddrs(ifa);
 }
 
 
@@ -4559,6 +4629,10 @@ static void installCHooks(void) {
         {"opendir", (void *)bds_my_opendir, (void **)&orig_opendir},
         {"CNCopyCurrentNetworkInfo", (void *)bds_my_CNCopyCurrentNetworkInfo, (void **)&orig_CNCopyCurrentNetworkInfo},
         {"getifaddrs", (void *)bds_my_getifaddrs, (void **)&orig_getifaddrs},
+        {"freeifaddrs", (void *)bds_my_freeifaddrs, (void **)&orig_freeifaddrs},
+        {"if_nametoindex", (void *)bds_my_if_nametoindex, (void **)&orig_if_nametoindex},
+        {"open", (void *)bds_my_open, (void **)&orig_open},
+        {"openat", (void *)bds_my_openat, (void **)&orig_openat},
         {"IOPSGetPowerSourceDescription", (void *)bds_my_IOPSGetPowerSourceDescription, (void **)&orig_IOPSGetPowerSourceDescription},
         {"CFNetworkCopySystemProxySettings", (void *)bds_my_CFNetworkCopySystemProxySettings, (void **)&orig_CFNetworkCopySystemProxySettings},
         {"SCDynamicStoreCopyProxies", (void *)bds_my_SCDynamicStoreCopyProxies, (void **)&orig_SCDynamicStoreCopyProxies},
@@ -4568,6 +4642,14 @@ static void installCHooks(void) {
         {"dlopen_preflight", (void *)bds_my_dlopen_preflight, (void **)&orig_dlopen_preflight},
     };
     bds_rebind_symbols(rebindings, sizeof(rebindings) / sizeof(rebindings[0]));
+
+    // ★ 网络层伪装：载入开关（netSpoofEnabled / netSpoofDNS / netSpoofHideVPN）
+    //   并自定义 DNS 服务器列表。hook 已经在上面那张表里装好了，
+    //   这里只是把配置读进来 —— 判定入口每次都看配置，改完不用重启。
+    BDSNetSpoofStart(^(const BDSNetSpoofHook *table, size_t n) {
+        // 表里的 hook 已经在上面手工登记过了；这里只负责载入配置。
+        (void)table; (void)n;
+    });
 }
 
 #pragma mark - 悬浮配置入口
@@ -5410,7 +5492,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.32";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.33";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -6585,6 +6667,7 @@ static void BDSInstallUI(void) {
 
 
 #import "Shared/BDSCashTelemetryBlocker.h"
+#import "Shared/NetworkSpoofer.h"
 
 #pragma mark - 构造函数
 
