@@ -302,7 +302,7 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
     return v ? [v integerValue] : def;
 }
 
-// ── 10.01.37 写盘统一：前向声明（定义在下方「写盘统一」段）──
+// ── 10.01.38 写盘统一：前向声明（定义在下方「写盘统一」段）──
 static void BDSIDMapBuild(void);      // 由配置重建「容器键 → 假身份值」映射
 static void BDSIDWriteViaAPI(void);   // 用公开 API 写入统一值（cfprefsd 落盘）
 static void BDSUnifyIdentity(void);   // 建表 + 写盘 + 装钩子
@@ -677,7 +677,7 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 187 || !loaded[@"blockStatCashTelemetry"] || loaded[@"spoofStatCash"]) {
-        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.37 起默认开启。旧试验键不继承。
+        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.38 起默认开启。旧试验键不继承。
         merged[@"configVersion"] = @187;
         if (!loaded[@"blockStatCashTelemetry"]) merged[@"blockStatCashTelemetry"] = @YES;
         [merged removeObjectForKey:@"spoofStatCash"];
@@ -703,7 +703,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.01.37：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
+        // 10.01.38：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
         // 光改默认值救不了，必须强制写一次 @YES 并落盘；只执行一次，
         // 用户之后在面板手动关掉仍然有效。
         merged[@"blockStatCashTelemetry"] = @YES;
@@ -877,7 +877,7 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 }
 
 
-#pragma mark - 写盘统一（10.01.37）
+#pragma mark - 写盘统一（10.01.38）
 //
 // 背景：百度极速会把「上一次读到的设备信息」缓存到容器 plist。
 //       插件只钩运行时返回值时，plist 里仍留着旧值 / 真机值，
@@ -995,7 +995,7 @@ static void BDSIDMapBuild(void) {
 
 // ── ① 用公开 API 写盘（不碰文件）────────────────────────────
 //
-// 教训（10.01.37 前两版实测）：
+// 教训（10.01.38 前两版实测）：
 //   · 直接 writeToFile: 重写域文件 → 和 App 内存副本打架，440 键被写成 290 个
 //   · 钩 setObject:forKey: 忽略写入 → App 写不进去，落盘也没这些键，同样丢数据
 //
@@ -5028,8 +5028,13 @@ static NSString *BDSConfigSummary(void) {
         NSDictionary *hits = [NSDictionary dictionaryWithContentsOfFile:
             [docs stringByAppendingPathComponent:@"bdspoofer_cash_hits.plist"]];
         if (hits) {
+            // 10.01.38：拦到次数 = 网页 + 原生 之和。
+            // 之前直接用 total，但 total 里混进了「安装」计数（每次装 hook
+            // 记一条"金额拦截已安装"），导致面板数字对不上（4 ≠ 网页2+原生0）。
+            NSInteger webN = [hits[@"src.web"] integerValue];
+            NSInteger natN = [hits[@"src.native"] integerValue];
             [summary appendFormat:@"\n\n拦到次数：%@（网页 %@ / 原生 %@）",
-                hits[@"total"] ?: @0, hits[@"src.web"] ?: @0, hits[@"src.native"] ?: @0];
+                @(webN + natN), @(webN), @(natN)];
         } else if (cfgBool(@"blockStatCashTelemetry", YES)) {
             [summary appendString:@"\n\n拦到次数：0（还没命中过）"];
         }
@@ -5264,7 +5269,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.37";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.38";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
