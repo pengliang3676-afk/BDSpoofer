@@ -82,6 +82,9 @@
 //    arm64 iOS 上 stat 已是 64 位 inode，不 hook stat64。
 //
 
+// 网络层伪装模块（DNS 服务器列表 / 隧道网卡隐藏）
+#import "Shared/NetworkSpoofer.h"
+
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <AdSupport/AdSupport.h>
@@ -6667,7 +6670,6 @@ static void BDSInstallUI(void) {
 
 
 #import "Shared/BDSCashTelemetryBlocker.h"
-#import "Shared/NetworkSpoofer.h"
 
 #pragma mark - 构造函数
 
