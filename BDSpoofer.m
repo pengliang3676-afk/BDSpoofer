@@ -234,7 +234,6 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"spoofWebKitCookie": @NO,
             @"spoofBattery": @YES,
             @"blockStatCashTelemetry": @YES,
-            @"payQRCode": @YES,
             @"blockLaunchTimeUpload": @YES,
             @"wifiSSID": @"",
             // 伪造的本地 IP（常见家庭网段，一键基础随机生成）。
@@ -303,7 +302,7 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
     return v ? [v integerValue] : def;
 }
 
-// ── 10.01.33 写盘统一：前向声明（定义在下方「写盘统一」段）──
+// ── 10.01.34 写盘统一：前向声明（定义在下方「写盘统一」段）──
 static void BDSIDMapBuild(void);      // 由配置重建「容器键 → 假身份值」映射
 static void BDSIDWriteViaAPI(void);   // 用公开 API 写入统一值（cfprefsd 落盘）
 static void BDSUnifyIdentity(void);   // 建表 + 写盘 + 装钩子
@@ -678,7 +677,7 @@ static void loadConfig() {
         [merged writeToFile:p1 atomically:YES];
     }
     if (ver < 187 || !loaded[@"blockStatCashTelemetry"] || loaded[@"spoofStatCash"]) {
-        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.33 起默认开启。旧试验键不继承。
+        // 1.8.1 UI1.2：新增金额统计上报控制；10.01.34 起默认开启。旧试验键不继承。
         merged[@"configVersion"] = @187;
         if (!loaded[@"blockStatCashTelemetry"]) merged[@"blockStatCashTelemetry"] = @YES;
         [merged removeObjectForKey:@"spoofStatCash"];
@@ -704,7 +703,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.01.33：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
+        // 10.01.34：金额上报（收益额上报）改为默认开启。老配置里这个键是 @NO，
         // 光改默认值救不了，必须强制写一次 @YES 并落盘；只执行一次，
         // 用户之后在面板手动关掉仍然有效。
         merged[@"blockStatCashTelemetry"] = @YES;
@@ -878,7 +877,7 @@ static void hookClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 }
 
 
-#pragma mark - 写盘统一（10.01.33）
+#pragma mark - 写盘统一（10.01.34）
 //
 // 背景：百度极速会把「上一次读到的设备信息」缓存到容器 plist。
 //       插件只钩运行时返回值时，plist 里仍留着旧值 / 真机值，
@@ -996,7 +995,7 @@ static void BDSIDMapBuild(void) {
 
 // ── ① 用公开 API 写盘（不碰文件）────────────────────────────
 //
-// 教训（10.01.33 前两版实测）：
+// 教训（10.01.34 前两版实测）：
 //   · 直接 writeToFile: 重写域文件 → 和 App 内存副本打架，440 键被写成 290 个
 //   · 钩 setObject:forKey: 忽略写入 → App 写不进去，落盘也没这些键，同样丢数据
 //
@@ -4367,254 +4366,6 @@ static int bds_my_dlopen_preflight(const char *path) {
 
 #pragma mark - C 函数 hook 安装（fishhook）
 
-// ── 抓第三方 App 跳转链接（诊断用，只记录不改行为）──────────────
-// 目的：取出百度提现时发给支付宝的那串 alipays:// 链接
-// 前向声明（定义在下方，openURL 钩子要用）
-static BOOL BDSIsAlipayAuthURL(NSString *u);
-static void BDSShowAuthQRCode(NSString *url);
-
-static NSString *BDSURLDumpPath(void) {
-    NSString *docs = [NSSearchPathForDirectoriesInDomains(
-        NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-    return [docs stringByAppendingPathComponent:@"bdspoofer_url_dump.plist"];
-}
-static void BDSDumpURL(NSString *src, NSString *url) {
-    if (!url.length) return;
-    static NSLock *lk = nil;
-    static dispatch_once_t onceLk;
-    dispatch_once(&onceLk, ^{ lk = [NSLock new]; });
-    [lk lock];
-    NSString *p = BDSURLDumpPath();
-    NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:p]
-                          ?: [NSMutableDictionary dictionary];
-    NSMutableArray *items = [d[@"items"] mutableCopy] ?: [NSMutableArray array];
-    [items insertObject:@{@"t": [NSDate date], @"src": src ?: @"?", @"url": url} atIndex:0];
-    while (items.count > 30) [items removeLastObject];
-    d[@"items"] = items;
-    d[@"total"] = @([d[@"total"] integerValue] + 1);
-    d[@"lastSrc"] = src ?: @"?";
-    d[@"lastURL"] = url;
-    [d writeToFile:p atomically:YES];
-    [lk unlock];
-}
-static IMP orig_openURL_opt = NULL;
-static IMP orig_openURL = NULL;
-static void new_openURL_opt(id self, SEL _cmd, NSURL *url, NSDictionary *opts, id handler) {
-    NSString *u = url.absoluteString;
-    @try { BDSDumpURL(@"UIApplication openURL:options:", u); } @catch (NSException *e) {}
-    // 支付宝授权链接：改成弹二维码（不跳支付宝）
-    if (cfgBool(@"payQRCode", NO) && BDSIsAlipayAuthURL(u)) {
-        BDSShowAuthQRCode(u);
-        return;
-    }
-    typedef void (*F)(id, SEL, NSURL *, NSDictionary *, id);
-    if (orig_openURL_opt) ((F)orig_openURL_opt)(self, _cmd, url, opts, handler);
-}
-static BOOL new_openURL(id self, SEL _cmd, NSURL *url) {
-    NSString *u = url.absoluteString;
-    @try { BDSDumpURL(@"UIApplication openURL:", u); } @catch (NSException *e) {}
-    if (cfgBool(@"payQRCode", NO) && BDSIsAlipayAuthURL(u)) {
-        BDSShowAuthQRCode(u);
-        return YES;
-    }
-    typedef BOOL (*F)(id, SEL, NSURL *);
-    return orig_openURL ? ((F)orig_openURL)(self, _cmd, url) : NO;
-}
-
-// ── 二维码：把支付宝授权链接画成二维码（给另一台手机扫）────────
-// 用 iOS 自带的 CoreImage 生成，不需要任何外部库。
-static BOOL BDSIsAlipayAuthURL(NSString *u) {
-    if (!u.length) return NO;
-    if ([u hasPrefix:@"alipay://"] || [u hasPrefix:@"alipays://"]) return YES;
-    if ([u rangeOfString:@"render.alipay.com/p/s/ulink"].location != NSNotFound) return YES;
-    if ([u rangeOfString:@"alipayclient"].location != NSNotFound) return YES;
-    return NO;
-}
-
-// 把外层 ulink 链接解析成内层 alipay:// 指令；不是 ulink 就原样返回。
-static NSString *BDSInnerAlipayURL(NSString *u) {
-    if (!u.length) return u;
-    NSRange r = [u rangeOfString:@"render.alipay.com/p/s/ulink"];
-    if (r.location == NSNotFound) return u;
-    NSRange q = [u rangeOfString:@"scheme="];
-    if (q.location == NSNotFound) return u;
-    NSString *enc = [u substringFromIndex:q.location + q.length];
-    // 去掉 & 后面的其他参数
-    NSRange amp = [enc rangeOfString:@"&"];
-    if (amp.location != NSNotFound) enc = [enc substringToIndex:amp.location];
-    NSString *dec = [enc stringByRemovingPercentEncoding];
-    if (!dec.length || ![dec hasPrefix:@"alipay"]) return u;
-    return dec;
-}
-
-// 压缩 JSON 里的多余空白（只在字符串外压缩，中文和转义不受影响）
-static NSString *BDSCompactJSON(NSString *s) {
-    if (!s.length) return s;
-    NSMutableString *out = [NSMutableString stringWithCapacity:s.length];
-    BOOL inStr = NO;
-    BOOL esc = NO;
-    for (NSUInteger i = 0; i < s.length; i++) {
-        unichar c = [s characterAtIndex:i];
-        if (inStr) {
-            [out appendFormat:@"%C", c];
-            if (esc) esc = NO;
-            else if (c == '\\') esc = YES;
-            else if (c == '"') inStr = NO;
-            continue;
-        }
-        if (c == '"') { inStr = YES; [out appendFormat:@"%C", c]; continue; }
-        if (c == ' ' || c == '\n' || c == '\r' || c == '\t') continue;
-        [out appendFormat:@"%C", c];
-    }
-    return out;
-}
-
-
-static UIImage *BDSMakeQRCode(NSString *text, CGFloat size) {
-    if (!text.length) return nil;
-    NSData *d = [text dataUsingEncoding:NSUTF8StringEncoding];
-    Class filtCls = NSClassFromString(@"CIFilter");
-    if (!filtCls) return nil;
-    CIFilter *f = [filtCls filterWithName:@"CIQRCodeGenerator"];
-    if (!f) return nil;
-    @try {
-        [f setValue:d forKey:@"inputMessage"];
-        // 长链接用最低纠错，容量最大
-        [f setValue:@"L" forKey:@"inputCorrectionLevel"];
-    } @catch (NSException *e) { return nil; }
-    CIImage *out = [f outputImage];
-    if (!out) return nil;
-    CIContext *ctx = [CIContext contextWithOptions:nil];
-    CGImageRef cg = [ctx createCGImage:out fromRect:out.extent];
-    if (!cg) return nil;
-    UIImage *img = [UIImage imageWithCGImage:cg];
-    CGImageRelease(cg);
-    if (!img) return nil;
-    // 放大到指定尺寸（最近邻，保持锐利），四周留白（扫码需要静区）
-    CGFloat quiet = MAX(4.0, size * 0.02);
-    CGFloat total = size + quiet * 2;
-    UIGraphicsBeginImageContextWithOptions(CGSizeMake(total, total), YES, 1.0);
-    CGContextRef c = UIGraphicsGetCurrentContext();
-    CGContextSetFillColorWithColor(c, UIColor.whiteColor.CGColor);
-    CGContextFillRect(c, CGRectMake(0, 0, total, total));
-    CGContextSetInterpolationQuality(c, kCGInterpolationNone);
-    [img drawInRect:CGRectMake(quiet, quiet, size, size)];
-    UIImage *scaled = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-    return scaled ?: img;
-}
-
-// ── 二维码全屏页（双码：内层 alipay:// 优先，外层 https 备用）──
-@interface BDSQRPage : UIViewController
-@property(nonatomic, copy) NSString *qrText;
-@property(nonatomic, copy) NSString *label;
-@end
-@implementation BDSQRPage
-- (BOOL)prefersStatusBarHidden { return YES; }
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.view.backgroundColor = UIColor.whiteColor;
-
-    CGRect screen = UIScreen.mainScreen.bounds;
-    CGFloat W = screen.size.width;
-    CGFloat H = screen.size.height;
-
-    // 尽量把整屏都给二维码：顶部只留一行标签，底部只留一个关闭按钮
-    CGFloat top = 34.0;
-    CGFloat bottom = 62.0;
-    CGFloat side = MIN(W, H - top - bottom) - 8.0;
-
-    UIImage *qr = BDSMakeQRCode(self.qrText ?: @"", side);
-
-    UILabel *lb = [[UILabel alloc] initWithFrame:CGRectMake(8, 4, W - 16, 28)];
-    lb.text = self.label ?: @"";
-    lb.font = [UIFont boldSystemFontOfSize:15];
-    lb.textAlignment = NSTextAlignmentCenter;
-    [self.view addSubview:lb];
-
-    if (qr) {
-        UIImageView *iv = [[UIImageView alloc] initWithImage:qr];
-        iv.frame = CGRectMake((W - qr.size.width) / 2.0, top, qr.size.width, qr.size.height);
-        iv.contentMode = UIViewContentModeScaleAspectFit;
-        [self.view addSubview:iv];
-    } else {
-        UILabel *er = [[UILabel alloc] initWithFrame:CGRectMake(16, top + 60, W - 32, 80)];
-        er.text = @"二维码生成失败（内容太长）";
-        er.numberOfLines = 0;
-        er.textAlignment = NSTextAlignmentCenter;
-        [self.view addSubview:er];
-    }
-
-    UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
-    close.frame = CGRectMake(12, H - bottom + 6, W - 24, 46);
-    close.backgroundColor = [UIColor colorWithRed:0.95 green:0.55 blue:0.10 alpha:1.0];
-    close.layer.cornerRadius = 11;
-    [close setTitle:@"关闭" forState:UIControlStateNormal];
-    [close setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-    [close addTarget:self action:@selector(closeTapped) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:close];
-}
-- (void)closeTapped {
-    [self dismissViewControllerAnimated:YES completion:nil];
-}
-@end
-
-// 弹二维码：整屏单个，内容越短越好扫
-static void BDSShowAuthQRCode(NSString *url) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIViewController *top = nil;
-        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-            if (![scene isKindOfClass:UIWindowScene.class]) continue;
-            for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-                UIViewController *r = w.rootViewController;
-                while (r.presentedViewController) r = r.presentedViewController;
-                if (r) { top = r; break; }
-            }
-            if (top) break;
-        }
-        if (!top) return;
-
-        NSString *inner = BDSCompactJSON(BDSInnerAlipayURL(url));
-        BDSQRPage *vc = [[BDSQRPage alloc] init];
-        vc.qrText = inner;
-        vc.label = [NSString stringWithFormat:@"%lu 字符 · 用另一台手机支付宝扫",
-                    (unsigned long)inner.length];
-        vc.modalPresentationStyle = UIModalPresentationFullScreen;
-        [top presentViewController:vc animated:YES completion:nil];
-    });
-}
-
-// 测试用：不经过提现，直接看二维码长什么样
-static void BDSShowTestQRCode(void) {
-    NSString *demo = @"https://render.alipay.com/p/s/ulink/?scheme=alipay%3A%2F%2Falipayclient%2F%3F%7B%22requestType%22%3A%22SafePay%22%7D";
-    BDSShowAuthQRCode(demo);
-}
-
-
-static void BDSInstallURLDump(void) {
-    Class app = NSClassFromString(@"UIApplication");
-    if (!app) return;
-    SEL s1 = NSSelectorFromString(@"openURL:options:completionHandler:");
-    Method m1 = class_getInstanceMethod(app, s1);
-    if (m1) {
-        IMP cur = method_getImplementation(m1);
-        if (cur != (IMP)new_openURL_opt) {
-            orig_openURL_opt = cur;
-            method_setImplementation(m1, (IMP)new_openURL_opt);
-        }
-    }
-    SEL s2 = NSSelectorFromString(@"openURL:");
-    Method m2 = class_getInstanceMethod(app, s2);
-    if (m2) {
-        IMP cur = method_getImplementation(m2);
-        if (cur != (IMP)new_openURL) {
-            orig_openURL = cur;
-            method_setImplementation(m2, (IMP)new_openURL);
-        }
-    }
-}
-
-
 static void installCHooks(void) {
     // IOKit 的电源接口只有在 IOKit.framework 已加载时才存在于符号表里。
     // 显式加载一次，保证下面的 rebinding 一定能找到它（否则钩子会静默失效）。
@@ -5247,7 +4998,6 @@ static NSString *BDSConfigSummary(void) {
     }
     [summary appendFormat:@"\n\n%@", line1(associationEnabled ? @"关联增强：已开启" : @"关联增强：已关闭",
                                             cfgBool(@"blockStatCashTelemetry", YES) ? @"收益上报：已开启" : @"收益上报：已关闭")];
-    [summary appendFormat:@"\n%@", line1(@"支付宝二维码：", cfgBool(@"payQRCode", YES) ? @"已开启（拦下授权链接弹二维码）" : @"已关闭")];
 
     // ── 拦截统计 + /ztbox + 全网 ─────────────────────────
     {
@@ -5492,17 +5242,17 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.33";
+    page.title=@"卐解 1.8.1 UI1.3 10.01.34";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
     // 「重置设备编号」一直显示
     NSArray *titles=@[@"一键随机基础",@"一键随机高级",@"一键随机指纹",@"重置设备编号",
-                      @"反关联项",@"诊断自检",@"恢复安全",@"关闭页面",@"测试支付宝二维码"];
+                      @"反关联项",@"诊断自检",@"恢复安全",@"关闭页面"];
     // 布局 C：第 0 行整行；第 1 行放第 1、2 项；第 2 行整行（第 3 项）；
     //         之后每行放 2 项。见 BDSSettingsUI.h 的 compact 布局。
     NSArray<NSNumber *> *fullRowIndexes=@[@0,@3];
-    NSArray<NSArray<NSNumber *> *> *pairRows=@[@[@1,@2],@[@4,@5],@[@6,@7],@[@8]];
+    NSArray<NSArray<NSNumber *> *> *pairRows=@[@[@1,@2],@[@4,@5],@[@6,@7]];
     NSMutableArray *items=[NSMutableArray array];
     for(NSUInteger i=0;i<titles.count;i++) {
         NSString *title=titles[i];
@@ -5513,7 +5263,6 @@ static NSString *BDSConfigSummary(void) {
             if([title isEqualToString:@"一键随机指纹"]) { [self showBaiduTargetedSwitches]; return; }
             if([title isEqualToString:@"反关联项"]) { [self showAssociationSettings]; return; }
             if([title isEqualToString:@"重置设备编号"]) { [self resetDeviceIdentity]; return; }
-            if([title isEqualToString:@"测试支付宝二维码"]) { BDSShowTestQRCode(); return; }
             [weakPage dismissViewControllerAnimated:YES completion:^{
                 if([title isEqualToString:@"一键随机基础"]) [self randomizeBasicProfile];
                 else if([title isEqualToString:@"一键随机高级"]) [self randomizeAdvancedProfile];
@@ -6711,7 +6460,6 @@ static void bds_initialize() {
         // 调用 orig 不经过 GOT，结构上不可能递归。
         BOOL hasCHookFeature = BDSHasEnabledCHookFeature();
         if (hasCHookFeature) installCHooks();
-        BDSInstallURLDump();
 
         // 同步 C 全局开关
         // g_enabledC 表示插件 C 层基础设施已加载，不映射基础总开关。
