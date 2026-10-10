@@ -42,6 +42,7 @@
 #import <stdarg.h>
 #import <pthread.h>
 #import <notify.h>
+#import <resolv.h>
 
 #pragma mark - 配置
 
@@ -310,6 +311,90 @@ int BDSNetSpoofIsResolvConf(const char *path) {
            strcmp(path, "/private/etc/resolv.conf") == 0;
 }
 
+#pragma mark - res_9_getservers 改写（API 路）
+
+/// 把 res_9_getservers 返回的列表改写成假 DNS。
+/// union res_sockaddr_union 是公开结构（resolv.h），不需要猜任何偏移；
+/// 只改调用方给的输出缓冲区，绝不碰 res_state 内部。
+/// 返回 1 = 改写了；返回 0 = 没动（开关关 / 参数无效）。
+int BDSNetSpoofRewriteDNSList(union res_sockaddr_union *set, int cnt) {
+    if (!set || cnt <= 0) return 0;
+    if (!g_bdsNetCfg.enabled || !g_bdsNetCfg.spoofDNS) return 0;
+    int n = g_bdsNetCfg.dnsServerCount;
+    if (n <= 0) return 0;
+
+    for (int i = 0; i < cnt; i++) {
+        const char *ip = g_bdsNetCfg.dnsServers[i % n];
+        struct in_addr addr;
+        if (inet_pton(AF_INET, ip, &addr) != 1) continue;
+        // IPv6 条目也改成假 IPv4：长度、家族、端口、地址全套重写，
+        // 调用方看到的列表就全是假 IPv4 DNS。
+        set[i].sin.sin_len = sizeof(struct sockaddr_in);
+        set[i].sin.sin_family = AF_INET;
+        set[i].sin.sin_port = htons(53);
+        set[i].sin.sin_addr = addr;
+    }
+    return 1;
+}
+
+/// 把 sockaddr 列表读成字符串（观测用）。返回自动释放的 NSString。
+static NSString *BDSNetSpoofDescribeDNSList(const union res_sockaddr_union *set, int cnt) {
+    NSMutableArray *parts = [NSMutableArray array];
+    for (int i = 0; i < cnt; i++) {
+        if (set[i].sa.sa_family == AF_INET) {
+            char buf[INET_ADDRSTRLEN] = {0};
+            inet_ntop(AF_INET, &set[i].sin.sin_addr, buf, sizeof(buf));
+            [parts addObject:[NSString stringWithUTF8String:buf]];
+        } else if (set[i].sa.sa_family == AF_INET6) {
+            char buf[INET6_ADDRSTRLEN] = {0};
+            inet_ntop(AF_INET6, &set[i].sin6.sin6_addr, buf, sizeof(buf));
+            [parts addObject:[NSString stringWithUTF8String:buf]];
+        }
+    }
+    return parts.count ? [parts componentsJoinedByString:@" / "] : @"(空)";
+}
+
+#pragma mark - 观测日志（记录百度实际拿到的网络参数）
+
+static NSString *BDSNetSpoofObsLogPath(void) {
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    return [docs stringByAppendingPathComponent:@"bdspoofer_net_obs.plist"];
+}
+
+/// 记录一次「百度来拿网络参数，我们返回了什么」。
+/// src: file(读resolv.conf) / res9(res_9_getservers) / ifaddrs(getifaddrs) / selfcheck
+static void BDSNetSpoofObserve(NSString *src, NSString *what, NSString *detail) {
+    if (!src.length) return;
+    static NSLock *lock = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSLock new]; });
+    [lock lock];
+    @autoreleasepool {
+        NSString *p = BDSNetSpoofObsLogPath();
+        NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:p]
+                              ?: [NSMutableDictionary dictionary];
+        d[@"total"] = @([d[@"total"] integerValue] + 1);
+        NSString *k = [NSString stringWithFormat:@"src.%@", src];
+        d[k] = @([d[k] integerValue] + 1);
+        d[@"lastTime"] = [NSDate date];
+
+        NSMutableArray *items = [d[@"items"] mutableCopy] ?: [NSMutableArray array];
+        NSMutableDictionary *it = [NSMutableDictionary dictionary];
+        it[@"t"] = [NSDate date];
+        it[@"src"] = src;
+        if (what.length) it[@"what"] = what;
+        if (detail.length) it[@"detail"] = detail.length > 400 ? [detail substringToIndex:400] : detail;
+        [items insertObject:it atIndex:0];
+        while (items.count > 30) [items removeLastObject];
+        d[@"items"] = items;
+        [d writeToFile:p atomically:YES];
+    }
+    [lock unlock];
+}
+
+
+
 static int BDSNetSpoof_open(const char *path, int oflag, ...) {
     if (BDSNetSpoofIsResolvConf(path)) {
         const char *fake = BDSNetSpoofResolvPath();
@@ -542,6 +627,40 @@ static NSString *BDSNetSpoofDiagnosticsBody(void) {
         [r appendString:@"  → 未生效（隐藏隧道网卡开关是关的）\n"];
     } else {
         [r appendString:@"  → 百度遍历时拿不到上面「已隐藏」那几块\n"];
+    }
+
+    // ── ③ 百度实际拿到的（本进程观测）──
+    {
+        NSDictionary *obs = [NSDictionary dictionaryWithContentsOfFile:BDSNetSpoofObsLogPath()];
+        if (obs) {
+            [r appendFormat:@"\n【百度实际拿到的网络参数（本进程观测 %@ 次）】\n",
+                obs[@"total"] ?: @0];
+            NSInteger r9 = [obs[@"src.res9"] integerValue];
+            NSInteger rf = [obs[@"src.file"] integerValue];
+            NSInteger rg = [obs[@"src.ifaddrs"] integerValue];
+            if (r9) {
+                NSString *last = @"?";
+                for (NSDictionary *it in (obs[@"items"] ?: @[])) {
+                    if ([it[@"src"] isEqualToString:@"res9"]) { last = it[@"detail"] ?: @"?"; break; }
+                }
+                [r appendFormat:@"  res_9_getservers 被调 %ld 次，最后返回给它的：%@\n",
+                    (long)r9, last];
+            }
+            if (rf) [r appendFormat:@"  /etc/resolv.conf 文件路被调 %ld 次（全给假文件）\n", (long)rf];
+            if (rg) [r appendFormat:@"  getifaddrs 被调 %ld 次\n", (long)rg];
+            NSArray *items = obs[@"items"] ?: @[];
+            if (items.count) {
+                [r appendString:@"  最近 4 条：\n"];
+                for (NSDictionary *it in [items subarrayWithRange:
+                        NSMakeRange(0, MIN((NSUInteger)4, items.count))]) {
+                    NSString *what = it[@"what"] ?: @"?";
+                    NSString *detail = it[@"detail"] ?: @"";
+                    [r appendFormat:@"    · %@ %@\n", what, detail];
+                }
+            }
+        } else {
+            [r appendString:@"\n【百度实际拿到的网络参数】暂无观测记录（它还没来拿过）\n"];
+        }
     }
 
     [r appendString:@"\n说明：真机 DNS 用 dlsym(RTLD_NEXT) 直读，App 看到的是走插件 hook 的结果；\n"];
