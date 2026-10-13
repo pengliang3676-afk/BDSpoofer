@@ -29,6 +29,7 @@ COPYFILE_DISABLE=1 tar -C build-ui1/package --exclude='./DEBIAN' -czf build-ui1/
 for BDS_ARCH in arm64 arm64e; do
     xcrun --sdk iphoneos clang -arch "$BDS_ARCH" "${BDS_COMMON[@]}" \
         -framework Foundation -framework UIKit -framework CoreGraphics \
+        -dynamiclib -install_name @rpath/AdAutoClose.dylib \
         AdAutoClose/AdAutoClose.m -o "build-ui1/AdAutoClose_$BDS_ARCH.dylib"
 done
 lipo -create build-ui1/AdAutoClose_arm64.dylib build-ui1/AdAutoClose_arm64e.dylib \
