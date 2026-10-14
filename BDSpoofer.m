@@ -4067,6 +4067,17 @@ static UIWindow *BDSMainWindow(void) {
 }
 @end
 
+// 关键：window 自身在没有子视图命中时默认返回 self，会整块拦截触摸。
+// 重写让“命中 window 自身/空白背景”时返回 nil，事件才会落回下层 App。
+@interface BDSOverlayWindow : UIWindow
+@end
+@implementation BDSOverlayWindow
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    return (hit == self) ? nil : hit;
+}
+@end
+
 static UIWindowScene *BDSActiveWindowScene(void) {
     UIWindowScene *fallback = nil;
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
@@ -4088,7 +4099,7 @@ static UIWindow *BDSFloatingOverlayWindow(void) {
         sOverlay = nil;
     }
     if (!sOverlay) {
-        sOverlay = [[UIWindow alloc] initWithWindowScene:scene];
+        sOverlay = [[BDSOverlayWindow alloc] initWithWindowScene:scene];
         sOverlay.frame = [scene.coordinateSpace bounds];
         sOverlay.backgroundColor = UIColor.clearColor;
         sOverlay.opaque = NO;
@@ -4809,7 +4820,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.14.01";
+    page.title=@"卐解 1.8.1 UI1.3 10.14.02";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
