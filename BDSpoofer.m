@@ -4047,8 +4047,66 @@ static UIWindow *BDSMainWindow(void) {
     return fallback;
 }
 
-static UIViewController *BDSTopController(void) {
-    UIViewController *controller = BDSMainWindow().rootViewController;
+#pragma mark - 悬浮球独立 overlay window（高层级压过开屏广告/弹窗，触摸穿透）
+
+// 只有命中悬浮球本身才响应，空白区域全部穿透给下层 App。
+@interface BDSPassthroughView : UIView
+@end
+@implementation BDSPassthroughView
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    return (hit == self) ? nil : hit;
+}
+@end
+
+@interface BDSOverlayViewController : UIViewController
+@end
+@implementation BDSOverlayViewController
+- (void)loadView {
+    self.view = [BDSPassthroughView new];
+}
+@end
+
+static UIWindowScene *BDSActiveWindowScene(void) {
+    UIWindowScene *fallback = nil;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        UIWindowScene *ws = (UIWindowScene *)scene;
+        if (ws.activationState == UISceneActivationStateForegroundActive) return ws;
+        if (!fallback && ws.activationState == UISceneActivationStateForegroundInactive) fallback = ws;
+    }
+    return fallback;
+}
+
+// 悬浮球专用独立 window，层级远离开屏广告/弹窗，不随 App keyWindow 切换被盖住。
+static UIWindow *BDSFloatingOverlayWindow(void) {
+    static UIWindow *sOverlay = nil;
+    UIWindowScene *scene = BDSActiveWindowScene();
+    if (!scene) return nil;
+    if (sOverlay && sOverlay.windowScene != scene) {
+        sOverlay.hidden = YES;
+        sOverlay = nil;
+    }
+    if (!sOverlay) {
+        sOverlay = [[UIWindow alloc] initWithWindowScene:scene];
+        sOverlay.frame = [scene.coordinateSpace bounds];
+        sOverlay.backgroundColor = UIColor.clearColor;
+        sOverlay.opaque = NO;
+        sOverlay.windowLevel = UIWindowLevelAlert + 1000.0;
+        sOverlay.rootViewController = [BDSOverlayViewController new];
+        sOverlay.rootViewController.view.frame = sOverlay.bounds;
+        sOverlay.rootViewController.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        sOverlay.rootViewController.view.backgroundColor = UIColor.clearColor;
+        sOverlay.userInteractionEnabled = YES;
+        sOverlay.hidden = NO;
+    }
+    // 广告/弹窗可能后建更高 window，每次挂载都把层级顶回去并显示。
+    sOverlay.windowLevel = UIWindowLevelAlert + 1000.0;
+    sOverlay.hidden = NO;
+    return sOverlay;
+}
+
+static UIViewController *BDSTopFromRoot(UIViewController *controller) {
     while (controller) {
         if (controller.presentedViewController) {
             controller = controller.presentedViewController;
@@ -4061,6 +4119,16 @@ static UIViewController *BDSTopController(void) {
         }
     }
     return controller;
+}
+
+static UIViewController *BDSTopController(void) {
+    // 面板优先 present 在悬浮球 overlay 窗口内：盖在悬浮球之上，也不被广告/弹窗遮挡。
+    UIWindow *overlay = BDSFloatingOverlayWindow();
+    if (overlay.rootViewController) {
+        UIViewController *top = BDSTopFromRoot(overlay.rootViewController);
+        if (top) return top;
+    }
+    return BDSTopFromRoot(BDSMainWindow().rootViewController);
 }
 
 static NSString *BDSOnOff(BOOL value) {
@@ -4592,13 +4660,14 @@ static NSString *BDSConfigSummary(void) {
 
 - (void)attachButton {
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *window = BDSMainWindow();
-        if (!window) return;
-        UIButton *button = objc_getAssociatedObject(window, BDSButtonKey);
+        UIWindow *overlay = BDSFloatingOverlayWindow();
+        if (!overlay) return;
+        UIView *container = overlay.rootViewController.view;
+        UIButton *button = objc_getAssociatedObject(overlay, BDSButtonKey);
         if (!button) {
             BOOL leftSide = [cfgStr(@"floatingButtonSide", @"right") isEqualToString:@"left"];
-            CGFloat containerWidth = CGRectGetWidth(window.bounds);
-            CGFloat containerHeight = CGRectGetHeight(window.bounds);
+            CGFloat containerWidth = CGRectGetWidth(overlay.bounds);
+            CGFloat containerHeight = CGRectGetHeight(overlay.bounds);
             CGFloat centerY = containerHeight * ((CGFloat)cfgInt(@"floatingButtonYPermille", 520) / 1000.0);
             centerY = MIN(MAX(centerY, BDSButtonFullSize / 2.0 + 44.0),
                           containerHeight - BDSButtonFullSize / 2.0 - 20.0);
@@ -4619,11 +4688,11 @@ static NSString *BDSConfigSummary(void) {
             [button addTarget:self action:@selector(buttonTapped:) forControlEvents:UIControlEventTouchUpInside];
             UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(buttonPanned:)];
             [button addGestureRecognizer:pan];
-            [window addSubview:button];
-            objc_setAssociatedObject(window, BDSButtonKey, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [container addSubview:button];
+            objc_setAssociatedObject(overlay, BDSButtonKey, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             [self scheduleButtonCollapse:button];
         }
-        [window bringSubviewToFront:button];
+        [container bringSubviewToFront:button];
     });
 }
 
@@ -4740,7 +4809,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.01.03";
+    page.title=@"卐解 1.8.1 UI1.3 10.14.01";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5883,16 +5952,26 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
 
 static void BDSInstallUI(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
-                                                          object:nil
-                                                           queue:NSOperationQueue.mainQueue
-                                                      usingBlock:^(NSNotification *note) {
+        NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+        [nc addObserverForName:UIApplicationDidBecomeActiveNotification
+                        object:nil
+                         queue:NSOperationQueue.mainQueue
+                    usingBlock:^(NSNotification *note) {
             (void)note;
             // 从卍解返回百度时同步它刚写入的机型、系统和定向参数。
             loadConfig();
             [[BDSUIController shared] attachButton];
         }];
-        for (NSNumber *delay in @[@0.8, @2.0, @5.0]) {
+        // 主窗口一出现就挂载（开屏广告结束后 keyWindow 会切换，这里也能重新置顶）。
+        [nc addObserverForName:UIWindowDidBecomeKeyNotification
+                        object:nil
+                         queue:NSOperationQueue.mainQueue
+                    usingBlock:^(NSNotification *note) {
+            (void)note;
+            [[BDSUIController shared] attachButton];
+        }];
+        // 启动阶段多次重试，覆盖开屏广告/引导弹窗占用的时间窗。
+        for (NSNumber *delay in @[@0.8, @2.0, @5.0, @8.0, @12.0]) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
                 [[BDSUIController shared] attachButton];
