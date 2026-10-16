@@ -174,7 +174,8 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
     NSDictionary *item=group[indexPath.row];
     cell.textLabel.text=item[@"name"];
     cell.textLabel.numberOfLines=0;
-    cell.detailTextLabel.text=[item[@"off"] boolValue]?@"默认关闭":nil;
+    cell.detailTextLabel.text=item[@"note"] ?: ([item[@"off"] boolValue]?@"默认关闭":nil);
+    cell.detailTextLabel.numberOfLines=0;
     UISwitch *toggle=[[UISwitch alloc] init];
     toggle.on=[self.configuration[item[@"key"]] boolValue];
     toggle.tag=indexPath.section*100+indexPath.row;

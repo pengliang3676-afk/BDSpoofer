@@ -4,6 +4,9 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  10.14.02：仅走L2TP网。看系统有没有 ppp 网卡（左上角 VPN 图标）。
+//    图标在，极速照常上网，换一条 L2TP 也不拦。图标没了，极速自己的新请求发不出去。
+//    不关 App，不查出口 IP。开关在反关联页，默认开，关掉立刻放行。
 //  9.28-03：一键随机后重启保留参数；已随机配置不再被旧升级清开关/改机型。
 //  9.28-02：一键基础打开基础 6 项、高级前 3 项、反关联前 12 项。
 //  9.25-01：未点一键基础/一键高级前不写配置，也不套用默认机型。
@@ -118,6 +121,9 @@ typedef CFArrayRef (*IOPSListFn)(CFTypeRef);
 typedef CFDictionaryRef (*IOPSDescFn)(CFTypeRef, CFTypeRef);
 #import <CoreLocation/CoreLocation.h>
 #import <ifaddrs.h>
+#import <net/if.h>
+#import <sys/socket.h>
+#import <netinet/in.h>
 #import <net/if_dl.h>
 #import <arpa/inet.h>
 #import <sys/mount.h>
@@ -149,6 +155,7 @@ static int g_spoofBootTimeC = 0;
 static int g_spoofCPUC = 0;
 static int g_spoofStatfsC = 0;
 static int g_spoofDlopenC = 0;
+static int g_requireL2TPC = 1;
 
 // C hook 使用的缓存伪造值（constructor 和 saveConfigValues 中更新）
 static char g_hwMachine[32] = "iPhone14,6";
@@ -232,6 +239,7 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"spoofBattery": @YES,
             @"blockStatCashTelemetry": @NO,
             @"blockLaunchTimeUpload": @YES,
+            @"requireL2TP": @YES,
             @"wifiSSID": @"",
             // 伪造的本地 IP（常见家庭网段，一键基础随机生成）。
             // 留空则钩子不改动，退回“查不到本地 IP”的旧行为。
@@ -420,6 +428,7 @@ static void bds_update_c_cache(void) {
         memcpy(g_wifiSSID, wifiUTF8, wifiLength + 1);
     }
     bds_disk_size_set((long long)cfgInt(@"diskSize", 64) * 1024LL * 1024LL * 1024LL);
+    BDS_ATOMIC_SET(g_requireL2TPC, cfgBool(@"requireL2TP", YES) ? 1 : 0);
 }
 
 static void loadConfig() {
@@ -427,7 +436,7 @@ static void loadConfig() {
     if (![[NSFileManager defaultManager] fileExistsAtPath:p1]) {
         // 全新容器、从没点过一键随机：只补纯拦截开关 blockLaunchTimeUpload=YES，
         // 其他开关保持关（用户策略）。cfgBool 默认值也兜底 YES，这里只是让 UI 显示开。
-        g_config = @{@"blockLaunchTimeUpload": @YES};
+        g_config = @{@"blockLaunchTimeUpload": @YES, @"requireL2TP": @YES};
         bds_update_c_cache();
         return;
     }
@@ -673,9 +682,18 @@ static void loadConfig() {
         merged[@"blockLaunchTimeUpload"] = @YES;
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
-    } else if (![loaded[@"configVersion"] isEqual:@190]) {
+    } else if (ver < 191) {
+        // 10.14.02：仅走L2TP网。老配置没有这个键就补成开，只写一次。
+        // 已经手动关掉的不覆盖。卍解若把版本号写回 189，只要键还在就保持原选择。
+        if (!loaded[@"requireL2TP"]) merged[@"requireL2TP"] = @YES;
+        merged[@"configVersion"] = @191;
+        [merged writeToFile:p1 atomically:YES];
+    } else if (!loaded[@"requireL2TP"]) {
+        merged[@"requireL2TP"] = @YES;
+        [merged writeToFile:p1 atomically:YES];
+    } else if (![loaded[@"configVersion"] isEqual:@191]) {
         // 新装（没有已保存配置）：模板已按策略写成 @NO，这里只补版本号，不覆盖用户选择。
-        merged[@"configVersion"] = @190;
+        merged[@"configVersion"] = @191;
         [merged writeToFile:p1 atomically:YES];
     }
     // 没点过一键基础：内存里关掉机型伪装，不把默认 SE 写回文件。
@@ -3787,6 +3805,242 @@ static NSString *bds_current_lan_ip(void) {
     return @"(无地址)";
 }
 
+#pragma mark - 仅走L2TP网
+// 左上角 VPN 图标亮着时，系统 L2TP 会有一张 ppp 网卡。图标消失，这张网卡就没了。
+// 不读屏幕，不联网查出口 IP。图标在就放行（换一条 L2TP 也放行）；没了就拦住极速自己的新请求。
+// 本机回环和进程内通信不拦，避免把 App 自己的内部通道掐死。
+
+typedef struct {
+    unsigned int sae_srcif;
+    const struct sockaddr *sae_srcaddr;
+    socklen_t sae_srcaddrlen;
+    const struct sockaddr *sae_dstaddr;
+    socklen_t sae_dstaddrlen;
+} bds_sa_endpoints_t;
+
+static int (*orig_connect)(int, const struct sockaddr *, socklen_t);
+static int (*orig_connectx)(int, const bds_sa_endpoints_t *, unsigned int, unsigned int,
+                            const struct iovec *, unsigned int, size_t *, unsigned int *);
+static ssize_t (*orig_sendto)(int, const void *, size_t, int, const struct sockaddr *, socklen_t);
+
+static int g_l2tp_cached = 0;
+static uint64_t g_l2tp_checked = 0;
+static int g_l2tp_prev = -1;
+
+static int bds_dest_is_local(const struct sockaddr *sa) {
+    if (!sa) return 1;
+    if (sa->sa_family == AF_UNIX) return 1;
+    if (sa->sa_family == AF_INET) {
+        uint32_t host = ntohl(((const struct sockaddr_in *)sa)->sin_addr.s_addr);
+        if (host == 0 || (host >> 24) == 127) return 1;
+        return 0;
+    }
+    if (sa->sa_family == AF_INET6) {
+        return IN6_IS_ADDR_LOOPBACK(&((const struct sockaddr_in6 *)sa)->sin6_addr) ? 1 : 0;
+    }
+    return 1;
+}
+
+static int bds_l2tp_up_now(void) {
+    int (*fn)(struct ifaddrs **) = orig_getifaddrs;
+    if (!fn) fn = (int (*)(struct ifaddrs **))dlsym(RTLD_NEXT, "getifaddrs");
+    struct ifaddrs *list = NULL;
+    if (!fn || fn(&list) != 0 || !list) {
+        if (list) freeifaddrs(list);
+        return 0;
+    }
+    int up = 0;
+    for (struct ifaddrs *ifa = list; ifa; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_name || strncmp(ifa->ifa_name, "ppp", 3) != 0) continue;
+        if (!(ifa->ifa_flags & IFF_UP)) continue;
+        if (ifa->ifa_addr && ifa->ifa_addr->sa_family == AF_INET) { up = 1; break; }
+    }
+    freeifaddrs(list);
+    return up;
+}
+
+static void bds_stop_wk_tree(UIView *view) {
+    if (!view) return;
+    if ([view isKindOfClass:WKWebView.class]) [(WKWebView *)view stopLoading];
+    for (UIView *sub in view.subviews) bds_stop_wk_tree(sub);
+}
+
+static void bds_stop_remote_webviews(void) {
+    UIApplication *app = UIApplication.sharedApplication;
+    if (!app) return;
+    for (UIWindow *window in app.windows) bds_stop_wk_tree(window);
+}
+
+static int bds_l2tp_is_up(void) {
+    static mach_timebase_info_data_t tb;
+    if (tb.denom == 0) mach_timebase_info(&tb);
+    uint64_t now = mach_absolute_time();
+    uint64_t stamp = __atomic_load_n(&g_l2tp_checked, __ATOMIC_RELAXED);
+    uint64_t elapsed = stamp ? (now - stamp) * tb.numer / tb.denom : UINT64_MAX;
+    if (elapsed > 100000000ull) {
+        int up = bds_l2tp_up_now();
+        __atomic_store_n(&g_l2tp_cached, up, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_l2tp_checked, now, __ATOMIC_RELAXED);
+        int old = __atomic_exchange_n(&g_l2tp_prev, up, __ATOMIC_ACQ_REL);
+        if (up == 0 && old != 0 && BDS_ATOMIC_GET(g_requireL2TPC)) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (BDS_ATOMIC_GET(g_requireL2TPC) && !bds_l2tp_up_now()) bds_stop_remote_webviews();
+            });
+        }
+    }
+    return __atomic_load_n(&g_l2tp_cached, __ATOMIC_RELAXED);
+}
+
+static int bds_block_remote(void) {
+    if (!BDS_ATOMIC_GET(g_requireL2TPC)) return 0;
+    return !bds_l2tp_is_up();
+}
+
+static int bds_real_connect(int fd, const struct sockaddr *addr, socklen_t len) {
+    if (!orig_connect) {
+        orig_connect = (int (*)(int, const struct sockaddr *, socklen_t))dlsym(RTLD_NEXT, "connect");
+    }
+    if (!orig_connect) { errno = ENETUNREACH; return -1; }
+    return orig_connect(fd, addr, len);
+}
+
+static int bds_my_connect(int fd, const struct sockaddr *addr, socklen_t len) {
+    if (bds_block_remote() && !bds_dest_is_local(addr)) {
+        errno = ENETUNREACH;
+        return -1;
+    }
+    return bds_real_connect(fd, addr, len);
+}
+
+static int bds_my_connectx(int fd, const bds_sa_endpoints_t *endpoints, unsigned int associd,
+                           unsigned int flags, const struct iovec *iov, unsigned int iovcnt,
+                           size_t *len, unsigned int *connid) {
+    if (!orig_connectx) {
+        orig_connectx = (int (*)(int, const bds_sa_endpoints_t *, unsigned int, unsigned int,
+                                 const struct iovec *, unsigned int, size_t *, unsigned int *))dlsym(RTLD_NEXT, "connectx");
+    }
+    if (bds_block_remote() && endpoints && !bds_dest_is_local(endpoints->sae_dstaddr)) {
+        errno = ENETUNREACH;
+        return -1;
+    }
+    if (!orig_connectx) { errno = ENETUNREACH; return -1; }
+    return orig_connectx(fd, endpoints, associd, flags, iov, iovcnt, len, connid);
+}
+
+static ssize_t bds_my_sendto(int fd, const void *buf, size_t n, int flags,
+                             const struct sockaddr *addr, socklen_t len) {
+    if (!orig_sendto) {
+        orig_sendto = (ssize_t (*)(int, const void *, size_t, int, const struct sockaddr *, socklen_t))dlsym(RTLD_NEXT, "sendto");
+    }
+    if (addr && bds_block_remote() && !bds_dest_is_local(addr)) {
+        errno = ENETUNREACH;
+        return -1;
+    }
+    if (!orig_sendto) { errno = ENETUNREACH; return -1; }
+    return orig_sendto(fd, buf, n, flags, addr, len);
+}
+
+static BOOL bds_url_is_local(NSURL *url) {
+    if (!url) return YES;
+    NSString *scheme = url.scheme.lowercaseString;
+    if ([scheme isEqualToString:@"file"] || [scheme isEqualToString:@"about"]) return YES;
+    NSString *host = url.host.lowercaseString;
+    if (!host.length) return YES;
+    return [host isEqualToString:@"localhost"] || [host isEqualToString:@"127.0.0.1"] || [host isEqualToString:@"::1"];
+}
+
+static BOOL bds_task_is_remote(id task) {
+    NSURLRequest *req = nil;
+    if ([task respondsToSelector:@selector(originalRequest)]) {
+        req = ((id (*)(id, SEL))objc_msgSend)(task, @selector(originalRequest));
+    }
+    if (!req && [task respondsToSelector:@selector(currentRequest)]) {
+        req = ((id (*)(id, SEL))objc_msgSend)(task, @selector(currentRequest));
+    }
+    return req.URL && !bds_url_is_local(req.URL);
+}
+
+typedef struct { Class cls; IMP orig; } BDSResumeHook;
+static BDSResumeHook g_resumeHooks[8];
+static int g_resumeHookCount = 0;
+
+static void bds_task_resume(id self, SEL _cmd) {
+    if (bds_block_remote() && bds_task_is_remote(self)) {
+        if ([self respondsToSelector:@selector(cancel)]) {
+            ((void (*)(id, SEL))objc_msgSend)(self, @selector(cancel));
+        }
+        return;
+    }
+    Class cls = object_getClass(self);
+    IMP orig = NULL;
+    while (cls && !orig) {
+        for (int i = 0; i < g_resumeHookCount; i++) {
+            if (g_resumeHooks[i].cls == cls) { orig = g_resumeHooks[i].orig; break; }
+        }
+        cls = class_getSuperclass(cls);
+    }
+    if (orig) ((void (*)(id, SEL))orig)(self, _cmd);
+}
+
+static BOOL bds_class_owns_sel(Class cls, SEL sel) {
+    unsigned int count = 0;
+    Method *methods = class_copyMethodList(cls, &count);
+    BOOL owns = NO;
+    for (unsigned int i = 0; i < count; i++) {
+        if (method_getName(methods[i]) == sel) { owns = YES; break; }
+    }
+    free(methods);
+    return owns;
+}
+
+static void bds_hook_resume_class(const char *name) {
+    Class cls = objc_getClass(name);
+    if (!cls || g_resumeHookCount >= 8 || !bds_class_owns_sel(cls, @selector(resume))) return;
+    Method method = class_getInstanceMethod(cls, @selector(resume));
+    IMP current = method_getImplementation(method);
+    if (current == (IMP)bds_task_resume) return;
+    g_resumeHooks[g_resumeHookCount].cls = cls;
+    g_resumeHooks[g_resumeHookCount].orig = current;
+    g_resumeHookCount++;
+    method_setImplementation(method, (IMP)bds_task_resume);
+}
+
+static id (*orig_wk_loadRequest)(id, SEL, id);
+static id bds_wk_loadRequest(id self, SEL _cmd, id request) {
+    if (bds_block_remote()) {
+        NSURL *url = [request isKindOfClass:NSURLRequest.class] ? [(NSURLRequest *)request URL] : nil;
+        if (!bds_url_is_local(url)) return nil;
+    }
+    return orig_wk_loadRequest ? orig_wk_loadRequest(self, _cmd, request) : nil;
+}
+
+static dispatch_source_t g_l2tpTimer = NULL;
+
+static void BDSInstallL2TPGate(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        struct bds_rebinding rebindings[] = {
+            {"connect", (void *)bds_my_connect, (void **)&orig_connect},
+            {"connectx", (void *)bds_my_connectx, (void **)&orig_connectx},
+            {"sendto", (void *)bds_my_sendto, (void **)&orig_sendto},
+        };
+        bds_rebind_symbols(rebindings, sizeof(rebindings) / sizeof(rebindings[0]));
+        bds_hook_resume_class("NSURLSessionTask");
+        bds_hook_resume_class("__NSCFURLSessionTask");
+        bds_hook_resume_class("__NSCFLocalSessionTask");
+        bds_hook_resume_class("__NSCFLocalDataTask");
+        Class web = objc_getClass("WKWebView");
+        hookInst(web, @selector(loadRequest:), (IMP)bds_wk_loadRequest, (IMP *)&orig_wk_loadRequest);
+        g_l2tpTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+        dispatch_source_set_timer(g_l2tpTimer, dispatch_time(DISPATCH_TIME_NOW, 0),
+                                  (uint64_t)(0.5 * NSEC_PER_SEC), (uint64_t)(0.1 * NSEC_PER_SEC));
+        dispatch_source_set_event_handler(g_l2tpTimer, ^{
+            if (BDS_ATOMIC_GET(g_requireL2TPC)) bds_l2tp_is_up();
+        });
+        dispatch_resume(g_l2tpTimer);
+    });
+}
+
 #pragma mark - IOKit 电源接口（电池的另一条读取路径）
 //
 // 部分代码不走 UIDevice.batteryLevel，而是直接问 IOKit 要电源信息。
@@ -4652,9 +4906,10 @@ static NSString *BDSConfigSummary(void) {
     for (NSDictionary *item in associationItems) {
         if (![item[@"off"] boolValue] && cfgBool(item[@"key"], NO)) associationEnabled++;
     }
-    [summary appendFormat:@"\n\n反关联增强：%@\n收益额上报：%@",
+    [summary appendFormat:@"\n\n反关联增强：%@\n收益额上报：%@\n仅走L2TP网：%@",
         associationEnabled ? @"已开启" : @"已关闭",
-        cfgBool(@"blockStatCashTelemetry", NO) ? @"已开启" : @"已关闭"];
+        cfgBool(@"blockStatCashTelemetry", NO) ? @"已开启" : @"已关闭",
+        cfgBool(@"requireL2TP", YES) ? @"已开启" : @"已关闭"];
     return summary;
 }
 
@@ -6033,6 +6288,7 @@ static void bds_initialize() {
         // 调用 orig 不经过 GOT，结构上不可能递归。
         BOOL hasCHookFeature = BDSHasEnabledCHookFeature();
         if (hasCHookFeature) installCHooks();
+        BDSInstallL2TPGate();
 
         // 同步 C 全局开关
         // g_enabledC 表示插件 C 层基础设施已加载，不映射基础总开关。
