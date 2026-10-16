@@ -28,8 +28,8 @@ static NSArray<NSArray<NSDictionary *> *> *BDSSettingGroups(void) {
           @{@"key":@"spoofPrivacyPermissions",@"name":@"通讯录与日历保护"},
           @{@"key":@"spoofBattery",@"name":@"电池参数"},
           @{@"key":@"blockLaunchTimeUpload",@"name":@"拦截启动时间上报"},
-          @{@"key":@"blockStatCashTelemetry",@"name":@"阻止金额统计上报",@"off":@YES},
-          @{@"key":@"requireL2TP",@"name":@"仅走L2TP网",@"off":@YES,@"note":@"左上角 VPN 在就放行，没有就拦住极速。立刻生效"}]
+          @{@"key":@"requireL2TP",@"name":@"仅走代理网",@"off":@YES,@"note":@"左上角 VPN 在就放行，没有就拦住极速。立刻生效"},
+          @{@"key":@"blockStatCashTelemetry",@"name":@"阻止金额统计上报",@"off":@YES}]
     ];
 }
 static NSArray<NSString *> *BDSRegularKeys(void) {
