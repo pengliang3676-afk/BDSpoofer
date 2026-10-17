@@ -4,7 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
-//  10.17.02：仅走代理网。看系统有没有 ppp 网卡（左上角 VPN 图标）。
+//  10.17.03：仅走代理网。看系统有没有 ppp 网卡（左上角 VPN 图标）。
 //    图标在，极速照常上网，换一条 L2TP 也不拦。图标没了，极速自己的新请求发不出去。
 //    不关 App，不查出口 IP。开关在反关联页，默认开，关掉立刻放行。
 //  9.28-03：一键随机后重启保留参数；已随机配置不再被旧升级清开关/改机型。
@@ -683,7 +683,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.17.02：仅走代理网。老配置没有这个键就补成开，只写一次。
+        // 10.17.03：仅走代理网。老配置没有这个键就补成开，只写一次。
         // 已经手动关掉的不覆盖。卍解若把版本号写回 189，只要键还在就保持原选择。
         if (!loaded[@"requireL2TP"]) merged[@"requireL2TP"] = @YES;
         merged[@"configVersion"] = @191;
@@ -3737,33 +3737,64 @@ static NSString *bds_format_duration(NSTimeInterval seconds) {
 
 static int (*orig_getifaddrs)(struct ifaddrs **);
 
+// 极速用网卡名判断 VPN：utun / ppp / ipsec。名字就地改成 lo0，地址清掉。
+// 不改成 en0，避免排在真 Wi-Fi 前面时把本地 IP 读丢。链表结构不动，freeifaddrs 仍可释放。
+static int bds_is_vpn_ifname(const char *name) {
+    if (!name || !name[0]) return 0;
+    static const char *prefs[] = {"utun", "ppp", "ipsec", "tap", "tun", "gif", NULL};
+    for (int i = 0; prefs[i]; i++) {
+        if (strncmp(name, prefs[i], strlen(prefs[i])) == 0) return 1;
+    }
+    return 0;
+}
+
+static void bds_blank_ifa_addr(struct ifaddrs *ifa) {
+    if (!ifa || !ifa->ifa_addr) return;
+    sa_family_t family = ifa->ifa_addr->sa_family;
+    if (family != AF_INET && family != AF_INET6) return;
+    ifa->ifa_addr->sa_family = AF_UNSPEC;
+    if (ifa->ifa_netmask) ifa->ifa_netmask->sa_family = AF_UNSPEC;
+    if (ifa->ifa_dstaddr) ifa->ifa_dstaddr->sa_family = AF_UNSPEC;
+}
+
 static int bds_my_getifaddrs(struct ifaddrs **ifap) {
     int result = orig_getifaddrs(ifap);
     if (result != 0 || !ifap || !*ifap) {
         BDS_DIAG_RECORD(g_diagLocalIP, BDSDiagStatePassed);
         return result;
     }
-    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofLocalIPC)) {
+    if (!BDS_ATOMIC_GET(g_enabledC)) {
+        BDS_DIAG_RECORD(g_diagLocalIP, BDSDiagStatePassed);
+        return result;
+    }
+    int hideLocal = BDS_ATOMIC_GET(g_spoofLocalIPC);
+    int hideVpn = BDS_ATOMIC_GET(g_spoofProxyC);
+    if (!hideLocal && !hideVpn) {
         BDS_DIAG_RECORD(g_diagLocalIP, BDSDiagStatePassed);
         return result;
     }
     // 纯拦截：不生成任何假 IP，只把 en0 的地址项标记为未指定（查不到）。
-    // 这是最初（9.30-14~9.30-16）的做法：不返回 0.0.0.0/零掩码这种自相矛盾的数据，
-    // 而是让"本机本地 IP"这条读取路径拿不到值。
     // 调用方仍可按原约定 freeifaddrs() 释放完整链表。
-    int modified = 0;
+    int localChanged = 0;
+    int vpnChanged = 0;
     for (struct ifaddrs *ifa = *ifap; ifa; ifa = ifa->ifa_next) {
-        if (!ifa->ifa_name || !ifa->ifa_addr) continue;
-        if (strcmp(ifa->ifa_name, "en0") != 0) continue;
-        sa_family_t family = ifa->ifa_addr->sa_family;
-        if (family == AF_INET || family == AF_INET6) {
-            modified = 1;
-            ifa->ifa_addr->sa_family = AF_UNSPEC;
-            if (ifa->ifa_netmask) ifa->ifa_netmask->sa_family = AF_UNSPEC;
-            if (ifa->ifa_dstaddr) ifa->ifa_dstaddr->sa_family = AF_UNSPEC;
+        if (!ifa->ifa_name) continue;
+        if (hideVpn && bds_is_vpn_ifname(ifa->ifa_name)) {
+            memcpy(ifa->ifa_name, "lo0", 4);
+            bds_blank_ifa_addr(ifa);
+            vpnChanged = 1;
+            continue;
+        }
+        if (hideLocal && ifa->ifa_addr && strcmp(ifa->ifa_name, "en0") == 0) {
+            sa_family_t family = ifa->ifa_addr->sa_family;
+            if (family == AF_INET || family == AF_INET6) {
+                bds_blank_ifa_addr(ifa);
+                localChanged = 1;
+            }
         }
     }
-    BDS_DIAG_RECORD(g_diagLocalIP, modified ? BDSDiagStateChanged : BDSDiagStatePassed);
+    BDS_DIAG_RECORD(g_diagLocalIP, localChanged ? BDSDiagStateChanged : BDSDiagStatePassed);
+    if (hideVpn) BDS_DIAG_RECORD(g_diagProxy, vpnChanged ? BDSDiagStateChanged : BDSDiagStatePassed);
     return result;
 }
 
@@ -4110,6 +4141,50 @@ static CFDictionaryRef bds_my_SCDynamicStoreCopyProxies(SCDynamicStoreRef store)
                               &kCFTypeDictionaryValueCallBacks);
 }
 
+// 极速 7.22 还会用 nw_path 枚举网卡，并按名字认出 utun / ppp。
+// 枚举时直接跳过这些网卡；已经拿到的网卡，名字改报 en0，类型改报 Wi-Fi。
+typedef void (^bds_nw_enum_block)(void *iface);
+static const char *(*orig_nw_interface_get_name)(void *);
+static unsigned int (*orig_nw_interface_get_type)(void *);
+static void (*orig_nw_path_enumerate_interfaces)(void *, bds_nw_enum_block);
+
+static const char *bds_my_nw_interface_get_name(void *iface) {
+    const char *name = orig_nw_interface_get_name ? orig_nw_interface_get_name(iface) : NULL;
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofProxyC)) return name;
+    if (bds_is_vpn_ifname(name)) {
+        BDS_DIAG_RECORD(g_diagProxy, BDSDiagStateChanged);
+        return "en0";
+    }
+    return name;
+}
+
+static unsigned int bds_my_nw_interface_get_type(void *iface) {
+    unsigned int kind = orig_nw_interface_get_type ? orig_nw_interface_get_type(iface) : 0;
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofProxyC)) return kind;
+    const char *name = orig_nw_interface_get_name ? orig_nw_interface_get_name(iface) : NULL;
+    if (bds_is_vpn_ifname(name)) {
+        BDS_DIAG_RECORD(g_diagProxy, BDSDiagStateChanged);
+        return 1; // nw_interface_type_wifi
+    }
+    return kind;
+}
+
+static void bds_my_nw_path_enumerate_interfaces(void *path, bds_nw_enum_block block) {
+    if (!orig_nw_path_enumerate_interfaces) return;
+    if (!BDS_ATOMIC_GET(g_enabledC) || !BDS_ATOMIC_GET(g_spoofProxyC) || !block) {
+        orig_nw_path_enumerate_interfaces(path, block);
+        return;
+    }
+    orig_nw_path_enumerate_interfaces(path, ^(void *iface) {
+        const char *name = orig_nw_interface_get_name ? orig_nw_interface_get_name(iface) : NULL;
+        if (bds_is_vpn_ifname(name)) {
+            BDS_DIAG_RECORD(g_diagProxy, BDSDiagStateChanged);
+            return;
+        }
+        block(iface);
+    });
+}
+
 #pragma mark - Q1: statfs/statvfs 磁盘剩余空间 Hook（fishhook）
 
 static int (*orig_statfs)(const char *, struct statfs *);
@@ -4232,6 +4307,9 @@ static void installCHooks(void) {
         {"IOPSGetPowerSourceDescription", (void *)bds_my_IOPSGetPowerSourceDescription, (void **)&orig_IOPSGetPowerSourceDescription},
         {"CFNetworkCopySystemProxySettings", (void *)bds_my_CFNetworkCopySystemProxySettings, (void **)&orig_CFNetworkCopySystemProxySettings},
         {"SCDynamicStoreCopyProxies", (void *)bds_my_SCDynamicStoreCopyProxies, (void **)&orig_SCDynamicStoreCopyProxies},
+        {"nw_interface_get_name", (void *)bds_my_nw_interface_get_name, (void **)&orig_nw_interface_get_name},
+        {"nw_interface_get_type", (void *)bds_my_nw_interface_get_type, (void **)&orig_nw_interface_get_type},
+        {"nw_path_enumerate_interfaces", (void *)bds_my_nw_path_enumerate_interfaces, (void **)&orig_nw_path_enumerate_interfaces},
         {"statfs", (void *)bds_my_statfs, (void **)&orig_statfs},
         {"statvfs", (void *)bds_my_statvfs, (void **)&orig_statvfs},
         {"dlopen", (void *)bds_my_dlopen, (void **)&orig_dlopen},
@@ -5075,7 +5153,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 1.8.1 UI1.3 10.17.02";
+    page.title=@"卐解 10.17.03";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
