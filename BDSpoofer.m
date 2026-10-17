@@ -4,6 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  10.18.03：UDID 不再在启动时读钥匙串，也不再钩系统配置，避免闪退。
 //  10.18.02：每个容器记住自己的 UDID，显示在主界面。不写进共享钥匙串。
 //  10.18.01：删掉仅走代理网。代理检测隐藏仍单独保留，不跟 L2TP 绑在一起。
 //  9.28-03：一键随机后重启保留参数；已随机配置不再被旧升级清开关/改机型。
@@ -3018,10 +3019,6 @@ static BOOL bds_looks_like_udid(NSString *value) {
     return [value rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound;
 }
 
-static NSString *bds_udid_value(void) {
-    return g_containerUDID ?: @"";
-}
-
 static BOOL bds_text_mentions_udid(id value) {
     if ([value isKindOfClass:NSString.class]) {
         return [(NSString *)value rangeOfString:@"udid" options:NSCaseInsensitiveSearch].location != NSNotFound;
@@ -3082,7 +3079,7 @@ static NSString *bds_udid_from_real_keychain(void) {
         NSString *text = nil;
         CFTypeID kind = CFGetTypeID(result);
         if (kind == CFDataGetTypeID()) text = [[NSString alloc] initWithData:(__bridge NSData *)result encoding:NSUTF8StringEncoding];
-        else if (kind == CFStringGetTypeID()) text = (__bridge NSString *)result;
+        else if (kind == CFStringGetTypeID()) text = [(__bridge NSString *)result copy];
         CFRelease(result);
         if (bds_looks_like_udid(text)) return text;
     }
@@ -3104,16 +3101,25 @@ static void bds_save_container_udid(NSString *udid) {
     [udid writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
+static int g_udid_resolving = 0;
+
+static NSString *bds_udid_value(void) {
+    if (g_containerUDID.length) return g_containerUDID;
+    if (g_udid_resolving) return @"";
+    g_udid_resolving = 1;
+    NSString *existing = bds_udid_from_prefs_file();
+    if (!existing && bds_container_was_used()) existing = bds_udid_from_real_keychain();
+    if (!bds_looks_like_udid(existing)) existing = bds_generate_udid();
+    bds_save_container_udid(existing);
+    g_udid_resolving = 0;
+    return g_containerUDID ?: @"";
+}
+
 static void bds_load_container_udid(void) {
     NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/bds_container_udid.txt"];
     NSString *saved = [[NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil]
         stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    if (bds_looks_like_udid(saved)) { g_containerUDID = saved; return; }
-    if (bds_container_was_used()) {
-        NSString *existing = bds_udid_from_prefs_file() ?: bds_udid_from_real_keychain();
-        if (bds_looks_like_udid(existing)) { bds_save_container_udid(existing); return; }
-    }
-    bds_save_container_udid(bds_generate_udid());
+    if (bds_looks_like_udid(saved)) g_containerUDID = saved;
 }
 
 static NSString *bds_hooked_udid_string(id self, SEL _cmd) {
@@ -3121,63 +3127,43 @@ static NSString *bds_hooked_udid_string(id self, SEL _cmd) {
     return bds_udid_value();
 }
 
-static BOOL bds_hooked_verify_udid(id self, SEL _cmd, id value) {
-    (void)self; (void)_cmd;
-    return [value isKindOfClass:NSString.class] && [value isEqualToString:bds_udid_value()];
-}
-
 static BOOL bds_method_is_string_getter(Method method) {
-    if (method_getNumberOfArguments(method) != 2) return NO;
+    if (!method || method_getNumberOfArguments(method) != 2) return NO;
     char type[8] = {0};
     method_getReturnType(method, type, sizeof(type));
     return type[0] == '@';
 }
 
-static void bds_hook_udid_class(const char *name) {
-    Class cls = objc_getClass(name);
+static void bds_hook_exact_udid_getter(Class cls, SEL sel, BOOL classMethod) {
     if (!cls) return;
-    for (int pass = 0; pass < 2; pass++) {
-        unsigned int count = 0;
-        Method *methods = class_copyMethodList(pass == 0 ? cls : object_getClass(cls), &count);
-        for (unsigned int i = 0; i < count; i++) {
-            SEL sel = method_getName(methods[i]);
-            NSString *selName = NSStringFromSelector(sel);
-            if ([selName rangeOfString:@"udid" options:NSCaseInsensitiveSearch].location == NSNotFound) continue;
-            if (bds_method_is_string_getter(methods[i])) {
-                method_setImplementation(methods[i], (IMP)bds_hooked_udid_string);
-                continue;
-            }
-            char type[8] = {0};
-            method_getReturnType(methods[i], type, sizeof(type));
-            if ((type[0] == 'c' || type[0] == 'B' || type[0] == 'C') && method_getNumberOfArguments(methods[i]) == 3) {
-                method_setImplementation(methods[i], (IMP)bds_hooked_verify_udid);
-            }
-        }
-        free(methods);
+    Method *methods = NULL;
+    unsigned int count = 0;
+    methods = class_copyMethodList(classMethod ? object_getClass(cls) : cls, &count);
+    for (unsigned int i = 0; i < count; i++) {
+        if (method_getName(methods[i]) != sel || !bds_method_is_string_getter(methods[i])) continue;
+        method_setImplementation(methods[i], (IMP)bds_hooked_udid_string);
     }
-    if (strcmp(name, "BIMBaiduUDID") == 0) {
-        Method value = class_getClassMethod(cls, @selector(value));
-        unsigned int count = 0;
-        Method *methods = class_copyMethodList(object_getClass(cls), &count);
-        for (unsigned int i = 0; i < count; i++) {
-            if (methods[i] == value && bds_method_is_string_getter(value)) {
-                method_setImplementation(value, (IMP)bds_hooked_udid_string);
-            }
-        }
-        free(methods);
-    }
+    free(methods);
 }
 
-static id (*orig_ud_objectForKey)(id, SEL, id);
-static id bds_ud_objectForKey(id self, SEL _cmd, id key) {
-    if (bds_text_mentions_udid(key)) return bds_udid_value();
-    return orig_ud_objectForKey ? orig_ud_objectForKey(self, _cmd, key) : nil;
-}
-
-static void (*orig_ud_setObject)(id, SEL, id, id);
-static void bds_ud_setObject(id self, SEL _cmd, id object, id key) {
-    if (bds_text_mentions_udid(key)) object = bds_udid_value();
-    if (orig_ud_setObject) orig_ud_setObject(self, _cmd, object, key);
+static void bds_hook_udid_methods_later(void) {
+    static const char *classes[] = {"BIMBaiduUDID", "BPushBaiduUDID", "BaiduMtjUDID", "BaiduUDID", "BMKLocSDKUDID"};
+    static const char *getters[] = {
+        "getUDID", "udidFromKeychain", "fetchUDIDFromKeyChain", "fetchUDIDFromUserDefaults",
+        "generateUDID", "generateFreshUDID", "generateVerifiableUDID", "createUDID"
+    };
+    for (size_t c = 0; c < sizeof(classes) / sizeof(classes[0]); c++) {
+        Class cls = objc_lookUpClass(classes[c]);
+        if (!cls) continue;
+        for (size_t g = 0; g < sizeof(getters) / sizeof(getters[0]); g++) {
+            SEL sel = sel_registerName(getters[g]);
+            bds_hook_exact_udid_getter(cls, sel, NO);
+            bds_hook_exact_udid_getter(cls, sel, YES);
+        }
+        if (strcmp(classes[c], "BIMBaiduUDID") == 0) {
+            bds_hook_exact_udid_getter(cls, sel_registerName("value"), YES);
+        }
+    }
 }
 
 static OSStatus bds_udid_copy_matching(NSDictionary *dictionary, CFTypeRef *result) {
@@ -3222,17 +3208,15 @@ static void BDSInstallContainerUDID(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         bds_load_container_udid();
-        for (NSString *name in @[@"BIMBaiduUDID", @"BPushBaiduUDID", @"BaiduMtjUDID", @"BaiduUDID", @"BMKLocSDKUDID"]) {
-            bds_hook_udid_class(name.UTF8String);
-        }
-        hookInst(NSUserDefaults.class, @selector(objectForKey:), (IMP)bds_ud_objectForKey, (IMP *)&orig_ud_objectForKey);
-        hookInst(NSUserDefaults.class, @selector(setObject:forKey:), (IMP)bds_ud_setObject, (IMP *)&orig_ud_setObject);
         struct bds_rebinding rebindings[] = {
             {"SecItemCopyMatching", (void *)bds_my_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching},
             {"SecItemAdd", (void *)bds_my_SecItemAdd, (void **)&orig_SecItemAdd},
             {"SecItemUpdate", (void *)bds_my_SecItemUpdate, (void **)&orig_SecItemUpdate},
         };
         bds_rebind_symbols(rebindings, sizeof(rebindings) / sizeof(rebindings[0]));
+        dispatch_async(dispatch_get_main_queue(), ^{
+            bds_hook_udid_methods_later();
+        });
     });
 }
 
@@ -3250,7 +3234,10 @@ static OSStatus bds_my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *res
     // Keychain 是高级功能，不能再依赖基础总开关 enabled。
     if (!g_config || !cfgBool(@"spoofKeychain", NO) || !query) {
         BDS_DIAG_RECORD(g_diagKeychain, BDSDiagStatePassed);
-        return orig_SecItemCopyMatching(query, result);
+        if (!orig_SecItemCopyMatching) {
+            orig_SecItemCopyMatching = (OSStatus (*)(CFDictionaryRef, CFTypeRef *))dlsym(RTLD_NEXT, "SecItemCopyMatching");
+        }
+        return orig_SecItemCopyMatching ? orig_SecItemCopyMatching(query, result) : errSecUnimplemented;
     }
 
     @autoreleasepool {
@@ -3273,7 +3260,10 @@ static OSStatus bds_my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *res
     }
 
     BDS_DIAG_RECORD(g_diagKeychain, BDSDiagStatePassed);
-    return orig_SecItemCopyMatching(query, result);
+    if (!orig_SecItemCopyMatching) {
+        orig_SecItemCopyMatching = (OSStatus (*)(CFDictionaryRef, CFTypeRef *))dlsym(RTLD_NEXT, "SecItemCopyMatching");
+    }
+    return orig_SecItemCopyMatching ? orig_SecItemCopyMatching(query, result) : errSecUnimplemented;
 }
 
 #pragma mark - User-Agent Hook
@@ -5156,7 +5146,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 10.18.02";
+    page.title=@"卐解 10.18.03";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
