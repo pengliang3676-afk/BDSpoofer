@@ -28,7 +28,7 @@ static NSArray<NSArray<NSDictionary *> *> *BDSSettingGroups(void) {
           @{@"key":@"spoofPrivacyPermissions",@"name":@"通讯录与日历保护"},
           @{@"key":@"spoofBattery",@"name":@"电池参数"},
           @{@"key":@"blockLaunchTimeUpload",@"name":@"拦截启动时间上报"},
-          @{@"key":@"requireL2TP",@"name":@"仅走代理网",@"off":@YES,@"note":@"默认关闭。一键随机不打开。"}]
+          @{@"key":@"requireL2TP",@"name":@"仅走代理网",@"off":@YES,@"note":@"默认关闭。一键随机不打开。"},
           @{@"key":@"blockStatCashTelemetry",@"name":@"阻止金额统计上报",@"off":@YES,@"note":@"注入后开启。关掉立刻停。"}]
     ];
 }
