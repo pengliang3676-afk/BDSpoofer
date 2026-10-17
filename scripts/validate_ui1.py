@@ -9,12 +9,12 @@ release=(root/'RELEASE_UI1.md').read_text(encoding='utf-8')
 build=(root/'scripts/build_release_xcode.sh').read_text(encoding='utf-8')
 config=plistlib.loads((root/'bdspoofer_config.plist').read_bytes())
 items=re.findall(r'@\{@"key":@"([^"]+)",@"name":@"[^"]+"(,@"off":@YES)?(?:,@"note":@"[^"]*")?\}',policy)
-assert len(items)==28
+assert len(items)==27
 regular=[key for key,off in items if not off];risk=[key for key,off in items if off]
-assert len(regular)==21 and len(risk)==7
+assert len(regular)==21 and len(risk)==6
 assert all(config[k] is True for k in regular)
 for k in risk:
-    if k in ('blockStatCashTelemetry','requireL2TP'):
+    if k in ('blockStatCashTelemetry',):
         continue
     assert config[k] is False,k
 assert config['bypassJailbreakDetect'] is False  # 10.01.01 起默认关闭
@@ -41,7 +41,7 @@ assert 'closeApp' not in manager and 'NSSelectorFromString(@"suspend")' not in m
 assert 'config[@"deviceProfileName"] ?: config[@"hwMachine"]' in manager
 assert 'config[@"targetedDeviceProfileName"] ?: config[@"targetedHwMachine"]' in manager
 assert 'NSString *currentSuffix = @"（当前）"' in manager and 'UIColor.systemRedColor' in manager
-assert 'page.title=@"卐解 10.17.09"' in plugin
+assert 'page.title=@"卐解 10.18.01"' in plugin
 assert 'didRandomize%@%@' in policy
 for text in ['BDSMarkRandomModeRun','BDSRandomModeWasRun','BDSConfigForPersistentStorage']:
     assert text in plugin+manager+policy,text
@@ -63,7 +63,7 @@ assert 'y_mission_withdraw' in blocker and 'c_pv_withdraw' in blocker
 assert 'BDSInstallCashTelemetryBlocking();' in plugin
 assert plugin.count('loadConfig();') >= 3
 assert '0.50' not in release and '触发风控' not in release
-assert 'BDSpoofer_1.8.1_UI1.3_10.17.09.dylib' in build and 'UI1.1.dylib' not in build
+assert 'BDSpoofer_1.8.1_UI1.3_10.18.01.dylib' in build and 'UI1.1.dylib' not in build
 assert 'BDSpooferCraneManager_1.0.3-ui1_10.17.09_RootHide.deb' in build
 assert 'BDSLoginDeviceDict' in plugin and 'ssologin' in plugin
 assert 'BDSPassEncryptedDi' in plugin and 'deviceInfoForLogin' in plugin

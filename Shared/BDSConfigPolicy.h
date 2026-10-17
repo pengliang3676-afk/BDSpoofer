@@ -21,14 +21,13 @@ static NSArray<NSArray<NSDictionary *> *> *BDSSettingGroups(void) {
           @{@"key":@"spoofBootTime",@"name":@"启动时间参数"},
           @{@"key":@"spoofCPU",@"name":@"CPU 参数"},
           @{@"key":@"spoofLocation",@"name":@"定位保护"},
-          @{@"key":@"spoofProxyDetection",@"name":@"代理检测隐藏"},
+          @{@"key":@"spoofProxyDetection",@"name":@"代理检测隐藏",@"note":@"默认开启。随机不关闭。"},
           @{@"key":@"spoofStatfs",@"name":@"剩余空间参数"},
           @{@"key":@"spoofDlopen",@"name":@"dlopen 反检测"},
           @{@"key":@"spoofUbiquity",@"name":@"iCloud 隔离"},
           @{@"key":@"spoofPrivacyPermissions",@"name":@"通讯录与日历保护"},
           @{@"key":@"spoofBattery",@"name":@"电池参数"},
           @{@"key":@"blockLaunchTimeUpload",@"name":@"拦截启动时间上报"},
-          @{@"key":@"requireL2TP",@"name":@"仅走代理网",@"off":@YES,@"note":@"默认关闭。一键随机不打开。"},
           @{@"key":@"blockStatCashTelemetry",@"name":@"阻止金额统计上报",@"off":@YES,@"note":@"注入后开启。关掉立刻停。"}]
     ];
 }
@@ -105,7 +104,17 @@ static NSDictionary *BDSSafeSwitchValues(void) {
     for(NSString *key in BDSSelectedTargetKeys()) values[key]=@NO;
     values[@"spoofScreen"]=@NO;
     values[@"spoofBaiduTargeted"]=@NO;
+    // 恢复安全会关掉其它开关。代理检测隐藏保持开，不跟随机、也不跟这一键走。
+    values[@"spoofProxyDetection"]=@YES;
+    values[@"proxyHideDefaultOn"]=@YES;
     return values;
+}
+// 老配置在 1.8.1 被写成关，只有一键基础才会再打开。这里补开一次。
+// 之后在开关里手动关掉仍然有效。
+static void BDSKeepProxyHideOn(NSMutableDictionary *config, NSDictionary *saved) {
+    if ([saved[@"proxyHideDefaultOn"] boolValue]) return;
+    config[@"spoofProxyDetection"] = @YES;
+    config[@"proxyHideDefaultOn"] = @YES;
 }
 static void BDSSeedInitialIdentities(NSMutableDictionary *config, NSDictionary *saved) {
     for(NSString *key in @[@"idfa",@"idfv",@"deviceID",@"cuid",@"utdid"]) {

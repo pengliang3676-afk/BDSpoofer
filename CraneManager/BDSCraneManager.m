@@ -240,6 +240,7 @@ static NSMutableDictionary *BDSMergedConfig(NSDictionary *existing) {
     NSMutableDictionary *config=[BDSDefaultConfig() mutableCopy];
     if(existing.count) [config addEntriesFromDictionary:existing];
     BDSApplyInitialDefaults(config,existing);
+    BDSKeepProxyHideOn(config, existing);
     return config;
 }
 
@@ -349,6 +350,8 @@ static NSMutableDictionary *BDSCreateConfigForDevice(NSDictionary *existing,
         for (NSDictionary *item in groups[2]) {
             if (![item[@"off"] boolValue] && !config[item[@"key"]]) config[item[@"key"]] = @NO;
         }
+        config[@"spoofProxyDetection"] = @YES;
+        config[@"proxyHideDefaultOn"] = @YES;
         // 屏幕参数同步到百度侧出口（只改 B 层，UIScreen 保持真机，界面不会错版）。
         // 必须放在上面开关组循环之后：spoofBaiduTargetedScreen 落在 groups[1] 的
         // i>=3 档，写在循环之前会被那个 @NO 循环覆盖掉。
