@@ -613,7 +613,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"卍解 1.0.3 10.17.09";
+    self.title = @"卍解 1.0.3 10.18.02";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];
@@ -650,9 +650,9 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     CGFloat width=CGRectGetWidth(self.tableView.bounds);
     UIView *header=[[UIView alloc] initWithFrame:CGRectMake(0,0,width,8)];
     self.tableView.tableHeaderView=header;
-    UIView *footer=[[UIView alloc] initWithFrame:CGRectMake(0,0,width,232)];
-    NSArray *titles=@[@"一键随机基础整套设置",@"一键随机高级整套设置",@"一键随机定向指纹设置",@"反关联项",@"恢复安全"];
-    NSArray *selectors=@[NSStringFromSelector(@selector(randomizeBasicForSelectedContainers)),NSStringFromSelector(@selector(randomizeAdvancedForSelectedContainers)),NSStringFromSelector(@selector(randomizeTargetedForSelectedContainers)),NSStringFromSelector(@selector(showAssociationSettings)),NSStringFromSelector(@selector(restoreSafeSettings))];
+    UIView *footer=[[UIView alloc] initWithFrame:CGRectMake(0,0,width,288)];
+    NSArray *titles=@[@"一键随机基础整套设置",@"一键随机高级整套设置",@"一键随机定向指纹设置",@"反关联项",@"恢复安全",@"清除推送编号"];
+    NSArray *selectors=@[NSStringFromSelector(@selector(randomizeBasicForSelectedContainers)),NSStringFromSelector(@selector(randomizeAdvancedForSelectedContainers)),NSStringFromSelector(@selector(randomizeTargetedForSelectedContainers)),NSStringFromSelector(@selector(showAssociationSettings)),NSStringFromSelector(@selector(restoreSafeSettings)),NSStringFromSelector(@selector(clearPushIdentityForSelectedContainers))];
     for(NSUInteger i=0;i<titles.count;i++) {
         UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem];
         button.autoresizingMask=UIViewAutoresizingFlexibleWidth;
@@ -697,6 +697,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     CGFloat pairWidth=MAX(0,(buttonWidth-pairGap)/2.0);
     [footer viewWithTag:1003].frame=CGRectMake(sideInset,6+3*rowStep,pairWidth,buttonHeight);
     [footer viewWithTag:1004].frame=CGRectMake(sideInset+pairWidth+pairGap,6+3*rowStep,pairWidth,buttonHeight);
+    [footer viewWithTag:1005].frame=CGRectMake(sideInset,6+4*rowStep,buttonWidth,buttonHeight);
 }
 
 - (void)viewDidLayoutSubviews {
@@ -954,6 +955,58 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     if(!self.selectedContainerIDs.count) { [self showMessage:@"尚未选择容器" detail:@"请先选择需要恢复安全设置的容器。"]; return; }
     BOOL saved=[self saveSwitchChanges:BDSSafeSwitchValues()];
     [self showMessage:saved?@"已恢复安全":@"部分保存失败" detail:saved?@"选中容器的所有开关已关闭，参数值保留。请彻底关闭百度后重新打开。":@"请刷新容器列表后检查设置。"];
+}
+
+- (NSArray<NSString *> *)pushPreferencePathsForContainerID:(NSString *)containerID {
+    if (!containerID.length || !self.crane) return @[];
+    NSMutableArray<NSString *> *roots = [NSMutableArray array];
+    if ([self.crane respondsToSelector:@selector(enumerate:pathsAssociatedToContainerWithIdentifier:ofApplicationWithIdentifier:)]) {
+        [self.crane enumerate:^(BDSCraneContainerPathType type, NSString *identifier, NSString *path) {
+            (void)identifier;
+            if (type == BDSCraneContainerPathTypeGroup && path.length) [roots addObject:path];
+        } pathsAssociatedToContainerWithIdentifier:containerID ofApplicationWithIdentifier:BDSBaiduBundleID];
+    }
+    NSString *plistName = @"group.com.baidu.BaiduMobileInfo.plist";
+    NSMutableOrderedSet<NSString *> *paths = [NSMutableOrderedSet orderedSet];
+    for (NSString *root in roots) {
+        [paths addObject:[[root stringByAppendingPathComponent:@"Library/Preferences"] stringByAppendingPathComponent:plistName]];
+        if ([containerID.uppercaseString isEqualToString:@"DEFAULT"]) continue;
+        NSString *craneCopy = [root stringByAppendingPathComponent:@"Library"];
+        craneCopy = [craneCopy stringByAppendingPathComponent:@"___Crane_Containers"];
+        craneCopy = [craneCopy stringByAppendingPathComponent:containerID];
+        craneCopy = [craneCopy stringByAppendingPathComponent:@"Library/Preferences"];
+        [paths addObject:[craneCopy stringByAppendingPathComponent:plistName]];
+    }
+    return paths.array;
+}
+
+- (void)clearPushIdentityForSelectedContainers {
+    if (!self.selectedContainerIDs.count) {
+        [self showMessage:@"尚未选择容器" detail:@"请先点选要清除推送编号的容器。"];
+        return;
+    }
+    NSArray<NSString *> *keys = @[@"BNPush_cuid", @"BNPush_cacheCuid", @"BNPush_token", @"BNPush_channelid", @"BNPush_status"];
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    for (NSDictionary *row in self.containers) {
+        NSString *containerID = row[@"id"];
+        if (![self.selectedContainerIDs containsObject:containerID]) continue;
+        NSArray<NSString *> *paths = [self pushPreferencePathsForContainerID:containerID];
+        NSUInteger removed = 0;
+        BOOL foundFile = NO;
+        for (NSString *path in paths) {
+            NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:path] mutableCopy];
+            if (!prefs) continue;
+            foundFile = YES;
+            for (NSString *key in keys) {
+                if (prefs[key]) { [prefs removeObjectForKey:key]; removed++; }
+            }
+            [prefs writeToFile:path atomically:YES];
+        }
+        if (!foundFile) [lines addObject:[NSString stringWithFormat:@"%@：还没有推送配置", row[@"name"]]];
+        else if (!removed) [lines addObject:[NSString stringWithFormat:@"%@：推送编号本来就是空的", row[@"name"]]];
+        else [lines addObject:[NSString stringWithFormat:@"%@：清掉 %lu 项", row[@"name"], (unsigned long)removed]];
+    }
+    [self showMessage:@"推送编号已处理" detail:[NSString stringWithFormat:@"%@\n\n请彻底关闭百度极速后再打开。", [lines componentsJoinedByString:@"\n"]]];
 }
 
 - (void)applySelectedContainersWithMode:(BDSRandomMode)mode {
