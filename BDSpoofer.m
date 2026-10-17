@@ -4,7 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
-//  10.17.08：仅走代理网。看系统有没有 ppp 网卡（左上角 VPN 图标）。
+//  10.17.09：仅走代理网。看系统有没有 ppp 网卡（左上角 VPN 图标）。
 //    图标在，极速照常上网，换一条 L2TP 也不拦。图标没了，极速自己的新请求发不出去。
 //    不关 App，不查出口 IP。开关在反关联页，默认开，关掉立刻放行。
 //  9.28-03：一键随机后重启保留参数；已随机配置不再被旧升级清开关/改机型。
@@ -155,7 +155,7 @@ static int g_spoofBootTimeC = 0;
 static int g_spoofCPUC = 0;
 static int g_spoofStatfsC = 0;
 static int g_spoofDlopenC = 0;
-static int g_requireL2TPC = 1;
+static int g_requireL2TPC = 0;
 
 // C hook 使用的缓存伪造值（constructor 和 saveConfigValues 中更新）
 static char g_hwMachine[32] = "iPhone14,6";
@@ -239,7 +239,7 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"spoofBattery": @YES,
             @"blockStatCashTelemetry": @YES,
             @"blockLaunchTimeUpload": @YES,
-            @"requireL2TP": @YES,
+            @"requireL2TP": @NO,
             @"wifiSSID": @"",
             // 伪造的本地 IP（常见家庭网段，一键基础随机生成）。
             // 留空则钩子不改动，退回“查不到本地 IP”的旧行为。
@@ -428,7 +428,7 @@ static void bds_update_c_cache(void) {
         memcpy(g_wifiSSID, wifiUTF8, wifiLength + 1);
     }
     bds_disk_size_set((long long)cfgInt(@"diskSize", 64) * 1024LL * 1024LL * 1024LL);
-    BDS_ATOMIC_SET(g_requireL2TPC, cfgBool(@"requireL2TP", YES) ? 1 : 0);
+    BDS_ATOMIC_SET(g_requireL2TPC, cfgBool(@"requireL2TP", NO) ? 1 : 0);
 }
 
 static void loadConfig() {
@@ -436,8 +436,9 @@ static void loadConfig() {
     if (![[NSFileManager defaultManager] fileExistsAtPath:p1]) {
         // 全新容器、从没点过一键随机：只补纯拦截开关 blockLaunchTimeUpload=YES，
         // 其他开关保持关（用户策略）。cfgBool 默认值也兜底 YES，这里只是让 UI 显示开。
-        g_config = @{@"blockLaunchTimeUpload": @YES, @"requireL2TP": @YES,
-                     @"blockStatCashTelemetry": @YES, @"cashBlockDefault192": @YES};
+        g_config = @{@"blockLaunchTimeUpload": @YES,
+                     @"blockStatCashTelemetry": @YES, @"cashBlockDefault192": @YES,
+                     @"requireL2TP": @NO, @"l2tpDefaultOff": @YES};
         bds_update_c_cache();
         return;
     }
@@ -684,7 +685,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.17.08：仅走代理网。老配置没有这个键就补成开，只写一次。
+        // 10.17.09：仅走代理网。老配置没有这个键就补成开，只写一次。
         // 已经手动关掉的不覆盖。卍解若把版本号写回 189，只要键还在就保持原选择。
         if (!loaded[@"requireL2TP"]) merged[@"requireL2TP"] = @YES;
         merged[@"configVersion"] = @191;
@@ -697,13 +698,20 @@ static void loadConfig() {
         merged[@"configVersion"] = @191;
         [merged writeToFile:p1 atomically:YES];
     }
-    // 10.17.08：金额上报和仅走代理网一样，注入后就是开。只强制一次。
+    // 10.17.06：金额上报注入后默认开。只强制一次。
     // 老配置里这个键已经写成关，所以不能靠“没有键才补开”。
     // 之后手动关掉仍然有效；卍解把版本号写回 189 时，认这个标记，不再打开。
     if (![loaded[@"cashBlockDefault192"] boolValue]) {
         merged[@"blockStatCashTelemetry"] = @YES;
         merged[@"cashBlockDefault192"] = @YES;
         merged[@"configVersion"] = @192;
+        [merged writeToFile:p1 atomically:YES];
+    }
+    // 10.17.09：仅走代理网默认关，方便对比是不是它把极速卡了。只关一次。
+    // 一键随机不打开它。之后手动打开仍然有效。
+    if (![loaded[@"l2tpDefaultOff"] boolValue]) {
+        merged[@"requireL2TP"] = @NO;
+        merged[@"l2tpDefaultOff"] = @YES;
         [merged writeToFile:p1 atomically:YES];
     }
     // 没点过一键基础：内存里关掉机型伪装，不把默认 SE 写回文件。
@@ -4977,7 +4985,7 @@ static NSString *BDSConfigSummary(void) {
     }
     [summary appendFormat:@"\n\n反关联增强：%@\n仅走代理网：%@\n收益额上报：%@",
         associationEnabled ? @"已开启" : @"已关闭",
-        cfgBool(@"requireL2TP", YES) ? @"已开启" : @"已关闭",
+        cfgBool(@"requireL2TP", NO) ? @"已开启" : @"已关闭",
         cfgBool(@"blockStatCashTelemetry", YES) ? @"已开启" : @"已关闭"];
     return summary;
 }
@@ -5144,7 +5152,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 10.17.08";
+    page.title=@"卐解 10.17.09";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -6367,7 +6375,7 @@ static void bds_initialize() {
         // 调用 orig 不经过 GOT，结构上不可能递归。
         BOOL hasCHookFeature = BDSHasEnabledCHookFeature();
         if (hasCHookFeature) installCHooks();
-        BDSInstallL2TPGate();
+        if (cfgBool(@"requireL2TP", NO)) BDSInstallL2TPGate();
 
         // 同步 C 全局开关
         // g_enabledC 表示插件 C 层基础设施已加载，不映射基础总开关。
