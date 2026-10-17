@@ -140,6 +140,10 @@ int main(void) {
         assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10291, @"y_mission_index", @"c_pv", @"3.03")));
         assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"other_page", @"c_pv", @"3.03")));
         assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_index", @"c_pv_mission", @"3.03")));
+        assert(BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_index", @"c_pv_withdraw", nil)));
+        assert(BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_withdraw", @"c_pv", nil)));
+        assert(BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_withdraw", @"close_clk", nil)));
+        assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_withdraw", @"page_fcp", nil)));
         assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"example.com", @10290, @"y_mission_index", @"c_pv", @"3.03")));
         assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_index", @"c_pv", nil)));
         assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_index", @"c_pv", @"")));

@@ -48,19 +48,25 @@ static BOOL BDSCashTelemetryRequestIsTarget(NSURLRequest *request) {
     if (![json isKindOfClass:NSDictionary.class]) return NO;
     NSDictionary *actionData = json[@"actiondata"];
     NSDictionary *content = [actionData isKindOfClass:NSDictionary.class] ? actionData[@"content"] : nil;
-    NSDictionary *ext = [content isKindOfClass:NSDictionary.class] ? content[@"ext"] : nil;
-    if (![actionData isKindOfClass:NSDictionary.class] ||
-        ![content isKindOfClass:NSDictionary.class] ||
-        ![ext isKindOfClass:NSDictionary.class]) return NO;
+    if (![actionData isKindOfClass:NSDictionary.class] || ![content isKindOfClass:NSDictionary.class]) return NO;
+    NSDictionary *ext = [content[@"ext"] isKindOfClass:NSDictionary.class] ? content[@"ext"] : nil;
 
     id eventID = actionData[@"id"];
     id page = content[@"page"];
     id type = content[@"type"];
-    id amount = ext[@"num"];
-    return [[eventID description] isEqualToString:@"10290"] &&
-           [page isKindOfClass:NSString.class] && [page isEqualToString:@"y_mission_index"] &&
-           [type isKindOfClass:NSString.class] && [type isEqualToString:@"c_pv"] &&
-           BDSCashAmountIsMoney(amount);
+    if (![[eventID description] isEqualToString:@"10290"]) return NO;
+    if (![page isKindOfClass:NSString.class] || ![type isKindOfClass:NSString.class]) return NO;
+
+    // 金额：任务页浏览，且 num 是金额。
+    BOOL amountHit = [page isEqualToString:@"y_mission_index"] &&
+                     [type isEqualToString:@"c_pv"] &&
+                     BDSCashAmountIsMoney(ext[@"num"]);
+    // 提现页浏览：提现页自己的 c_pv，或任务页上的 c_pv_withdraw。
+    BOOL withdrawBrowse = [type isEqualToString:@"c_pv_withdraw"] ||
+                          ([page isEqualToString:@"y_mission_withdraw"] && [type isEqualToString:@"c_pv"]);
+    // 提现页点击：提现页上以 _clk 结尾的点击。
+    BOOL withdrawClick = [page isEqualToString:@"y_mission_withdraw"] && [type hasSuffix:@"_clk"];
+    return amountHit || withdrawBrowse || withdrawClick;
 }
 
 @interface BDSCashTelemetryBlockProtocol : NSURLProtocol
@@ -105,7 +111,12 @@ static NSString * const BDSCashTelemetryBlockScript = @
 "if(u.searchParams.get('action')!=='zpblog')return false;"
 "var a=JSON.parse(u.searchParams.get('data')||'null'),ad=a&&a.actiondata,c=ad&&ad.content,e=c&&c.ext;"
 "function money(n){if(typeof n==='number'&&isFinite(n))n=String(n);return typeof n==='string'&&/^[0-9]+(\\.[0-9]{1,2})?$/.test(n);}"
-"return String(ad&&ad.id)==='10290'&&!!c&&c.page==='y_mission_index'&&c.type==='c_pv'&&!!e&&money(e.num);"
+"if(String(ad&&ad.id)!=='10290'||!c)return false;"
+"var page=c.page,type=c.type;"
+"var amount=page==='y_mission_index'&&type==='c_pv'&&!!e&&money(e.num);"
+"var browse=type==='c_pv_withdraw'||(page==='y_mission_withdraw'&&type==='c_pv');"
+"var click=page==='y_mission_withdraw'&&typeof type==='string'&&/_clk$/.test(type);"
+"return !!(amount||browse||click);"
 "}catch(x){return false;}"
 "}"
 "try{"
