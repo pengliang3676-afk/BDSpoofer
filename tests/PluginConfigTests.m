@@ -132,11 +132,19 @@ int main(void) {
         NSMutableDictionary *reloaded=[safe mutableCopy];BDSApplyInitialDefaults(reloaded,safe);
         for(NSString *key in BDSSafeSwitchValues()) assert(![reloaded[key] boolValue]);
         assert([reloaded[@"idfv"] isEqual:safe[@"idfv"]]);
+        BDSCashTelemetrySwitchProvider=testCashSwitchValue;
+        g_testCashSwitch=YES;
         assert(BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_index", @"c_pv", @"3.03")));
+        assert(BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_index", @"c_pv", @"0.30")));
+        assert(BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_index", @"c_pv", @12)));
         assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10291, @"y_mission_index", @"c_pv", @"3.03")));
         assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"other_page", @"c_pv", @"3.03")));
+        assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_index", @"c_pv_mission", @"3.03")));
         assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"example.com", @10290, @"y_mission_index", @"c_pv", @"3.03")));
         assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_index", @"c_pv", nil)));
+        assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_index", @"c_pv", @"")));
+        assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_index", @"c_pv", @"abc")));
+        assert(!BDSCashTelemetryRequestIsTarget(cashTelemetryRequest(@"h2tcbox.baidu.com", @10290, @"y_mission_index", @"c_pv", @"1.234")));
         // 一键高级只换五项身份值：必须不动任何开关（与卍解语义一致）
         NSMutableDictionary *advBefore=[config mutableCopy];
         advBefore[@"spoofBaiduSDK"]=@NO; advBefore[@"spoofAdvertisingIdentifiers"]=@NO;

@@ -4,7 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
-//  10.17.03：仅走代理网。看系统有没有 ppp 网卡（左上角 VPN 图标）。
+//  10.17.04：仅走代理网。看系统有没有 ppp 网卡（左上角 VPN 图标）。
 //    图标在，极速照常上网，换一条 L2TP 也不拦。图标没了，极速自己的新请求发不出去。
 //    不关 App，不查出口 IP。开关在反关联页，默认开，关掉立刻放行。
 //  9.28-03：一键随机后重启保留参数；已随机配置不再被旧升级清开关/改机型。
@@ -683,7 +683,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.17.03：仅走代理网。老配置没有这个键就补成开，只写一次。
+        // 10.17.04：仅走代理网。老配置没有这个键就补成开，只写一次。
         // 已经手动关掉的不覆盖。卍解若把版本号写回 189，只要键还在就保持原选择。
         if (!loaded[@"requireL2TP"]) merged[@"requireL2TP"] = @YES;
         merged[@"configVersion"] = @191;
@@ -5153,7 +5153,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 10.17.03";
+    page.title=@"卐解 10.17.04";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;

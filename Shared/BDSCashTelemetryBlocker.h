@@ -15,6 +15,18 @@ static BOOL BDSCashTelemetrySwitchIsOn(void) {
     return BDSCashTelemetrySwitchProvider ? BDSCashTelemetrySwitchProvider() : NO;
 }
 
+// 金额形态与实机那条一致：0.30、12、12.34。三位小数、空串、文字都不算。
+static BOOL BDSCashAmountIsMoney(id amount) {
+    NSString *text = nil;
+    if ([amount isKindOfClass:NSString.class]) text = amount;
+    else if ([amount isKindOfClass:NSNumber.class]) text = [(NSNumber *)amount stringValue];
+    else return NO;
+    if (!text.length) return NO;
+    NSRange found = [text rangeOfString:@"^[0-9]+(\\.[0-9]{1,2})?$"
+                                options:NSRegularExpressionSearch];
+    return found.location == 0 && found.length == text.length;
+}
+
 static BOOL BDSCashTelemetryRequestIsTarget(NSURLRequest *request) {
     if (!BDSCashTelemetrySwitchIsOn()) return NO;
     if (!request.URL || ![request.HTTPMethod.uppercaseString isEqualToString:@"GET"]) return NO;
@@ -45,11 +57,10 @@ static BOOL BDSCashTelemetryRequestIsTarget(NSURLRequest *request) {
     id page = content[@"page"];
     id type = content[@"type"];
     id amount = ext[@"num"];
-    BOOL amountTypeOK = [amount isKindOfClass:NSString.class] || [amount isKindOfClass:NSNumber.class];
     return [[eventID description] isEqualToString:@"10290"] &&
            [page isKindOfClass:NSString.class] && [page isEqualToString:@"y_mission_index"] &&
            [type isKindOfClass:NSString.class] && [type isEqualToString:@"c_pv"] &&
-           amountTypeOK;
+           BDSCashAmountIsMoney(amount);
 }
 
 @interface BDSCashTelemetryBlockProtocol : NSURLProtocol
@@ -93,7 +104,8 @@ static NSString * const BDSCashTelemetryBlockScript = @
 "if(u.pathname!=='/ztbox')return false;"
 "if(u.searchParams.get('action')!=='zpblog')return false;"
 "var a=JSON.parse(u.searchParams.get('data')||'null'),ad=a&&a.actiondata,c=ad&&ad.content,e=c&&c.ext;"
-"return String(ad&&ad.id)==='10290'&&!!c&&c.page==='y_mission_index'&&c.type==='c_pv'&&!!e&&e.num!==undefined&&e.num!==null;"
+"function money(n){if(typeof n==='number'&&isFinite(n))n=String(n);return typeof n==='string'&&/^[0-9]+(\\.[0-9]{1,2})?$/.test(n);}"
+"return String(ad&&ad.id)==='10290'&&!!c&&c.page==='y_mission_index'&&c.type==='c_pv'&&!!e&&money(e.num);"
 "}catch(x){return false;}"
 "}"
 "try{"
