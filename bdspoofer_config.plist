@@ -57,7 +57,7 @@
 	<key>spoofBattery</key>
 	<true/>
 	<key>blockStatCashTelemetry</key>
-	<false/>
+	<true/>
 	<key>blockLaunchTimeUpload</key>
 	<true/>
 	<key>spoofBaiduTargeted</key>

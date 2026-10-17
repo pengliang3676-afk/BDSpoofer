@@ -18,12 +18,12 @@ int main(int argc,char **argv) {
         NSDictionary *basicFresh=BDSCreateConfigForDevice(nil, BDSDeviceProfiles().firstObject, BDSRandomModeBasic, [NSSet set]);
         assert(![basicFresh[@"idfv"] length] && ![basicFresh[@"idfa"] length] && ![basicFresh[@"deviceID"] length] && ![basicFresh[@"cuid"] length] && ![basicFresh[@"utdid"] length]);
         assert(!basicFresh[@"configVersion"] && [basicFresh[@"spoofWiFi"] boolValue] && [basicFresh[@"enabled"] boolValue]);
-        assert(![basicFresh[@"spoofKeychain"] boolValue] && [basicFresh[@"spoofBattery"] boolValue] && ![basicFresh[@"blockStatCashTelemetry"] boolValue]);
+        assert(![basicFresh[@"spoofKeychain"] boolValue] && [basicFresh[@"spoofBattery"] boolValue] && [basicFresh[@"blockStatCashTelemetry"] boolValue]);
         assert([basicFresh[@"hwMachine"] isEqual:@"iPhone10,1"]);
         NSMutableDictionary *config=BDSMergedConfig(defaults);
         BDSSeedIdentityIfNeeded(config,YES);
         assert([config[@"configVersion"] integerValue]==189);
-        assert(![config[@"blockStatCashTelemetry"] boolValue]);
+        assert([config[@"blockStatCashTelemetry"] boolValue]);
         assert(![config[@"bypassJailbreakDetect"] boolValue]);  // 9.30-07 默认关闭
         for(NSString *key in BDSRegularKeys()) assert([config[key] boolValue]);
         for(NSString *key in BDSRiskKeys()) assert(![config[key] boolValue]);

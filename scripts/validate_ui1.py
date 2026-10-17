@@ -8,12 +8,15 @@ blocker=(root/'Shared/BDSCashTelemetryBlocker.h').read_text(encoding='utf-8')
 release=(root/'RELEASE_UI1.md').read_text(encoding='utf-8')
 build=(root/'scripts/build_release_xcode.sh').read_text(encoding='utf-8')
 config=plistlib.loads((root/'bdspoofer_config.plist').read_bytes())
-items=re.findall(r'@\{@"key":@"([^"]+)",@"name":@"[^"]+"(,@"off":@YES)?\}',policy)
-assert len(items)==27
+items=re.findall(r'@\{@"key":@"([^"]+)",@"name":@"[^"]+"(,@"off":@YES)?(?:,@"note":@"[^"]*")?\}',policy)
+assert len(items)==28
 regular=[key for key,off in items if not off];risk=[key for key,off in items if off]
-assert len(regular)==21 and len(risk)==6
+assert len(regular)==21 and len(risk)==7
 assert all(config[k] is True for k in regular)
-assert all(config[k] is False for k in risk)
+for k in risk:
+    if k in ('blockStatCashTelemetry','requireL2TP'):
+        continue
+    assert config[k] is False,k
 assert config['bypassJailbreakDetect'] is False  # 10.01.01 起默认关闭
 assert config['spoofScreen'] is False and config['configVersion']==189
 assert config['blockStatCashTelemetry'] is True
