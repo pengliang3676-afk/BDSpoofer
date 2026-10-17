@@ -39,3 +39,28 @@ cp dist-ui1/BDSpooferCraneManager_1.0.3-ui1_10.17.09_RootHide.deb "dist-ui1/鍗�
 cp dist-ui1/BDSpoofer_1.8.1_UI1.3_10.17.09.dylib "dist-ui1/M-10.17.09.dylib"
 cp dist-ui1/BDSpooferCraneManager_1.0.3-ui1_10.17.09_RootHide.deb "dist-ui1/X-10.17.09.deb"
 (cd dist-ui1 && shasum -a 256 M-10.17.09.dylib X-10.17.09.deb BDSpoofer_1.8.1_UI1.3_10.17.09.dylib BDSpooferCraneManager_1.0.3-ui1_10.17.09_RootHide.deb > SHA256SUMS.txt)
+
+# L2TP看门：只注入 SpringBoard，不进极速。
+GUARD_ROOT=build-ui1/l2tpguard
+rm -rf "$GUARD_ROOT"
+mkdir -p "$GUARD_ROOT/var/jb/Library/MobileSubstrate/DynamicLibraries" \
+         "$GUARD_ROOT/var/jb/var/mobile/Library/Preferences" \
+         "$GUARD_ROOT/DEBIAN" build-ui1/guarddeb
+for BDS_ARCH in arm64 arm64e; do
+    xcrun --sdk iphoneos clang -arch "$BDS_ARCH" "${BDS_COMMON[@]}" \
+        -framework Foundation -framework UIKit \
+        -dynamiclib -install_name @rpath/L2TPGuard.dylib \
+        L2TPGuard/L2TPGuard.m -o "build-ui1/L2TPGuard_$BDS_ARCH.dylib"
+done
+lipo -create build-ui1/L2TPGuard_arm64.dylib build-ui1/L2TPGuard_arm64e.dylib \
+    -output "$GUARD_ROOT/var/jb/Library/MobileSubstrate/DynamicLibraries/L2TPGuard.dylib"
+cp L2TPGuard/L2TPGuard.plist "$GUARD_ROOT/var/jb/Library/MobileSubstrate/DynamicLibraries/L2TPGuard.plist"
+cp L2TPGuard/com.bds.l2tpguard.plist "$GUARD_ROOT/var/jb/var/mobile/Library/Preferences/com.bds.l2tpguard.plist"
+cp L2TPGuard/control L2TPGuard/postinst "$GUARD_ROOT/DEBIAN/"
+chmod 0755 "$GUARD_ROOT/DEBIAN/postinst"
+codesign --force --sign - --timestamp=none "$GUARD_ROOT/var/jb/Library/MobileSubstrate/DynamicLibraries/L2TPGuard.dylib"
+printf '2.0\n' > build-ui1/guarddeb/debian-binary
+COPYFILE_DISABLE=1 tar -C "$GUARD_ROOT/DEBIAN" -czf build-ui1/guarddeb/control.tar.gz .
+COPYFILE_DISABLE=1 tar -C "$GUARD_ROOT" --exclude='./DEBIAN' -czf build-ui1/guarddeb/data.tar.gz .
+(cd build-ui1/guarddeb && ar -rc ../../dist-ui1/L2TPGuard_10.17.09_RootHide.deb debian-binary control.tar.gz data.tar.gz)
+(cd dist-ui1 && shasum -a 256 L2TPGuard_10.17.09_RootHide.deb >> SHA256SUMS.txt)

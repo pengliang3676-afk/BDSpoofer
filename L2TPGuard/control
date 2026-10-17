@@ -1,0 +1,9 @@
+Package: com.bds.l2tpguard
+Name: L2TP看门
+Version: 1.0.0+10.17.09
+Architecture: iphoneos-arm64e
+Description: L2TP 断开时关闭百度极速。只注入 SpringBoard，不进入极速进程。
+Maintainer: Codex
+Author: Codex
+Section: Tweaks
+Depends: firmware (>= 15.0), rootless-compat (>= 0.9)
