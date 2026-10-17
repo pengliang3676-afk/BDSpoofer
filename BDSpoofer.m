@@ -4,7 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
-//  10.17.07：仅走代理网。看系统有没有 ppp 网卡（左上角 VPN 图标）。
+//  10.17.08：仅走代理网。看系统有没有 ppp 网卡（左上角 VPN 图标）。
 //    图标在，极速照常上网，换一条 L2TP 也不拦。图标没了，极速自己的新请求发不出去。
 //    不关 App，不查出口 IP。开关在反关联页，默认开，关掉立刻放行。
 //  9.28-03：一键随机后重启保留参数；已随机配置不再被旧升级清开关/改机型。
@@ -684,7 +684,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.17.07：仅走代理网。老配置没有这个键就补成开，只写一次。
+        // 10.17.08：仅走代理网。老配置没有这个键就补成开，只写一次。
         // 已经手动关掉的不覆盖。卍解若把版本号写回 189，只要键还在就保持原选择。
         if (!loaded[@"requireL2TP"]) merged[@"requireL2TP"] = @YES;
         merged[@"configVersion"] = @191;
@@ -697,7 +697,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @191;
         [merged writeToFile:p1 atomically:YES];
     }
-    // 10.17.07：金额上报和仅走代理网一样，注入后就是开。只强制一次。
+    // 10.17.08：金额上报和仅走代理网一样，注入后就是开。只强制一次。
     // 老配置里这个键已经写成关，所以不能靠“没有键才补开”。
     // 之后手动关掉仍然有效；卍解把版本号写回 189 时，认这个标记，不再打开。
     if (![loaded[@"cashBlockDefault192"] boolValue]) {
@@ -3869,9 +3869,16 @@ static int (*orig_connectx)(int, const bds_sa_endpoints_t *, unsigned int, unsig
                             const struct iovec *, unsigned int, size_t *, unsigned int *);
 static ssize_t (*orig_sendto)(int, const void *, size_t, int, const struct sockaddr *, socklen_t);
 
-static int g_l2tp_cached = 0;
-static uint64_t g_l2tp_checked = 0;
-static int g_l2tp_prev = -1;
+static int g_l2tp_cached = 1;
+
+static int bds_l2tp_is_up(void) {
+    return __atomic_load_n(&g_l2tp_cached, __ATOMIC_ACQUIRE);
+}
+
+static void bds_l2tp_refresh(void) {
+    if (!BDS_ATOMIC_GET(g_requireL2TPC)) return;
+    __atomic_store_n(&g_l2tp_cached, bds_l2tp_up_now(), __ATOMIC_RELEASE);
+}
 
 static int bds_dest_is_local(const struct sockaddr *sa) {
     if (!sa) return 1;
@@ -3903,38 +3910,6 @@ static int bds_l2tp_up_now(void) {
     }
     freeifaddrs(list);
     return up;
-}
-
-static void bds_stop_wk_tree(UIView *view) {
-    if (!view) return;
-    if ([view isKindOfClass:WKWebView.class]) [(WKWebView *)view stopLoading];
-    for (UIView *sub in view.subviews) bds_stop_wk_tree(sub);
-}
-
-static void bds_stop_remote_webviews(void) {
-    UIApplication *app = UIApplication.sharedApplication;
-    if (!app) return;
-    for (UIWindow *window in app.windows) bds_stop_wk_tree(window);
-}
-
-static int bds_l2tp_is_up(void) {
-    static mach_timebase_info_data_t tb;
-    if (tb.denom == 0) mach_timebase_info(&tb);
-    uint64_t now = mach_absolute_time();
-    uint64_t stamp = __atomic_load_n(&g_l2tp_checked, __ATOMIC_RELAXED);
-    uint64_t elapsed = stamp ? (now - stamp) * tb.numer / tb.denom : UINT64_MAX;
-    if (elapsed > 100000000ull) {
-        int up = bds_l2tp_up_now();
-        __atomic_store_n(&g_l2tp_cached, up, __ATOMIC_RELAXED);
-        __atomic_store_n(&g_l2tp_checked, now, __ATOMIC_RELAXED);
-        int old = __atomic_exchange_n(&g_l2tp_prev, up, __ATOMIC_ACQ_REL);
-        if (up == 0 && old != 0 && BDS_ATOMIC_GET(g_requireL2TPC)) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (BDS_ATOMIC_GET(g_requireL2TPC) && !bds_l2tp_up_now()) bds_stop_remote_webviews();
-            });
-        }
-    }
-    return __atomic_load_n(&g_l2tp_cached, __ATOMIC_RELAXED);
 }
 
 static int bds_block_remote(void) {
@@ -4077,11 +4052,12 @@ static void BDSInstallL2TPGate(void) {
         bds_hook_resume_class("__NSCFLocalDataTask");
         Class web = objc_getClass("WKWebView");
         hookInst(web, @selector(loadRequest:), (IMP)bds_wk_loadRequest, (IMP *)&orig_wk_loadRequest);
-        g_l2tpTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+        g_l2tpTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                             dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
         dispatch_source_set_timer(g_l2tpTimer, dispatch_time(DISPATCH_TIME_NOW, 0),
-                                  (uint64_t)(0.5 * NSEC_PER_SEC), (uint64_t)(0.1 * NSEC_PER_SEC));
+                                  (uint64_t)(2 * NSEC_PER_SEC), (uint64_t)(0.5 * NSEC_PER_SEC));
         dispatch_source_set_event_handler(g_l2tpTimer, ^{
-            if (BDS_ATOMIC_GET(g_requireL2TPC)) bds_l2tp_is_up();
+            bds_l2tp_refresh();
         });
         dispatch_resume(g_l2tpTimer);
     });
@@ -5168,7 +5144,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 10.17.07";
+    page.title=@"卐解 10.17.08";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
