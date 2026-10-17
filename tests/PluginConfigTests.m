@@ -27,9 +27,9 @@ int main(void) {
     @autoreleasepool {
         NSMutableDictionary *config=[BDSDefaultConfig() mutableCopy];
         BDSApplyInitialDefaults(config,nil);
-        assert(BDSRegularKeys().count==20 && BDSRiskKeys().count==6);
+        assert(BDSRegularKeys().count==20 && BDSRiskKeys().count==4);
         assert([config[@"configVersion"] integerValue]==189);
-        assert(![config[@"blockStatCashTelemetry"] boolValue]);
+        assert([config[@"blockStatCashTelemetry"] boolValue]);
         for(NSString *key in BDSRegularKeys()) assert([config[key] boolValue]);
         for(NSString *key in BDSRiskKeys()) assert(![config[key] boolValue]);
         assert(![config[@"bypassJailbreakDetect"] boolValue]);  // 9.30-07 默认关闭

@@ -4,7 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
-//  10.17.04：仅走代理网。看系统有没有 ppp 网卡（左上角 VPN 图标）。
+//  10.17.05：仅走代理网。看系统有没有 ppp 网卡（左上角 VPN 图标）。
 //    图标在，极速照常上网，换一条 L2TP 也不拦。图标没了，极速自己的新请求发不出去。
 //    不关 App，不查出口 IP。开关在反关联页，默认开，关掉立刻放行。
 //  9.28-03：一键随机后重启保留参数；已随机配置不再被旧升级清开关/改机型。
@@ -237,7 +237,7 @@ static NSDictionary *BDSDefaultConfig(void) {
             @"spoofPrivacyPermissions": @YES,
             @"spoofWebKitCookie": @NO,
             @"spoofBattery": @YES,
-            @"blockStatCashTelemetry": @NO,
+            @"blockStatCashTelemetry": @YES,
             @"blockLaunchTimeUpload": @YES,
             @"requireL2TP": @YES,
             @"wifiSSID": @"",
@@ -288,7 +288,7 @@ static NSInteger cfgInt(NSString *key, NSInteger def) {
 
 // 金额统计上报拦截的运行期开关查询：每次请求都读一次，关掉立即生效。
 static BOOL BDSCashTelemetrySwitchEnabled(void) {
-    return cfgBool(@"blockStatCashTelemetry", NO);
+    return cfgBool(@"blockStatCashTelemetry", YES);
 }
 static BOOL BDSHasEnabledCHookFeature(void) {
     return cfgBool(@"spoofSysctl", NO) ||
@@ -436,7 +436,8 @@ static void loadConfig() {
     if (![[NSFileManager defaultManager] fileExistsAtPath:p1]) {
         // 全新容器、从没点过一键随机：只补纯拦截开关 blockLaunchTimeUpload=YES，
         // 其他开关保持关（用户策略）。cfgBool 默认值也兜底 YES，这里只是让 UI 显示开。
-        g_config = @{@"blockLaunchTimeUpload": @YES, @"requireL2TP": @YES};
+        g_config = @{@"blockLaunchTimeUpload": @YES, @"requireL2TP": @YES,
+                     @"blockStatCashTelemetry": @YES, @"cashBlockDefault192": @YES};
         bds_update_c_cache();
         return;
     }
@@ -683,7 +684,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.17.04：仅走代理网。老配置没有这个键就补成开，只写一次。
+        // 10.17.05：仅走代理网。老配置没有这个键就补成开，只写一次。
         // 已经手动关掉的不覆盖。卍解若把版本号写回 189，只要键还在就保持原选择。
         if (!loaded[@"requireL2TP"]) merged[@"requireL2TP"] = @YES;
         merged[@"configVersion"] = @191;
@@ -694,6 +695,15 @@ static void loadConfig() {
     } else if (![loaded[@"configVersion"] isEqual:@191]) {
         // 新装（没有已保存配置）：模板已按策略写成 @NO，这里只补版本号，不覆盖用户选择。
         merged[@"configVersion"] = @191;
+        [merged writeToFile:p1 atomically:YES];
+    }
+    // 10.17.05：金额上报和仅走代理网一样，注入后就是开。只强制一次。
+    // 老配置里这个键已经写成关，所以不能靠“没有键才补开”。
+    // 之后手动关掉仍然有效；卍解把版本号写回 189 时，认这个标记，不再打开。
+    if (![loaded[@"cashBlockDefault192"] boolValue]) {
+        merged[@"blockStatCashTelemetry"] = @YES;
+        merged[@"cashBlockDefault192"] = @YES;
+        merged[@"configVersion"] = @192;
         [merged writeToFile:p1 atomically:YES];
     }
     // 没点过一键基础：内存里关掉机型伪装，不把默认 SE 写回文件。
@@ -4987,7 +4997,7 @@ static NSString *BDSConfigSummary(void) {
     [summary appendFormat:@"\n\n反关联增强：%@\n仅走代理网：%@\n收益额上报：%@",
         associationEnabled ? @"已开启" : @"已关闭",
         cfgBool(@"requireL2TP", YES) ? @"已开启" : @"已关闭",
-        cfgBool(@"blockStatCashTelemetry", NO) ? @"已开启" : @"已关闭"];
+        cfgBool(@"blockStatCashTelemetry", YES) ? @"已开启" : @"已关闭"];
     return summary;
 }
 
@@ -5153,7 +5163,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 10.17.04";
+    page.title=@"卐解 10.17.05";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5316,7 +5326,7 @@ static NSString *BDSConfigSummary(void) {
     NSString *message = [NSString stringWithFormat:
         @"已随机并保存基础参数。\n"
          "基础 6 项、高级前 3 项、反关联前 12 项已打开。\n"
-         "高级身份没有改动。Keychain、App Group、WebKit Cookie、自定义 User-Agent、阻止金额统计上报保持关闭。\n"
+         "高级身份没有改动。Keychain、App Group、WebKit Cookie、自定义 User-Agent 保持关闭。\n"
          "请彻底关闭 App 后重新打开。\n\n"
          "随机范围：%@\n机型：%@\n系统：%@ (%@)\n"
          "内存：%@ MB\n磁盘：%@ GB\n设备名称：%@",
@@ -6343,11 +6353,8 @@ static void bds_initialize() {
         // 配置入口始终安装
         BDSInstallUI();
 
-        // 默认保持金额统计上报；用户明确开启阻止开关后才安装拦截。
-        // 默认保持金额统计上报：开关关闭时完全不安装拦截（与 9.28-03 相同）。
-        // 开关打开才安装；安装后判定入口每次请求都读开关，所以关掉立即放行、
-        // 不必重启也能停下拦截。
-        if (cfgBool(@"blockStatCashTelemetry", NO)) {
+        // 金额上报默认开，和仅走代理网一样。判定入口每次读开关，关掉立即放行。
+        if (cfgBool(@"blockStatCashTelemetry", YES)) {
             BDSCashTelemetrySwitchProvider = BDSCashTelemetrySwitchEnabled;
             BDSInstallCashTelemetryBlocking();
         }

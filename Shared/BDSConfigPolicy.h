@@ -29,7 +29,7 @@ static NSArray<NSArray<NSDictionary *> *> *BDSSettingGroups(void) {
           @{@"key":@"spoofBattery",@"name":@"电池参数"},
           @{@"key":@"blockLaunchTimeUpload",@"name":@"拦截启动时间上报"},
           @{@"key":@"requireL2TP",@"name":@"仅走代理网",@"off":@YES,@"note":@"左上角 VPN 在就放行，没有就拦住极速。立刻生效"},
-          @{@"key":@"blockStatCashTelemetry",@"name":@"阻止金额统计上报",@"off":@YES}]
+          @{@"key":@"blockStatCashTelemetry",@"name":@"阻止金额统计上报",@"off":@YES,@"note":@"注入后开启。关掉立刻停。"}]
     ];
 }
 static NSArray<NSString *> *BDSRegularKeys(void) {
@@ -39,8 +39,7 @@ static NSArray<NSString *> *BDSRegularKeys(void) {
     return keys;
 }
 static NSArray<NSString *> *BDSRiskKeys(void) {
-    return @[@"spoofKeychain",@"spoofAppGroup",@"spoofWebKitCookie",@"spoofUserAgent",
-             @"blockStatCashTelemetry"];
+    return @[@"spoofKeychain",@"spoofAppGroup",@"spoofWebKitCookie",@"spoofUserAgent"];
 }
 // “一键基础”要打开的开关，按组内顺序取前 count 个可改项。
 // 关键点：带 @"off":@YES 的项要跳过，不能占名额。
