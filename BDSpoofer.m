@@ -4,7 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
-//  10.18.04：UDID 钩子全部停用，先恢复能打开。主界面仍显示本容器记下的那串。
+//  10.18.05：UDID 只替换百度自己的读取方法，不钩系统钥匙串。
 //  10.18.02：每个容器记住自己的 UDID，显示在主界面。不写进共享钥匙串。
 //  10.18.01：删掉仅走代理网。代理检测隐藏仍单独保留，不跟 L2TP 绑在一起。
 //  9.28-03：一键随机后重启保留参数；已随机配置不再被旧升级清开关/改机型。
@@ -3204,12 +3204,6 @@ static void BDSInstallContainerUDID(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         bds_load_container_udid();
-        struct bds_rebinding rebindings[] = {
-            {"SecItemCopyMatching", (void *)bds_my_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching},
-            {"SecItemAdd", (void *)bds_my_SecItemAdd, (void **)&orig_SecItemAdd},
-            {"SecItemUpdate", (void *)bds_my_SecItemUpdate, (void **)&orig_SecItemUpdate},
-        };
-        bds_rebind_symbols(rebindings, sizeof(rebindings) / sizeof(rebindings[0]));
         dispatch_async(dispatch_get_main_queue(), ^{
             bds_hook_udid_methods_later();
         });
@@ -5140,7 +5134,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 10.18.04";
+    page.title=@"卐解 10.18.05";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -6344,6 +6338,7 @@ static void bds_initialize() {
 
         // 配置入口始终安装
         BDSInstallUI();
+        BDSInstallContainerUDID();
 
         // 金额上报不跟基础功能总开关。钩子始终装上，每次请求读自己的开关。
         // 关掉立刻放行；再打开也不用重启。已经打开的网页同步这个开关。

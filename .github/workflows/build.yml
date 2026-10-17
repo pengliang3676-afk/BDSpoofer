@@ -14,11 +14,11 @@ jobs:
         run: bash scripts/build_release_xcode.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: BDSpoofer-1.8.1-UI1.3-10.18.04
+          name: BDSpoofer-1.8.1-UI1.3-10.18.05
           path: |
-            dist-ui1/M-10.18.04.dylib
+            dist-ui1/M-10.18.05.dylib
             dist-ui1/X-10.18.02.deb
-            dist-ui1/BDSpoofer_1.8.1_UI1.3_10.18.04.dylib
+            dist-ui1/BDSpoofer_1.8.1_UI1.3_10.18.05.dylib
             dist-ui1/BDSpooferCraneManager_1.0.3-ui1_10.18.02_RootHide.deb
             dist-ui1/RELEASE_UI1.md
             dist-ui1/bdspoofer_config.plist
