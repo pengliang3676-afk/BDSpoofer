@@ -4,7 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
-//  10.18.03：UDID 不再在启动时读钥匙串，也不再钩系统配置，避免闪退。
+//  10.18.04：UDID 钩子全部停用，先恢复能打开。主界面仍显示本容器记下的那串。
 //  10.18.02：每个容器记住自己的 UDID，显示在主界面。不写进共享钥匙串。
 //  10.18.01：删掉仅走代理网。代理检测隐藏仍单独保留，不跟 L2TP 绑在一起。
 //  9.28-03：一键随机后重启保留参数；已随机配置不再被旧升级清开关/改机型。
@@ -3101,25 +3101,21 @@ static void bds_save_container_udid(NSString *udid) {
     [udid writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
-static int g_udid_resolving = 0;
-
-static NSString *bds_udid_value(void) {
-    if (g_containerUDID.length) return g_containerUDID;
-    if (g_udid_resolving) return @"";
-    g_udid_resolving = 1;
-    NSString *existing = bds_udid_from_prefs_file();
-    if (!existing && bds_container_was_used()) existing = bds_udid_from_real_keychain();
-    if (!bds_looks_like_udid(existing)) existing = bds_generate_udid();
-    bds_save_container_udid(existing);
-    g_udid_resolving = 0;
-    return g_containerUDID ?: @"";
-}
-
 static void bds_load_container_udid(void) {
     NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/bds_container_udid.txt"];
     NSString *saved = [[NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil]
         stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     if (bds_looks_like_udid(saved)) g_containerUDID = saved;
+}
+
+static NSString *bds_udid_value(void) {
+    if (g_containerUDID.length) return g_containerUDID;
+    bds_load_container_udid();
+    if (g_containerUDID.length) return g_containerUDID;
+    NSString *existing = bds_udid_from_prefs_file();
+    if (!bds_looks_like_udid(existing)) existing = bds_generate_udid();
+    bds_save_container_udid(existing);
+    return g_containerUDID ?: @"";
 }
 
 static NSString *bds_hooked_udid_string(id self, SEL _cmd) {
@@ -3229,8 +3225,6 @@ static BOOL bds_keychainValueContainsBaidu(id value) {
 }
 
 static OSStatus bds_my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
-    NSDictionary *dictionary = (__bridge NSDictionary *)query;
-    if (bds_dict_mentions_udid(dictionary)) return bds_udid_copy_matching(dictionary, result);
     // Keychain 是高级功能，不能再依赖基础总开关 enabled。
     if (!g_config || !cfgBool(@"spoofKeychain", NO) || !query) {
         BDS_DIAG_RECORD(g_diagKeychain, BDSDiagStatePassed);
@@ -5146,7 +5140,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 10.18.03";
+    page.title=@"卐解 10.18.04";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -6350,7 +6344,6 @@ static void bds_initialize() {
 
         // 配置入口始终安装
         BDSInstallUI();
-        BDSInstallContainerUDID();
 
         // 金额上报不跟基础功能总开关。钩子始终装上，每次请求读自己的开关。
         // 关掉立刻放行；再打开也不用重启。已经打开的网页同步这个开关。
