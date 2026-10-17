@@ -147,10 +147,9 @@ static void BDSEnsureCashTelemetryBlockScript(WKUserContentController *controlle
 
 static IMP g_bdsCashOriginalWKInit = NULL;
 static WKWebView *BDSCashWKInit(id self, SEL command, CGRect frame, WKWebViewConfiguration *configuration) {
-    // 只在这个钩子确实装上时才会走到这里，也就是开关在启动时是打开的。
-    // 新建的 WebView 补一份 =true 的脚本；关掉开关后不新建的页面不受影响，
-    // 原生请求那条路由判定入口每次读开关负责，关掉立即放行。
-    BDSEnsureCashTelemetryBlockScript(configuration.userContentController, YES);
+    // 金额上报有自己的开关，不跟基础功能总开关。新建页面按当前开关注入。
+    BOOL on = BDSCashTelemetrySwitchProvider ? BDSCashTelemetrySwitchProvider() : NO;
+    BDSEnsureCashTelemetryBlockScript(configuration.userContentController, on);
     WKWebView *(*original)(id, SEL, CGRect, WKWebViewConfiguration *) = (void *)g_bdsCashOriginalWKInit;
     return original(self, command, frame, configuration);
 }

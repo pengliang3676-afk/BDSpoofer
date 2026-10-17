@@ -4,7 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
-//  10.17.05：仅走代理网。看系统有没有 ppp 网卡（左上角 VPN 图标）。
+//  10.17.06：仅走代理网。看系统有没有 ppp 网卡（左上角 VPN 图标）。
 //    图标在，极速照常上网，换一条 L2TP 也不拦。图标没了，极速自己的新请求发不出去。
 //    不关 App，不查出口 IP。开关在反关联页，默认开，关掉立刻放行。
 //  9.28-03：一键随机后重启保留参数；已随机配置不再被旧升级清开关/改机型。
@@ -684,7 +684,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @190;
         [merged writeToFile:p1 atomically:YES];
     } else if (ver < 191) {
-        // 10.17.05：仅走代理网。老配置没有这个键就补成开，只写一次。
+        // 10.17.06：仅走代理网。老配置没有这个键就补成开，只写一次。
         // 已经手动关掉的不覆盖。卍解若把版本号写回 189，只要键还在就保持原选择。
         if (!loaded[@"requireL2TP"]) merged[@"requireL2TP"] = @YES;
         merged[@"configVersion"] = @191;
@@ -697,7 +697,7 @@ static void loadConfig() {
         merged[@"configVersion"] = @191;
         [merged writeToFile:p1 atomically:YES];
     }
-    // 10.17.05：金额上报和仅走代理网一样，注入后就是开。只强制一次。
+    // 10.17.06：金额上报和仅走代理网一样，注入后就是开。只强制一次。
     // 老配置里这个键已经写成关，所以不能靠“没有键才补开”。
     // 之后手动关掉仍然有效；卍解把版本号写回 189 时，认这个标记，不再打开。
     if (![loaded[@"cashBlockDefault192"] boolValue]) {
@@ -729,6 +729,8 @@ static void loadConfig() {
     bds_update_c_cache();
 }
 
+static void (*bds_push_cash_switch)(BOOL on) = NULL;
+
 static BOOL saveConfigValues(NSDictionary *values) {
     if (!values.count) return NO;
     NSMutableDictionary *next = [g_config mutableCopy] ?: [NSMutableDictionary dictionary];
@@ -748,6 +750,9 @@ static BOOL saveConfigValues(NSDictionary *values) {
         BDS_ATOMIC_SET(g_spoofCPUC, cfgBool(@"spoofCPU", NO) ? 1 : 0);
         BDS_ATOMIC_SET(g_spoofStatfsC, cfgBool(@"spoofStatfs", NO) ? 1 : 0);
         BDS_ATOMIC_SET(g_spoofDlopenC, cfgBool(@"spoofDlopen", NO) ? 1 : 0);
+        if (values[@"blockStatCashTelemetry"] && bds_push_cash_switch) {
+            bds_push_cash_switch([values[@"blockStatCashTelemetry"] boolValue]);
+        }
     }
     return saved;
 }
@@ -5163,7 +5168,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 10.17.05";
+    page.title=@"卐解 10.17.06";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -6337,6 +6342,19 @@ static void BDSInstallUI(void) {
 
 #import "Shared/BDSCashTelemetryBlocker.h"
 
+static void bds_push_cash_js(UIView *view, NSString *js) {
+    if (!view) return;
+    if ([view isKindOfClass:WKWebView.class]) {
+        [(WKWebView *)view evaluateJavaScript:js completionHandler:nil];
+    }
+    for (UIView *sub in view.subviews) bds_push_cash_js(sub, js);
+}
+
+static void BDSPushCashSwitchToWebViews(BOOL on) {
+    NSString *js = [NSString stringWithFormat:@"window.__bdsBlockStatCashTelemetry=%@;", on ? @"true" : @"false"];
+    for (UIWindow *window in UIApplication.sharedApplication.windows) bds_push_cash_js(window, js);
+}
+
 #pragma mark - 构造函数
 
 #ifndef BDS_CONFIG_TESTING
@@ -6353,11 +6371,11 @@ static void bds_initialize() {
         // 配置入口始终安装
         BDSInstallUI();
 
-        // 金额上报默认开，和仅走代理网一样。判定入口每次读开关，关掉立即放行。
-        if (cfgBool(@"blockStatCashTelemetry", YES)) {
-            BDSCashTelemetrySwitchProvider = BDSCashTelemetrySwitchEnabled;
-            BDSInstallCashTelemetryBlocking();
-        }
+        // 金额上报不跟基础功能总开关。钩子始终装上，每次请求读自己的开关。
+        // 关掉立刻放行；再打开也不用重启。已经打开的网页同步这个开关。
+        BDSCashTelemetrySwitchProvider = BDSCashTelemetrySwitchEnabled;
+        BDSInstallCashTelemetryBlocking();
+        bds_push_cash_switch = BDSPushCashSwitchToWebViews;
 
         // 拦截启动时间上报：默认开。开关开才装 hook；装后每次读开关，关了立即放行。
         if (cfgBool(@"blockLaunchTimeUpload", YES)) {
