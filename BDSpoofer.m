@@ -3875,11 +3875,6 @@ static int bds_l2tp_is_up(void) {
     return __atomic_load_n(&g_l2tp_cached, __ATOMIC_ACQUIRE);
 }
 
-static void bds_l2tp_refresh(void) {
-    if (!BDS_ATOMIC_GET(g_requireL2TPC)) return;
-    __atomic_store_n(&g_l2tp_cached, bds_l2tp_up_now(), __ATOMIC_RELEASE);
-}
-
 static int bds_dest_is_local(const struct sockaddr *sa) {
     if (!sa) return 1;
     if (sa->sa_family == AF_UNIX) return 1;
@@ -3910,6 +3905,11 @@ static int bds_l2tp_up_now(void) {
     }
     freeifaddrs(list);
     return up;
+}
+
+static void bds_l2tp_refresh(void) {
+    if (!BDS_ATOMIC_GET(g_requireL2TPC)) return;
+    __atomic_store_n(&g_l2tp_cached, bds_l2tp_up_now(), __ATOMIC_RELEASE);
 }
 
 static int bds_block_remote(void) {
