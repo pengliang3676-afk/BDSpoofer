@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 总开关：false = 全部透传 -->
+	<key>enabled</key>
+	<true/>
+
+	<!-- 机型 -->
+	<key>hwMachine</key>
+	<string>iPhone15,2</string>
+	<key>hwModel</key>
+	<string>D73AP</string>
+	<key>marketingName</key>
+	<string>iPhone 14 Pro</string>
+
+	<!-- 系统 -->
+	<key>systemVersion</key>
+	<string>17.0.1</string>
+	<key>systemBuild</key>
+	<string>21A340</string>
+
+	<!-- 硬件 -->
+	<key>memorySize</key>
+	<integer>6144</integer>
+	<key>diskSize</key>
+	<integer>256</integer>
+
+	<!-- 屏幕 -->
+	<key>screenWidth</key>
+	<integer>393</integer>
+	<key>screenHeight</key>
+	<integer>852</integer>
+	<key>screenScale</key>
+	<integer>3</integer>
+	<key>nativeWidth</key>
+	<integer>1179</integer>
+	<key>nativeHeight</key>
+	<integer>2556</integer>
+
+	<!-- 设备标识（留空 = 不伪装，用系统值） -->
+	<key>utdid</key>
+	<string></string>
+	<key>aaid</key>
+	<string></string>
+	<key>idfv</key>
+	<string></string>
+	<key>idfa</key>
+	<string></string>
+
+	<!-- UA（留空 = 不改） -->
+	<key>userAgent</key>
+	<string></string>
+</dict>
+</plist>
