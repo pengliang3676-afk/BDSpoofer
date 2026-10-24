@@ -305,7 +305,7 @@ static void KSRandomizeIdentity(void) {
     g_mut[@"systemVersion"] = [NSString stringWithUTF8String:vers[vi]];
     g_mut[@"systemBuild"] = [NSString stringWithUTF8String:builds[vi]];
     g_mut[@"deviceName"] = @"iPhone";
-    static const int mems[] = {4, 6, 8};
+    static const int mems[] = {4096, 6144, 8192};   // 单位 MB
     g_mut[@"memoryMB"] = @(mems[arc4random_uniform(3)]);
     static const int disks[] = {128, 256, 512};
     g_mut[@"diskGB"] = @(disks[arc4random_uniform(3)]);
