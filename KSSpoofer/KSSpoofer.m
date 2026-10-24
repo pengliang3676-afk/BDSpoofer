@@ -403,8 +403,51 @@ static id ks_attrsOfFS(id self, SEL _cmd, NSString *path) {
 
 static double ks_zero_double(id self, SEL _cmd) { return 0.0; }
 static BOOL ks_yes_bool(id self, SEL _cmd) { return YES; }
+static long long ks_fake_ll(id self, SEL _cmd);
 
 static NSMutableArray<NSString *> *g_installHits = nil;
+
+// 伪装的安装时间戳：进程启动时固定一个值（毫秒），保持稳定
+static long long KSFakeInstallMs(void) {
+    static long long v = 0;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        v = (long long)([[NSDate date] timeIntervalSince1970] * 1000.0);
+    });
+    return v;
+}
+
+static long long ks_fake_ll(id self, SEL _cmd) { return KSFakeInstallMs(); }
+
+static BOOL KSIsInstallKey(NSString *key) {
+    if (!key.length) return NO;
+    if ([key containsString:@"com.kuaishou.appUsage"]) return YES;
+    if ([key containsString:@"firstInstall"]) return YES;
+    if ([key containsString:@"firstLaunchTime"]) return YES;
+    return NO;
+}
+
+static id (*o_ud_object)(id, SEL, NSString *) = NULL;
+static id (*o_ud_string)(id, SEL, NSString *) = NULL;
+static double (*o_ud_double)(id, SEL, NSString *) = NULL;
+static NSInteger (*o_ud_integer)(id, SEL, NSString *) = NULL;
+
+static id ks_ud_object(id self, SEL _cmd, NSString *key) {
+    if (KSIsInstallKey(key)) return @(KSFakeInstallMs());
+    return o_ud_object ? o_ud_object(self, _cmd, key) : nil;
+}
+static id ks_ud_string(id self, SEL _cmd, NSString *key) {
+    if (KSIsInstallKey(key)) return [NSString stringWithFormat:@"%lld", KSFakeInstallMs()];
+    return o_ud_string ? o_ud_string(self, _cmd, key) : nil;
+}
+static double ks_ud_double(id self, SEL _cmd, NSString *key) {
+    if (KSIsInstallKey(key)) return (double)KSFakeInstallMs();
+    return o_ud_double ? o_ud_double(self, _cmd, key) : 0;
+}
+static NSInteger ks_ud_integer(id self, SEL _cmd, NSString *key) {
+    if (KSIsInstallKey(key)) return (NSInteger)KSFakeInstallMs();
+    return o_ud_integer ? o_ud_integer(self, _cmd, key) : 0;
+}
 
 // 运行时扫描：伪装「首次启动 / 重装时间戳」类方法
 static void KSSpoofInstallState(void) {
@@ -427,6 +470,11 @@ static void KSSpoofInstallState(void) {
                 method_setImplementation(ms[j], (IMP)ks_zero_double);
                 if (![g_installHits containsObject:@"firstLaunchInterval"])
                     [g_installHits addObject:@"firstLaunchInterval"];
+            } else if ((strstr(nm, "firstLaunchTimeStamp") || strstr(nm, "firstInstallTime"))
+                       && sig[0] == 'q') {
+                method_setImplementation(ms[j], (IMP)ks_fake_ll);
+                NSString *t = [NSString stringWithUTF8String:nm];
+                if (![g_installHits containsObject:t]) [g_installHits addObject:t];
             } else if ((strcmp(nm, "isFirstLaunch") == 0 || strcmp(nm, "firstLaunch") == 0)
                        && sig[0] == 'B') {
                 method_setImplementation(ms[j], (IMP)ks_yes_bool);
@@ -459,7 +507,17 @@ static void KSInstallHooks(void) {
         {"sysctlbyname", (void *)ks_sysctlbyname, (void **)&o_sysctlbyname},
     };
     bds_rebind_symbols(rb, sizeof(rb) / sizeof(rb[0]));
+    // 安装时间键（NSUserDefaults）
+    Class udc = NSClassFromString(@"NSUserDefaults");
+    if (udc) {
+        hookInst(udc, @selector(objectForKey:), (IMP)ks_ud_object, (IMP *)&o_ud_object);
+        hookInst(udc, @selector(stringForKey:), (IMP)ks_ud_string, (IMP *)&o_ud_string);
+        hookInst(udc, @selector(doubleForKey:), (IMP)ks_ud_double, (IMP *)&o_ud_double);
+        hookInst(udc, @selector(integerForKey:), (IMP)ks_ud_integer, (IMP *)&o_ud_integer);
+    }
     KSSpoofInstallState();
+    if (g_installHits && ![g_installHits containsObject:@"installTimeKeys"])
+        [g_installHits addObject:@"installTimeKeys"];
 }
 
 #pragma mark - 悬浮球 + 面板
