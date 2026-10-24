@@ -401,6 +401,44 @@ static id ks_attrsOfFS(id self, SEL _cmd, NSString *path) {
     return d;
 }
 
+static double ks_zero_double(id self, SEL _cmd) { return 0.0; }
+static BOOL ks_yes_bool(id self, SEL _cmd) { return YES; }
+
+static NSMutableArray<NSString *> *g_installHits = nil;
+
+// 运行时扫描：伪装「首次启动 / 重装时间戳」类方法
+static void KSSpoofInstallState(void) {
+    if (!g_installHits) g_installHits = [NSMutableArray array];
+    int n = objc_getClassList(NULL, 0);
+    if (n <= 0) return;
+    Class *classes = (Class *)malloc(sizeof(Class) * (size_t)n);
+    if (!classes) return;
+    n = objc_getClassList(classes, n);
+    for (int i = 0; i < n; i++) {
+        unsigned mc = 0;
+        Method *ms = class_copyMethodList(classes[i], &mc);
+        if (!ms) continue;
+        for (unsigned j = 0; j < mc; j++) {
+            SEL sel = method_getName(ms[j]);
+            const char *nm = sel_getName(sel);
+            const char *sig = method_getTypeEncoding(ms[j]);
+            if (!nm || !sig) continue;
+            if (strcmp(nm, "currentInstallFirstLaunchTimeInterval") == 0 && sig[0] == 'd') {
+                method_setImplementation(ms[j], (IMP)ks_zero_double);
+                if (![g_installHits containsObject:@"firstLaunchInterval"])
+                    [g_installHits addObject:@"firstLaunchInterval"];
+            } else if ((strcmp(nm, "isFirstLaunch") == 0 || strcmp(nm, "firstLaunch") == 0)
+                       && sig[0] == 'B') {
+                method_setImplementation(ms[j], (IMP)ks_yes_bool);
+                NSString *t = [NSString stringWithUTF8String:nm];
+                if (![g_installHits containsObject:t]) [g_installHits addObject:t];
+            }
+        }
+        free(ms);
+    }
+    free(classes);
+}
+
 static void KSInstallHooks(void) {
     Class ud = NSClassFromString(@"UIDevice");
     if (ud) {
@@ -421,6 +459,7 @@ static void KSInstallHooks(void) {
         {"sysctlbyname", (void *)ks_sysctlbyname, (void **)&o_sysctlbyname},
     };
     bds_rebind_symbols(rb, sizeof(rb) / sizeof(rb[0]));
+    KSSpoofInstallState();
 }
 
 #pragma mark - 悬浮球 + 面板
@@ -454,7 +493,8 @@ static NSString *KSDashboard(void) {
         @"系统: %@ (%@)\n"
         @"内存: %lld MB\n"
         @"磁盘: %lld GB\n"
-        @"开关: %@\n\n"
+        @"开关: %@\n"
+        @"安装状态: %@\n\n"
         @"点「一键随机」生成全新身份\n改完重启快手生效",
         cfgStr(@"hwMachine", @"-"),
         cfgStr(@"hwModel", @"-"),
@@ -462,7 +502,9 @@ static NSString *KSDashboard(void) {
         cfgStr(@"systemBuild", @"-"),
         cfgInt(@"memoryMB", 0),
         cfgInt(@"diskGB", 0),
-        cfgBool(@"enabled", YES) ? @"开" : @"关"];
+        cfgBool(@"enabled", YES) ? @"开" : @"关",
+        (g_installHits && g_installHits.count)
+            ? [g_installHits componentsJoinedByString:@", "] : @"(未 hook 到)"];
 }
 
 static void KSRefreshPanel(void) {
