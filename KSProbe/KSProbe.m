@@ -11,6 +11,7 @@
 #import <mach-o/dyld.h>
 #import <sys/stat.h>
 #import <stdlib.h>
+#import <string.h>
 
 static NSString *g_result = nil;
 static NSString *g_logPath = nil;
@@ -73,6 +74,26 @@ static NSString *KSRunProbe(void) {
         }
     }
     [s appendFormat:@"可疑镜像 %d 个\n", jb];
+
+    // ── 读 gifCommonFramework 里那个加密关键字（运行时可能已解密）──
+    for (uint32_t i = 0; i < n; i++) {
+        const char *nm = _dyld_get_image_name(i);
+        if (!nm) continue;
+        if (!strstr(nm, "gifCommonFramework")) continue;
+        const uint8_t *base = (const uint8_t *)_dyld_get_image_header(i);
+        if (!base) break;
+        const uint8_t *p = base + 0x9cfe5;
+        [s appendString:@"\n=== gifCommonFramework+0x9cfe5 ===\n"];
+        [s appendString:@"hex: "];
+        for (int k = 0; k < 48; k++) [s appendFormat:@"%02x", p[k]];
+        [s appendString:@"\nascii: "];
+        for (int k = 0; k < 48; k++) {
+            unsigned char c = p[k];
+            [s appendFormat:@"%c", (c >= 32 && c < 127) ? c : '.'];
+        }
+        [s appendString:@"\n"];
+        break;
+    }
 
     const char *env = getenv("DYLD_INSERT_LIBRARIES");
     [s appendFormat:@"\nDYLD_INSERT_LIBRARIES=%s\n", env ? env : "(null)"];
