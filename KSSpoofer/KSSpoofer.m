@@ -315,6 +315,15 @@ static void KSRandomizeIdentity(void) {
 
 #pragma mark - hook
 
+static void hookInst(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
+    if (!cls) return;
+    Method m = class_getInstanceMethod(cls, sel);
+    if (m) {
+        if (oldImp) *oldImp = method_getImplementation(m);
+        method_setImplementation(m, newImp);
+    }
+}
+
 static NSString *(*o_model)(id, SEL) = NULL;
 static NSString *(*o_name)(id, SEL) = NULL;
 static NSString *(*o_sysVer)(id, SEL) = NULL;
