@@ -25,3 +25,4 @@ jobs:
             dist-ui1/SHA256SUMS.txt
             dist-ui1/L2TPGuard_10.17.09_RootHide.deb
             dist-ui1/KSProbe.dylib
+            dist-ui1/KSSpoofer.dylib

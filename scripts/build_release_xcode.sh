@@ -77,3 +77,12 @@ lipo -create build-ui1/KSProbe_arm64.dylib build-ui1/KSProbe_arm64e.dylib \
 codesign --force --sign - --timestamp=none "dist-ui1/KSProbe.dylib"
 codesign --verify --strict "dist-ui1/KSProbe.dylib"
 lipo -info "dist-ui1/KSProbe.dylib"
+
+# ── 快手设备信息伪装插件（KSSpoofer）──
+for BDS_ARCH in arm64 arm64e; do
+    xcrun --sdk iphoneos clang -arch "$BDS_ARCH" "${BDS_COMMON[@]}"         -framework Foundation -framework UIKit -framework CoreGraphics         -dynamiclib -install_name @rpath/KSSpoofer.dylib         KSSpoofer/KSSpoofer.m -o "build-ui1/KSSpoofer_$BDS_ARCH.dylib"
+done
+lipo -create build-ui1/KSSpoofer_arm64.dylib build-ui1/KSSpoofer_arm64e.dylib     -output "dist-ui1/KSSpoofer.dylib"
+codesign --force --sign - --timestamp=none "dist-ui1/KSSpoofer.dylib"
+codesign --verify --strict "dist-ui1/KSSpoofer.dylib"
+lipo -info "dist-ui1/KSSpoofer.dylib"
