@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>只走 L2TP 位置草图</title>
+<style>
+  body { margin: 0; background: #dfe3e8; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: #111; }
+  h1 { text-align: center; font-size: 22px; font-weight: 650; margin: 22px 0 6px; }
+  .sub { text-align: center; color: #444; margin: 0 0 18px; font-size: 14px; }
+  .wrap { display: flex; gap: 36px; justify-content: center; padding: 8px 20px 36px; }
+  .col { width: 340px; }
+  .cap { font-size: 15px; font-weight: 650; margin: 0 0 10px 2px; }
+  .phone { background: #f2f2f7; border-radius: 28px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,.16); border: 1px solid #c8c8ce; }
+  .bar { height: 54px; display: flex; align-items: center; justify-content: center; position: relative; font-weight: 700; font-size: 17px; }
+  .bar .x { position: absolute; right: 16px; color: #0a84ff; font-weight: 500; font-size: 16px; }
+  .card { margin: 4px 14px 12px; background: #fff; border-radius: 13px; padding: 14px 16px; font-size: 15px; line-height: 1.5; }
+  .gap { height: 10px; }
+  .hi { background: #fff3bf; border-radius: 6px; padding: 2px 6px; box-shadow: inset 0 0 0 2px #d4a017; font-weight: 700; }
+  .btn { margin: 7px 14px; height: 48px; border-radius: 11px; display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; font-size: 16px; }
+  .r { background: #d12b3a; } .g { background: #198a47; } .b { background: #1461d6; }
+  .row3 { display: flex; gap: 6px; margin: 7px 14px; }
+  .mini { flex: 1; height: 48px; border-radius: 11px; background: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; }
+  .mini.on { box-shadow: inset 0 0 0 2px #d4a017; background: #fff3bf; }
+  .close { margin: 7px 14px 18px; height: 48px; border-radius: 11px; background: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; }
+  .sec { padding: 16px 18px 4px; font-weight: 700; font-size: 18px; }
+  .cell { margin: 0 14px; background: #fff; padding: 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #ececef; font-size: 16px; }
+  .cell.last { border-bottom: 0; border-radius: 0 0 12px 12px; }
+  .cell.top { border-radius: 12px 12px 0 0; }
+  .sw { width: 51px; height: 31px; border-radius: 16px; background: #34c759; position: relative; flex: none; }
+  .sw i { position: absolute; width: 27px; height: 27px; border-radius: 14px; background: #fff; top: 2px; right: 2px; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+  .sw.off { background: #e5e5ea; } .sw.off i { right: auto; left: 2px; }
+  .note { margin: 6px 22px 16px; font-size: 13px; color: #6e6e73; line-height: 1.45; }
+  .mark { outline: 2px solid #d4a017; background: #fff3bf; }
+  .arrow { font-size: 14px; color: #333; margin: 10px 2px 0; line-height: 1.45; }
+</style>
+</head>
+<body>
+<h1>只走 L2TP 加在这两个位置</h1>
+<p class="sub">黄框是新加的。左边只看状态，右边才能拨开关。</p>
+<div class="wrap">
+  <div class="col">
+    <p class="cap">1. 点悬浮按钮后的首页</p>
+    <div class="phone">
+      <div class="bar">卐解 1.8.1 UI1.3<span class="x">关闭</span></div>
+      <div class="card">
+        基础功能：当前功能状态 已开启<br>iPhone 15 · iOS 16.3 · 已执行一键随机
+        <div class="gap"></div>
+        高级功能：已开启<br>已执行一键随机
+        <div class="gap"></div>
+        定向指纹：已关闭<br>尚未执行一键随机
+        <div class="gap"></div>
+        反关联增强：已开启<br>收益额上报：已关闭<br>
+        <span class="hi">仅走L2TP网：已开启</span>
+      </div>
+      <div class="btn r">一键随机整套基础参数</div>
+      <div class="btn g">一键随机整套高级参数</div>
+      <div class="btn b">一键随机定向指纹参数</div>
+      <div class="row3">
+        <div class="mini on">反关联项</div>
+        <div class="mini">诊断自检</div>
+        <div class="mini">恢复安全</div>
+      </div>
+      <div class="close">关闭</div>
+    </div>
+    <p class="arrow">黄字在状态卡最下面，只显示开或关，不能在这里拨。</p>
+  </div>
+  <div class="col">
+    <p class="cap">2. 点「反关联项」之后</p>
+    <div class="phone">
+      <div class="bar">反关联设置<span class="x">关闭</span></div>
+      <div class="sec">▸ 基础参数</div>
+      <div class="sec">▸ 高级参数</div>
+      <div class="sec">▾ 反关联参数</div>
+      <div class="cell top">电池参数<div class="sw"><i></i></div></div>
+      <div class="cell">拦截启动时间上报<div class="sw"><i></i></div></div>
+      <div class="cell">阻止金额统计上报<div class="sw off"><i></i></div></div>
+      <div class="cell last mark">仅走L2TP网<div class="sw"><i></i></div></div>
+      <div class="note">左上角 VPN 在就放行，没有就拦住极速。立刻生效</div>
+    </div>
+    <p class="arrow">开关在「反关联参数」最后一行，默认开着。拨一下马上生效。</p>
+  </div>
+</div>
+</body>
+</html>

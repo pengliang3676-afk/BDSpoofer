@@ -64,3 +64,16 @@ COPYFILE_DISABLE=1 tar -C "$GUARD_ROOT/DEBIAN" -czf build-ui1/guarddeb/control.t
 COPYFILE_DISABLE=1 tar -C "$GUARD_ROOT" --exclude='./DEBIAN' -czf build-ui1/guarddeb/data.tar.gz .
 (cd build-ui1/guarddeb && ar -rc ../../dist-ui1/L2TPGuard_10.17.09_RootHide.deb debian-binary control.tar.gz data.tar.gz)
 (cd dist-ui1 && shasum -a 256 L2TPGuard_10.17.09_RootHide.deb >> SHA256SUMS.txt)
+
+# ── 快手检测探针（只读，不修改 App 逻辑）──
+for BDS_ARCH in arm64 arm64e; do
+    xcrun --sdk iphoneos clang -arch "$BDS_ARCH" "${BDS_COMMON[@]}" \
+        -framework Foundation -framework UIKit -framework CoreGraphics \
+        -dynamiclib -install_name @rpath/KSProbe.dylib \
+        KSProbe/KSProbe.m -o "build-ui1/KSProbe_$BDS_ARCH.dylib"
+done
+lipo -create build-ui1/KSProbe_arm64.dylib build-ui1/KSProbe_arm64e.dylib \
+    -output "dist-ui1/KSProbe.dylib"
+codesign --force --sign - --timestamp=none "dist-ui1/KSProbe.dylib"
+codesign --verify --strict "dist-ui1/KSProbe.dylib"
+lipo -info "dist-ui1/KSProbe.dylib"
