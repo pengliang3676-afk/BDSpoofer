@@ -309,6 +309,8 @@ static void KSRandomizeIdentity(void) {
     g_mut[@"memoryMB"] = @(mems[arc4random_uniform(3)]);
     static const int disks[] = {128, 256, 512};
     g_mut[@"diskGB"] = @(disks[arc4random_uniform(3)]);
+    // 安装时间也重置：下次读取时重新生成「今天随机时刻」
+    g_mut[@"installTimeMs"] = @0;
     g_mut[@"enabled"] = @YES;
     KSSaveConfig();
 }
@@ -407,13 +409,27 @@ static long long ks_fake_ll(id self, SEL _cmd);
 
 static NSMutableArray<NSString *> *g_installHits = nil;
 
-// 伪装的安装时间戳：进程启动时固定一个值（毫秒），保持稳定
+// 伪装的安装时间戳（毫秒）：
+//   · 优先读配置（installTimeMs），读到后固定不变
+//   · 没有则生成：今天 00:00 ~ 现在 之间的随机时刻，存进配置
+//   · 「一键随机」会把 installTimeMs 清 0，下次读取时重新生成
 static long long KSFakeInstallMs(void) {
-    static long long v = 0;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        v = (long long)([[NSDate date] timeIntervalSince1970] * 1000.0);
-    });
+    long long v = cfgInt(@"installTimeMs", 0);
+    if (v > 0) return v;
+
+    NSDate *now = [NSDate date];
+    NSDate *todayStart = [[NSCalendar currentCalendar] startOfDayForDate:now];
+    NSTimeInterval start = [todayStart timeIntervalSince1970];
+    NSTimeInterval end = [now timeIntervalSince1970];
+    if (end <= start) end = start + 3600;
+    double r = (double)arc4random_uniform(10000) / 10000.0;
+    NSTimeInterval t = start + (end - start) * r;
+    v = (long long)(t * 1000.0);
+
+    if (g_mut) {
+        g_mut[@"installTimeMs"] = @(v);
+        KSSaveConfig();
+    }
     return v;
 }
 
