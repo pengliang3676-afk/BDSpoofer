@@ -560,6 +560,14 @@ static UIWindowScene *KSScene(void) {
     return nil;
 }
 
+static NSString *KSInstallTimeText(void) {
+    long long ms = cfgInt(@"installTimeMs", 0);
+    if (ms <= 0) return @"(待生成)";
+    NSDateFormatter *df = [NSDateFormatter new];
+    df.dateFormat = @"MM-dd HH:mm:ss";
+    return [df stringFromDate:[NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)ms / 1000.0]];
+}
+
 static NSString *KSDashboard(void) {
     return [NSString stringWithFormat:
         @"快手伪装\n\n"
@@ -568,6 +576,7 @@ static NSString *KSDashboard(void) {
         @"内存: %lld MB\n"
         @"磁盘: %lld GB\n"
         @"开关: %@\n"
+        @"安装时间: %@\n"
         @"安装状态: %@\n\n"
         @"点「一键随机」生成全新身份\n改完重启快手生效",
         cfgStr(@"hwMachine", @"-"),
@@ -577,6 +586,7 @@ static NSString *KSDashboard(void) {
         cfgInt(@"memoryMB", 0),
         cfgInt(@"diskGB", 0),
         cfgBool(@"enabled", YES) ? @"开" : @"关",
+        KSInstallTimeText(),
         (g_installHits && g_installHits.count)
             ? [g_installHits componentsJoinedByString:@", "] : @"(未 hook 到)"];
 }
