@@ -740,6 +740,21 @@ static NSURLSessionDataTask *ks_dataTask(id self, SEL _cmd, NSURLRequest *reques
     return o_dataTask ? o_dataTask(self, _cmd, request, wrapped) : nil;
 }
 
+static void (*o_addReqCfg)(id, SEL, id) = NULL;
+
+static void ks_addReqCfg(id self, SEL _cmd, id cfg) {
+    @try {
+        if (cfg) {
+            NSString *d = [NSString stringWithFormat:@"%@", cfg];
+            KSNetLog([NSString stringWithFormat:@"[API] %@", d]);
+            if (d.length > 6 && [d containsString:@"http"]) {
+                KSNetLog([NSString stringWithFormat:@"[API-URL] %@", d]);
+            }
+        }
+    } @catch (NSException *e) {}
+    if (o_addReqCfg) ((void (*)(id, SEL, id))o_addReqCfg)(self, _cmd, cfg);
+}
+
 static void KSInstallHooks(void) {
     Class ud = NSClassFromString(@"UIDevice");
     if (ud) {
@@ -763,6 +778,11 @@ static void KSInstallHooks(void) {
     if (sess) {
         hookInst(sess, @selector(dataTaskWithRequest:completionHandler:),
                  (IMP)ks_dataTask, (IMP *)&o_dataTask);
+    }
+    Class api = NSClassFromString(@"KSBaseAPI");
+    if (api) {
+        hookInst(api, NSSelectorFromString(@"addRequestConfig:"),
+                 (IMP)ks_addReqCfg, (IMP *)&o_addReqCfg);
     }
     Class aim = NSClassFromString(@"ASIdentifierManager");
     if (aim) {
