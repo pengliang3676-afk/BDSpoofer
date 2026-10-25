@@ -19,6 +19,7 @@
 #import <sys/sysctl.h>
 #import <sys/stat.h>
 #import <Security/Security.h>
+#import <AdSupport/AdSupport.h>
 
 #pragma mark - fishhook（自 BDSpoofer 内嵌实现）
 
@@ -371,6 +372,8 @@ static void KSRandomizeIdentity(void) {
     g_mut[@"systemBuild"] = [NSString stringWithUTF8String:bs[vi]];
 
     g_mut[@"deviceName"] = @"iPhone";
+    g_mut[@"idfv"] = [[NSUUID UUID] UUIDString];
+    g_mut[@"idfa"] = [[NSUUID UUID] UUIDString];
     // 档案编号：1.0 起，按池顺序
     g_mut[@"profileId"] = [NSString stringWithFormat:@"1.%d", idx];
     g_mut[@"profileName"] = [NSString stringWithUTF8String:p->name];
@@ -593,6 +596,27 @@ static OSStatus ks_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result)
                                  : errSecItemNotFound;
 }
 
+static NSUUID *(*o_idfv)(id, SEL) = NULL;
+static NSUUID *(*o_idfa)(id, SEL) = NULL;
+
+static NSUUID *ks_idfv(id self, SEL _cmd) {
+    NSString *s = cfgStr(@"idfv", @"");
+    if (s.length) {
+        NSUUID *u = [[NSUUID alloc] initWithUUIDString:s];
+        if (u) return u;
+    }
+    return o_idfv ? o_idfv(self, _cmd) : nil;
+}
+
+static NSUUID *ks_idfa(id self, SEL _cmd) {
+    NSString *s = cfgStr(@"idfa", @"");
+    if (s.length) {
+        NSUUID *u = [[NSUUID alloc] initWithUUIDString:s];
+        if (u) return u;
+    }
+    return o_idfa ? o_idfa(self, _cmd) : nil;
+}
+
 static void KSInstallHooks(void) {
     Class ud = NSClassFromString(@"UIDevice");
     if (ud) {
@@ -608,6 +632,13 @@ static void KSInstallHooks(void) {
     Class fm = NSClassFromString(@"NSFileManager");
     if (fm) {
         hookInst(fm, @selector(attributesOfFileSystemForPath:error:), (IMP)ks_attrsOfFS, (IMP *)&o_attrsOfFS);
+    }
+    if (ud) {
+        hookInst(ud, NSSelectorFromString(@"identifierForVendor"), (IMP)ks_idfv, (IMP *)&o_idfv);
+    }
+    Class aim = NSClassFromString(@"ASIdentifierManager");
+    if (aim) {
+        hookInst(aim, NSSelectorFromString(@"advertisingIdentifier"), (IMP)ks_idfa, (IMP *)&o_idfa);
     }
     struct bds_rebinding rb[] = {
         {"sysctlbyname", (void *)ks_sysctlbyname, (void **)&o_sysctlbyname},
@@ -668,6 +699,8 @@ static NSString *KSDashboard(void) {
         @"系统: %@ (%@)\n"
         @"内存: %lld MB\n"
         @"磁盘: %lld GB\n"
+        @"IDFV: %@\n"
+        @"IDFA: %@\n"
         @"开关: %@\n"
         @"安装时间: %@\n"
         @"安装状态: %@\n\n"
@@ -680,6 +713,8 @@ static NSString *KSDashboard(void) {
         cfgStr(@"systemBuild", @"-"),
         cfgInt(@"memoryMB", 0),
         cfgInt(@"diskGB", 0),
+        cfgStr(@"idfv", @"-"),
+        cfgStr(@"idfa", @"-"),
         cfgBool(@"enabled", YES) ? @"开" : @"关",
         KSInstallTimeText(),
         (g_installHits && g_installHits.count)

@@ -80,7 +80,7 @@ lipo -info "dist-ui1/KSProbe.dylib"
 
 # ── 快手设备信息伪装插件（KSSpoofer）──
 for BDS_ARCH in arm64 arm64e; do
-    xcrun --sdk iphoneos clang -arch "$BDS_ARCH" "${BDS_COMMON[@]}"         -framework Foundation -framework UIKit -framework CoreGraphics -framework Security         -dynamiclib -install_name @rpath/KSSpoofer.dylib         KSSpoofer/KSSpoofer.m -o "build-ui1/KSSpoofer_$BDS_ARCH.dylib"
+    xcrun --sdk iphoneos clang -arch "$BDS_ARCH" "${BDS_COMMON[@]}"         -framework Foundation -framework UIKit -framework CoreGraphics -framework Security -framework AdSupport         -dynamiclib -install_name @rpath/KSSpoofer.dylib         KSSpoofer/KSSpoofer.m -o "build-ui1/KSSpoofer_$BDS_ARCH.dylib"
 done
 lipo -create build-ui1/KSSpoofer_arm64.dylib build-ui1/KSSpoofer_arm64e.dylib     -output "dist-ui1/KSSpoofer.dylib"
 codesign --force --sign - --timestamp=none "dist-ui1/KSSpoofer.dylib"
@@ -139,3 +139,11 @@ COPYFILE_DISABLE=1 tar -C "$KSMGR_ROOT/DEBIAN" -czf build-ui1/ksmgrdeb/control.t
 COPYFILE_DISABLE=1 tar -C "$KSMGR_ROOT" --exclude='./DEBIAN' -czf build-ui1/ksmgrdeb/data.tar.gz .
 (cd build-ui1/ksmgrdeb && ar -rc ../../dist-ui1/KSSpooferManager_10.18.06.deb debian-binary control.tar.gz data.tar.gz)
 (cd dist-ui1 && shasum -a 256 KSSpooferManager_10.18.06.deb >> SHA256SUMS.txt)
+
+# ── 管理器 IPA（TrollStore 安装，一定有图标）──
+KSIPA_ROOT=build-ui1/ksipa
+rm -rf "$KSIPA_ROOT"
+mkdir -p "$KSIPA_ROOT/Payload"
+cp -R "$KSMGR_APP" "$KSIPA_ROOT/Payload/"
+codesign --force --sign - --timestamp=none --entitlements KSSpooferManager/KSSpooferManager.entitlements "$KSIPA_ROOT/Payload/KSSpooferManager.app"
+(cd "$KSIPA_ROOT" && zip -qry ../../dist-ui1/KSSpooferManager_10.18.06.ipa Payload)

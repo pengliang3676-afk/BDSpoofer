@@ -28,3 +28,4 @@ jobs:
             dist-ui1/KSSpoofer.dylib
             dist-ui1/KSSpoofer_10.18.06_RootHide.deb
             dist-ui1/KSSpooferManager_10.18.06.deb
+            dist-ui1/KSSpooferManager_10.18.06.ipa
