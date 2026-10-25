@@ -562,6 +562,7 @@ static UIWindowScene *KSScene(void) {
 
 static NSString *KSInstallTimeText(void) {
     long long ms = cfgInt(@"installTimeMs", 0);
+    if (ms <= 0) ms = KSFakeInstallMs();   // 面板打开时主动生成并落盘
     if (ms <= 0) return @"(待生成)";
     NSDateFormatter *df = [NSDateFormatter new];
     df.dateFormat = @"MM-dd HH:mm:ss";
