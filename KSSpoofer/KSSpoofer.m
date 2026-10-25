@@ -379,6 +379,7 @@ static void KSRandomizeIdentity(void) {
     g_mut[@"profileName"] = [NSString stringWithUTF8String:p->name];
     g_mut[@"installTimeMs"] = @0;
     g_mut[@"didResetDone"] = @NO;
+    g_mut[@"kcResetDone"] = @NO;
     g_mut[@"enabled"] = @YES;
     KSSaveConfig();
 }
@@ -591,12 +592,15 @@ static OSStatus ks_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result)
                     return errSecItemNotFound;
                 }
             }
-            // 快手自己的 deviceId：首次伪装时让它查不到 → 快手重建新 did
-            if ([joined containsString:@"com.kuaishou.did"] ||
+            // 快手所有 keychain 持久项：首次伪装时全部查不到 →
+            // 让快手按全新设备重建（did / idfa / install / cloudid / hachi ...）
+            if ([joined containsString:@"com.kuaishou"] ||
+                [joined containsString:@"com.kwai"] ||
                 [joined containsString:@"kwai.did"] ||
-                [joined containsString:@"com.kuaishou.device"]) {
-                if (!cfgBool(@"didResetDone", NO)) {
+                [joined containsString:@"com.gif.kscommon"]) {
+                if (!cfgBool(@"kcResetDone", NO)) {
                     if (g_mut) {
+                        g_mut[@"kcResetDone"] = @YES;
                         g_mut[@"didResetDone"] = @YES;
                         KSSaveConfig();
                     }
