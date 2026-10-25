@@ -142,29 +142,6 @@ if command -v uicache >/dev/null 2>&1; then
 fi
 exit 0
 KSPRE
-#!/bin/sh
-LOG=/tmp/ksmgr_postinst.log
-echo "=== $(date) postinst ===" > "$LOG"
-APP_PATH=/var/jb/Applications/KSSpooferManager.app
-[ -d "$APP_PATH" ] || APP_PATH=/Applications/KSSpooferManager.app
-echo "APP_PATH=$APP_PATH" >> "$LOG"
-if [ -d "$APP_PATH" ]; then
-    chown -R root:wheel "$APP_PATH" 2>/dev/null || true
-    chmod 0755 "$APP_PATH/KSSpooferManager" 2>/dev/null || true
-    echo "chmod ok" >> "$LOG"
-else
-    echo "APP NOT FOUND" >> "$LOG"
-fi
-if command -v uicache >/dev/null 2>&1; then
-    uicache -p "$APP_PATH" >> "$LOG" 2>&1 || uicache >> "$LOG" 2>&1 || true
-    echo "uicache done" >> "$LOG"
-else
-    echo "uicache missing" >> "$LOG"
-fi
-command -v sbreload >/dev/null 2>&1 && sbreload >> "$LOG" 2>&1 || true
-killall -9 com.jiangjia.gif 2>/dev/null || true
-exit 0
-KSPOST
 chmod 0755 "$KSMGR_ROOT/DEBIAN/postinst" "$KSMGR_ROOT/DEBIAN/prerm"
 printf '2.0\n' > build-ui1/ksmgrdeb/debian-binary
 COPYFILE_DISABLE=1 tar -C "$KSMGR_ROOT/DEBIAN" -czf build-ui1/ksmgrdeb/control.tar.gz .
