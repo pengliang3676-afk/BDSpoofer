@@ -862,6 +862,8 @@ static void KSRefreshPanel(void) {
 - (void)pan:(UIPanGestureRecognizer *)g;
 - (void)randomize;
 - (void)close;
+- (void)viewLog;
+- (void)viewDash;
 @end
 
 @implementation KSTarget
@@ -902,6 +904,17 @@ static void KSRefreshPanel(void) {
     UIViewController *vc = g_ballWin.rootViewController;
     if (vc) [vc presentViewController:a animated:YES completion:nil];
 }
+- (void)viewLog {
+    NSString *log = [NSString stringWithContentsOfFile:KSNetLogPath()
+                                             encoding:NSUTF8StringEncoding error:NULL];
+    if (!log.length) log = @"(还没有抓包记录)\n\n走一遍登录流程再看";
+    g_text.text = log;
+}
+
+- (void)viewDash {
+    g_text.text = KSDashboard();
+}
+
 - (void)close {
     g_expanded = NO;
     g_panelWin.hidden = YES;
@@ -954,7 +967,7 @@ static void KSInstallUI(void) {
         [g_ballWin.rootViewController.view addSubview:g_ball];
 
         CGFloat w = MIN(340, screen.size.width - 24);
-        CGFloat h = MIN(400, screen.size.height * 0.5);
+        CGFloat h = MIN(470, screen.size.height * 0.62);
         g_panelWin = [[UIWindow alloc] initWithFrame:CGRectMake((screen.size.width - w) / 2,
                                                                 (screen.size.height - h) / 2, w, h)];
         if (@available(iOS 13.0, *)) { if (scene) g_panelWin.windowScene = scene; }
@@ -969,7 +982,7 @@ static void KSInstallUI(void) {
         panel.clipsToBounds = YES;
         [g_panelWin.rootViewController.view addSubview:panel];
 
-        g_text = [[UITextView alloc] initWithFrame:CGRectMake(10, 10, w - 20, h - 70)];
+        g_text = [[UITextView alloc] initWithFrame:CGRectMake(10, 10, w - 20, h - 118)];
         g_text.backgroundColor = [UIColor clearColor];
         g_text.textColor = [UIColor whiteColor];
         g_text.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
@@ -987,6 +1000,27 @@ static void KSInstallUI(void) {
         btn.layer.cornerRadius = 8;
         [btn addTarget:[KSTarget shared] action:@selector(randomize) forControlEvents:UIControlEventTouchUpInside];
         [panel addSubview:btn];
+
+        CGFloat half = (w - 30) / 2;
+        UIButton *btnLog = [UIButton buttonWithType:UIButtonTypeSystem];
+        btnLog.frame = CGRectMake(10, h - 100, half, 40);
+        [btnLog setTitle:@"查看抓包" forState:UIControlStateNormal];
+        btnLog.titleLabel.font = [UIFont boldSystemFontOfSize:15];
+        btnLog.backgroundColor = [UIColor colorWithRed:0.55 green:0.35 blue:0.10 alpha:1];
+        [btnLog setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        btnLog.layer.cornerRadius = 8;
+        [btnLog addTarget:[KSTarget shared] action:@selector(viewLog) forControlEvents:UIControlEventTouchUpInside];
+        [panel addSubview:btnLog];
+
+        UIButton *btnDash = [UIButton buttonWithType:UIButtonTypeSystem];
+        btnDash.frame = CGRectMake(20 + half, h - 100, half, 40);
+        [btnDash setTitle:@"返回状态" forState:UIControlStateNormal];
+        btnDash.titleLabel.font = [UIFont boldSystemFontOfSize:15];
+        btnDash.backgroundColor = [UIColor colorWithWhite:0.25 alpha:1];
+        [btnDash setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        btnDash.layer.cornerRadius = 8;
+        [btnDash addTarget:[KSTarget shared] action:@selector(viewDash) forControlEvents:UIControlEventTouchUpInside];
+        [panel addSubview:btnDash];
     } @catch (NSException *e) {}
 }
 
