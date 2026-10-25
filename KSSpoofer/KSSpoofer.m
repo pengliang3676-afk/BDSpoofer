@@ -277,64 +277,92 @@ static void KSSaveConfig(void) {
     g_cfg = [g_mut copy];
 }
 
-#pragma mark - 随机身份
+#pragma mark - 随机身份（照搬百度极速机型池）
 
-// 成套档案：机型 / 型号 / 内存 / 可选容量 / 支持的系统组
-// 15 系列（iPhone16,x）只支持 iOS 17；其余支持 16.x / 17.x
 typedef struct {
+    const char *name;
     const char *machine;
     const char *model;
     int memMB;
-    const int *disks;
-    int ndisks;
-    const char *osGroup;
+    int diskGroup;      // 0:64/128/256 1:128/256/512 2:128/256/512/1024 3:256/512/1024
+    const char *osGroup; // "16" / "17" / "18" / "1617"
 } KSProfile;
 
-static const int kDiskA[] = { 64, 128, 256 };            // iPhone 12 / 12 mini
-static const int kDiskB[] = { 128, 256, 512 };           // 12 Pro / 13
-static const int kDiskC[] = { 128, 256, 512, 1024 };     // 14 Pro 系列
-static const int kDiskD[] = { 256, 512, 1024 };          // 15 Pro Max
+static const int kDisks0[] = { 64, 128, 256 };
+static const int kDisks1[] = { 128, 256, 512 };
+static const int kDisks2[] = { 128, 256, 512, 1024 };
+static const int kDisks3[] = { 256, 512, 1024 };
+static const int *kDiskGroups[] = { kDisks0, kDisks1, kDisks2, kDisks3 };
+static const int kDiskCounts[] = { 3, 3, 4, 3 };
 
 static const KSProfile kProfiles[] = {
-    { "iPhone13,2", "D52gAP", 4096, kDiskA, 3, "16" },
-    { "iPhone13,3", "D53gAP", 6144, kDiskB, 3, "16" },
-    { "iPhone14,5", "D16AP",  4096, kDiskB, 3, "16" },
-    { "iPhone15,2", "D73AP",  6144, kDiskC, 4, "16" },
-    { "iPhone15,3", "D74AP",  6144, kDiskC, 4, "16" },
-    { "iPhone16,1", "D37AP",  6144, kDiskB, 3, "17" },
-    { "iPhone16,2", "D54pAP", 8192, kDiskD, 3, "17" },
+    { "iPhone 8",                "iPhone10,1", "D20AP",   2048, 0, "16"   },
+    { "iPhone 8 Plus",           "iPhone10,2", "D21AP",   3072, 0, "16"   },
+    { "iPhone X",                "iPhone10,3", "D22AP",   3072, 0, "16"   },
+    { "iPhone XR",               "iPhone11,8", "N841AP",  3072, 1, "1617" },
+    { "iPhone XS",               "iPhone11,2", "D321AP",  4096, 1, "1617" },
+    { "iPhone XS Max",           "iPhone11,6", "D331pAP", 4096, 1, "1617" },
+    { "iPhone 11",               "iPhone12,1", "N104AP",  4096, 0, "1617" },
+    { "iPhone 11 Pro",           "iPhone12,3", "D421AP",  4096, 1, "1617" },
+    { "iPhone 11 Pro Max",       "iPhone12,5", "D431AP",  4096, 1, "1617" },
+    { "iPhone SE (2nd)",         "iPhone12,8", "D79AP",   3072, 0, "1617" },
+    { "iPhone 12 mini",          "iPhone13,1", "D52gAP",  4096, 0, "1617" },
+    { "iPhone 12",               "iPhone13,2", "D53gAP",  4096, 0, "1617" },
+    { "iPhone 12 Pro",           "iPhone13,3", "D53pAP",  6144, 1, "1617" },
+    { "iPhone 12 Pro Max",       "iPhone13,4", "D54pAP",  6144, 1, "1617" },
+    { "iPhone 13 mini",          "iPhone14,4", "D16AP",   4096, 1, "1617" },
+    { "iPhone 13",               "iPhone14,5", "D17AP",   4096, 1, "1617" },
+    { "iPhone 13 Pro",           "iPhone14,2", "D63AP",   6144, 2, "1617" },
+    { "iPhone 13 Pro Max",       "iPhone14,3", "D64AP",   6144, 2, "1617" },
+    { "iPhone SE (3rd)",         "iPhone14,6", "D49AP",   4096, 0, "1617" },
+    { "iPhone 14",               "iPhone14,7", "D27AP",   6144, 1, "1617" },
+    { "iPhone 14 Plus",          "iPhone14,8", "D28AP",   6144, 1, "1617" },
+    { "iPhone 14 Pro",           "iPhone15,2", "D73AP",   6144, 2, "1617" },
+    { "iPhone 14 Pro Max",       "iPhone15,3", "D74AP",   6144, 2, "1617" },
+    { "iPhone 15",               "iPhone15,4", "D37AP",   6144, 1, "17"   },
+    { "iPhone 15 Plus",          "iPhone15,5", "D38AP",   6144, 1, "17"   },
+    { "iPhone 15 Pro",           "iPhone16,1", "D83AP",   8192, 2, "17"   },
+    { "iPhone 15 Pro Max",       "iPhone16,2", "D84AP",   8192, 3, "17"   },
+    { "iPhone 16",               "iPhone17,3", "D47AP",   8192, 1, "18"   },
+    { "iPhone 16 Plus",          "iPhone17,4", "D48AP",   8192, 1, "18"   },
+    { "iPhone 16 Pro",           "iPhone17,1", "D93AP",   8192, 2, "18"   },
+    { "iPhone 16 Pro Max",       "iPhone17,2", "D94AP",   8192, 3, "18"   },
+    { "iPhone 16e",              "iPhone17,5", "V59AP",   8192, 1, "18"   },
 };
-
-static NSString *KSRandomHex(int n) {
-    NSMutableString *s = [NSMutableString string];
-    for (int i = 0; i < n; i++) {
-        [s appendFormat:@"%x", arc4random_uniform(16)];
-    }
-    return s;
-}
+static const int kProfileCount = (int)(sizeof(kProfiles) / sizeof(kProfiles[0]));
 
 static void KSRandomizeIdentity(void) {
-    const KSProfile *p = &kProfiles[arc4random_uniform(sizeof(kProfiles) / sizeof(kProfiles[0]))];
+    int idx = (int)arc4random_uniform((uint32_t)kProfileCount);
+    const KSProfile *p = &kProfiles[idx];
+
     g_mut[@"hwMachine"] = [NSString stringWithUTF8String:p->machine];
     g_mut[@"hwModel"] = [NSString stringWithUTF8String:p->model];
     g_mut[@"memoryMB"] = @(p->memMB);
-    g_mut[@"diskGB"] = @(p->disks[arc4random_uniform(p->ndisks)]);
+    int dg = p->diskGroup;
+    g_mut[@"diskGB"] = @(kDiskGroups[dg][arc4random_uniform((uint32_t)kDiskCounts[dg])]);
 
-    if (strcmp(p->osGroup, "17") == 0) {
-        static const char *vers[] = {"17.0.1", "17.0.2", "17.1"};
-        static const char *builds[] = {"21A340", "21A351", "21B80"};
-        int vi = arc4random_uniform(3);
-        g_mut[@"systemVersion"] = [NSString stringWithUTF8String:vers[vi]];
-        g_mut[@"systemBuild"] = [NSString stringWithUTF8String:builds[vi]];
-    } else {
-        static const char *vers[] = {"16.6.1", "16.7", "17.0.1", "17.1"};
-        static const char *builds[] = {"20G81", "20H18", "21A340", "21B80"};
-        int vi = arc4random_uniform(4);
-        g_mut[@"systemVersion"] = [NSString stringWithUTF8String:vers[vi]];
-        g_mut[@"systemBuild"] = [NSString stringWithUTF8String:builds[vi]];
+    static const char *v16[] = { "16.6.1", "16.7" };
+    static const char *b16[] = { "20G81", "20H18" };
+    static const char *v17[] = { "17.0.1", "17.0.2", "17.1" };
+    static const char *b17[] = { "21A340", "21A351", "21B80" };
+    static const char *v18[] = { "18.0", "18.1" };
+    static const char *b18[] = { "22A3354", "22B83" };
+
+    const char **vs = v16; const char **bs = b16; int n = 2;
+    if (strcmp(p->osGroup, "17") == 0) { vs = v17; bs = b17; n = 3; }
+    else if (strcmp(p->osGroup, "18") == 0) { vs = v18; bs = b18; n = 2; }
+    else if (strcmp(p->osGroup, "1617") == 0) {
+        if (arc4random_uniform(2) == 0) { vs = v16; bs = b16; n = 2; }
+        else { vs = v17; bs = b17; n = 3; }
     }
+    int vi = (int)arc4random_uniform((uint32_t)n);
+    g_mut[@"systemVersion"] = [NSString stringWithUTF8String:vs[vi]];
+    g_mut[@"systemBuild"] = [NSString stringWithUTF8String:bs[vi]];
+
     g_mut[@"deviceName"] = @"iPhone";
-    // 安装时间也重置：下次读取时重新生成「今天随机时刻」
+    // 档案编号：1.0 起，按池顺序
+    g_mut[@"profileId"] = [NSString stringWithFormat:@"1.%d", idx];
+    g_mut[@"profileName"] = [NSString stringWithUTF8String:p->name];
     g_mut[@"installTimeMs"] = @0;
     g_mut[@"enabled"] = @YES;
     KSSaveConfig();
@@ -624,6 +652,7 @@ static NSString *KSInstallTimeText(void) {
 static NSString *KSDashboard(void) {
     return [NSString stringWithFormat:
         @"快手伪装\n\n"
+        @"档案: %@  %@\n"
         @"机型: %@ (%@)\n"
         @"系统: %@ (%@)\n"
         @"内存: %lld MB\n"
@@ -632,6 +661,8 @@ static NSString *KSDashboard(void) {
         @"安装时间: %@\n"
         @"安装状态: %@\n\n"
         @"点「一键随机」生成全新身份\n改完重启快手生效",
+        cfgStr(@"profileId", @"-"),
+        cfgStr(@"profileName", @"-"),
         cfgStr(@"hwMachine", @"-"),
         cfgStr(@"hwModel", @"-"),
         cfgStr(@"systemVersion", @"-"),
