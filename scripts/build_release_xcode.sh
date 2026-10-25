@@ -105,7 +105,7 @@ COPYFILE_DISABLE=1 tar -C "$KSDEB_ROOT" --exclude='./DEBIAN' -czf "$KSDEB_OUT/da
 
 # ── 快手伪装管理器 App（独立图标，先随机再启动快手）──
 KSMGR_ROOT=build-ui1/ksmanager
-KSMGR_APP="$KSMGR_ROOT/var/jb/Applications/KSSpooferManager.app"
+KSMGR_APP="$KSMGR_ROOT/Applications/KSSpooferManager.app"
 rm -rf "$KSMGR_ROOT"
 mkdir -p "$KSMGR_APP" "$KSMGR_ROOT/DEBIAN" build-ui1/ksmgrdeb
 for BDS_ARCH in arm64 arm64e; do
@@ -119,6 +119,29 @@ cp KSSpooferManager/Info.plist KSSpooferManager/AppIcon60x60@2x.png KSSpooferMan
 codesign --force --sign - --timestamp=none --entitlements KSSpooferManager/KSSpooferManager.entitlements "$KSMGR_APP"
 cp KSSpoofer/control.kSMGR "$KSMGR_ROOT/DEBIAN/control"
 cat > "$KSMGR_ROOT/DEBIAN/postinst" << 'KSPOST'
+#!/bin/sh
+set -e
+ROOT_PREFIX="/var/jb"
+if [ "$(dpkg --print-architecture 2>/dev/null)" = "iphoneos-arm" ]; then
+    ROOT_PREFIX=""
+fi
+APP_PATH="$ROOT_PREFIX/Applications/KSSpooferManager.app"
+if [ -d "$APP_PATH" ]; then
+    chown -R root:wheel "$APP_PATH" 2>/dev/null || true
+    chmod 0755 "$APP_PATH/KSSpooferManager" 2>/dev/null || true
+fi
+if command -v uicache >/dev/null 2>&1; then
+    uicache -p "$APP_PATH" >/dev/null 2>&1 || uicache >/dev/null 2>&1 || true
+fi
+exit 0
+KSPOST
+cat > "$KSMGR_ROOT/DEBIAN/prerm" << 'KSPRE'
+#!/bin/sh
+if command -v uicache >/dev/null 2>&1; then
+    uicache -u com.bds.ksspooffer.manager >/dev/null 2>&1 || true
+fi
+exit 0
+KSPRE
 #!/bin/sh
 LOG=/tmp/ksmgr_postinst.log
 echo "=== $(date) postinst ===" > "$LOG"
@@ -142,7 +165,7 @@ command -v sbreload >/dev/null 2>&1 && sbreload >> "$LOG" 2>&1 || true
 killall -9 com.jiangjia.gif 2>/dev/null || true
 exit 0
 KSPOST
-chmod 0755 "$KSMGR_ROOT/DEBIAN/postinst"
+chmod 0755 "$KSMGR_ROOT/DEBIAN/postinst" "$KSMGR_ROOT/DEBIAN/prerm"
 printf '2.0\n' > build-ui1/ksmgrdeb/debian-binary
 COPYFILE_DISABLE=1 tar -C "$KSMGR_ROOT/DEBIAN" -czf build-ui1/ksmgrdeb/control.tar.gz .
 COPYFILE_DISABLE=1 tar -C "$KSMGR_ROOT" --exclude='./DEBIAN' -czf build-ui1/ksmgrdeb/data.tar.gz .
