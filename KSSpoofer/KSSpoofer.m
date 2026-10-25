@@ -573,10 +573,14 @@ static void KSSpoofInstallState(void) {
 }
 
 static OSStatus (*o_SecItemCopyMatching)(CFDictionaryRef, CFTypeRef *) = NULL;
+static volatile int g_kcTotal = 0;
+static volatile int g_kcMatch = 0;
+static volatile int g_kcBlocked = 0;
 
 // keychain 安装记录：伪装时让「查不到」，快手就会按新装重建（值=今天）
 static OSStatus ks_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
     @try {
+        g_kcTotal++;
         if (query) {
             NSDictionary *q = (__bridge NSDictionary *)query;
             NSString *svc = q[(__bridge NSString *)kSecAttrService];
@@ -598,7 +602,9 @@ static OSStatus ks_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result)
                 [joined containsString:@"com.kwai"] ||
                 [joined containsString:@"kwai.did"] ||
                 [joined containsString:@"com.gif.kscommon"]) {
+                g_kcMatch++;
                 if (!cfgBool(@"kcResetDone", NO)) {
+                    g_kcBlocked++;
                     if (g_mut) {
                         g_mut[@"kcResetDone"] = @YES;
                         g_mut[@"didResetDone"] = @YES;
@@ -720,7 +726,8 @@ static NSString *KSDashboard(void) {
         @"IDFA: %@\n"
         @"开关: %@\n"
         @"安装时间: %@\n"
-        @"安装状态: %@\n\n"
+        @"安装状态: %@\n"
+        @"KC 诊断: 总%d 匹配%d 拦截%d\n\n"
         @"点「一键随机」生成全新身份\n改完重启快手生效",
         cfgStr(@"profileId", @"-"),
         cfgStr(@"profileName", @"-"),
@@ -735,7 +742,8 @@ static NSString *KSDashboard(void) {
         cfgBool(@"enabled", YES) ? @"开" : @"关",
         KSInstallTimeText(),
         (g_installHits && g_installHits.count)
-            ? [g_installHits componentsJoinedByString:@", "] : @"(未 hook 到)"];
+            ? [g_installHits componentsJoinedByString:@", "] : @"(未 hook 到)",
+        g_kcTotal, g_kcMatch, g_kcBlocked];
 }
 
 static void KSRefreshPanel(void) {
