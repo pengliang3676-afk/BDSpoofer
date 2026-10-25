@@ -18,6 +18,7 @@
 #import <mach/vm_page_size.h>
 #import <sys/sysctl.h>
 #import <sys/stat.h>
+#import <Security/Security.h>
 
 #pragma mark - fishhook（自 BDSpoofer 内嵌实现）
 
@@ -503,6 +504,32 @@ static void KSSpoofInstallState(void) {
     free(classes);
 }
 
+static OSStatus (*o_SecItemCopyMatching)(CFDictionaryRef, CFTypeRef *) = NULL;
+
+// keychain 安装记录：伪装时让「查不到」，快手就会按新装重建（值=今天）
+static OSStatus ks_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
+    @try {
+        if (query) {
+            NSDictionary *q = (__bridge NSDictionary *)query;
+            NSString *svc = q[(__bridge NSString *)kSecAttrService];
+            NSString *acct = q[(__bridge NSString *)kSecAttrAccount];
+            NSString *joined = [NSString stringWithFormat:@"%@|%@",
+                                [svc isKindOfClass:NSString.class] ? svc : @"",
+                                [acct isKindOfClass:NSString.class] ? acct : @""];
+            if ([joined containsString:@"appUsage"] ||
+                [joined containsString:@"jnkeychain"]) {
+                long long ms = cfgInt(@"installTimeMs", 0);
+                if (ms <= 0) {
+                    KSFakeInstallMs();
+                    return errSecItemNotFound;
+                }
+            }
+        }
+    } @catch (NSException *e) {}
+    return o_SecItemCopyMatching ? o_SecItemCopyMatching(query, result)
+                                 : errSecItemNotFound;
+}
+
 static void KSInstallHooks(void) {
     Class ud = NSClassFromString(@"UIDevice");
     if (ud) {
@@ -521,6 +548,7 @@ static void KSInstallHooks(void) {
     }
     struct bds_rebinding rb[] = {
         {"sysctlbyname", (void *)ks_sysctlbyname, (void **)&o_sysctlbyname},
+        {"SecItemCopyMatching", (void *)ks_SecItemCopyMatching, (void **)&o_SecItemCopyMatching},
     };
     bds_rebind_symbols(rb, sizeof(rb) / sizeof(rb[0]));
     // 安装时间键（NSUserDefaults）
