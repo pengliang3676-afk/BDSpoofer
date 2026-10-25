@@ -1,0 +1,4 @@
+#!/bin/sh
+killall -9 com.jiangjia.gif 2>/dev/null || true
+killall -9 com.kuaishou.nebula 2>/dev/null || true
+exit 0

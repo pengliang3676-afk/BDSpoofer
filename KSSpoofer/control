@@ -1,0 +1,9 @@
+Package: com.bds.ksspoofer
+Name: 快手伪装
+Version: 1.0.0+10.18.06
+Architecture: iphoneos-arm64e
+Description: 快手设备信息伪装：机型/型号/系统/内存/磁盘/安装状态成套随机，悬浮球一键随机，按容器独立配置。
+Maintainer: Codex
+Author: Codex
+Section: Tweaks
+Depends: firmware (>= 15.0), rootless-compat (>= 0.9)

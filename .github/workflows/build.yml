@@ -26,3 +26,4 @@ jobs:
             dist-ui1/L2TPGuard_10.17.09_RootHide.deb
             dist-ui1/KSProbe.dylib
             dist-ui1/KSSpoofer.dylib
+            dist-ui1/KSSpoofer_10.18.06_RootHide.deb

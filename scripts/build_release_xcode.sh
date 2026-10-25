@@ -86,3 +86,19 @@ lipo -create build-ui1/KSSpoofer_arm64.dylib build-ui1/KSSpoofer_arm64e.dylib   
 codesign --force --sign - --timestamp=none "dist-ui1/KSSpoofer.dylib"
 codesign --verify --strict "dist-ui1/KSSpoofer.dylib"
 lipo -info "dist-ui1/KSSpoofer.dylib"
+
+# ── 快手伪装 deb（和极速一样的安装方式）──
+KSDEB_ROOT=build-ui1/ksspooferdeb_root
+KSDEB_OUT=build-ui1/ksspooferdeb
+rm -rf "$KSDEB_ROOT" "$KSDEB_OUT"
+mkdir -p "$KSDEB_ROOT/var/jb/Library/MobileSubstrate/DynamicLibraries" "$KSDEB_ROOT/DEBIAN" "$KSDEB_OUT"
+cp dist-ui1/KSSpoofer.dylib "$KSDEB_ROOT/var/jb/Library/MobileSubstrate/DynamicLibraries/KSSpoofer.dylib"
+cp KSSpoofer/KSSpoofer.plist "$KSDEB_ROOT/var/jb/Library/MobileSubstrate/DynamicLibraries/KSSpoofer.plist"
+cp KSSpoofer/control KSSpoofer/postinst "$KSDEB_ROOT/DEBIAN/"
+chmod 0755 "$KSDEB_ROOT/DEBIAN/postinst"
+codesign --force --sign - --timestamp=none "$KSDEB_ROOT/var/jb/Library/MobileSubstrate/DynamicLibraries/KSSpoofer.dylib"
+printf '2.0\n' > "$KSDEB_OUT/debian-binary"
+COPYFILE_DISABLE=1 tar -C "$KSDEB_ROOT/DEBIAN" -czf "$KSDEB_OUT/control.tar.gz" .
+COPYFILE_DISABLE=1 tar -C "$KSDEB_ROOT" --exclude='./DEBIAN' -czf "$KSDEB_OUT/data.tar.gz" .
+(cd "$KSDEB_OUT" && ar -rc ../../dist-ui1/KSSpoofer_10.18.06_RootHide.deb debian-binary control.tar.gz data.tar.gz)
+(cd dist-ui1 && shasum -a 256 KSSpoofer_10.18.06_RootHide.deb >> SHA256SUMS.txt)
