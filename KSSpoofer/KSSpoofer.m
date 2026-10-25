@@ -640,6 +640,106 @@ static NSUUID *ks_idfa(id self, SEL _cmd) {
     return o_idfa ? o_idfa(self, _cmd) : nil;
 }
 
+#pragma mark - 网络抓包（不连电脑，直接看快手接口）
+
+static NSString *KSNetLogPath(void) {
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    return [docs stringByAppendingPathComponent:@"ksnet_log.txt"];
+}
+
+static NSMutableArray<NSString *> *g_netHits = nil;
+static volatile int g_netCount = 0;
+
+static void KSNetLog(NSString *line) {
+    @try {
+        if (!g_netHits) g_netHits = [NSMutableArray array];
+        [g_netHits addObject:line];
+        if (g_netHits.count > 200) [g_netHits removeObjectAtIndex:0];
+        g_netCount++;
+        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:KSNetLogPath()];
+        NSString *s = [line stringByAppendingString:@"\n"];
+        if (!fh) {
+            [s writeToFile:KSNetLogPath() atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+            return;
+        }
+        [fh seekToEndOfFile];
+        [fh writeData:[s dataUsingEncoding:NSUTF8StringEncoding]];
+        [fh closeFile];
+        NSDictionary *attr = [[NSFileManager defaultManager] attributesOfItemAtPath:KSNetLogPath() error:NULL];
+        if ([attr fileSize] > 256 * 1024) {
+            [@"" writeToFile:KSNetLogPath() atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        }
+    } @catch (NSException *e) {}
+}
+
+static BOOL KSInterestingURL(NSURL *url) {
+    if (!url) return NO;
+    NSString *s = url.absoluteString.lowercaseString;
+    if (!([s containsString:@"kuaishou"] || [s containsString:@"kwai"] ||
+          [s containsString:@"gifshow"])) return NO;
+    return [s containsString:@"login"] || [s containsString:@"bind"] ||
+           [s containsString:@"passport"] || [s containsString:@"user"] ||
+           [s containsString:@"third"] || [s containsString:@"verify"] ||
+           [s containsString:@"risk"] || [s containsString:@"register"];
+}
+
+static NSURLSessionDataTask *(*o_dataTask)(id, SEL, NSURLRequest *, void (^)(NSData *, NSURLResponse *, NSError *)) = NULL;
+
+static NSURLSessionDataTask *ks_dataTask(id self, SEL _cmd, NSURLRequest *request,
+    void (^completion)(NSData *, NSURLResponse *, NSError *)) {
+    @try {
+        if (request && KSInterestingURL(request.URL)) {
+            NSMutableString *line = [NSMutableString string];
+            [line appendFormat:@"\n[REQ] %@ %@", request.HTTPMethod, request.URL.absoluteString];
+            NSDictionary *h = request.allHTTPHeaderFields;
+            if (h.count) [line appendFormat:@"\n  headers: %@", h];
+            NSData *body = request.HTTPBody;
+            if (body.length) {
+                NSString *txt = [[NSString alloc] initWithData:body encoding:NSUTF8StringEncoding];
+                if (txt.length) {
+                    [line appendFormat:@"\n  body: %@", [txt substringToIndex:MIN(txt.length, 800)]];
+                } else {
+                    NSMutableString *hex = [NSMutableString string];
+                    const uint8_t *p = body.bytes;
+                    for (NSUInteger i = 0; i < MIN(body.length, (NSUInteger)120); i++)
+                        [hex appendFormat:@"%02x", p[i]];
+                    [line appendFormat:@"\n  body(%luB hex): %@", (unsigned long)body.length, hex];
+                }
+            }
+            KSNetLog(line);
+        }
+    } @catch (NSException *e) {}
+    if (!completion) {
+        return o_dataTask ? o_dataTask(self, _cmd, request, completion) : nil;
+    }
+    void (^wrapped)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *resp, NSError *err) {
+        @try {
+            if (resp && KSInterestingURL(resp.URL)) {
+                NSMutableString *line = [NSMutableString string];
+                [line appendFormat:@"[RESP] %@ %ld", resp.URL.absoluteString,
+                       (long)((NSHTTPURLResponse *)resp).statusCode];
+                if (data.length) {
+                    NSString *txt = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+                    if (txt.length) {
+                        [line appendFormat:@"\n  body: %@", [txt substringToIndex:MIN(txt.length, 800)]];
+                    } else {
+                        NSMutableString *hex = [NSMutableString string];
+                        const uint8_t *p = data.bytes;
+                        for (NSUInteger i = 0; i < MIN(data.length, (NSUInteger)120); i++)
+                            [hex appendFormat:@"%02x", p[i]];
+                        [line appendFormat:@"\n  body(%luB hex): %@", (unsigned long)data.length, hex];
+                    }
+                }
+                if (err) [line appendFormat:@"\n  err: %@", err.localizedDescription];
+                KSNetLog(line);
+            }
+        } @catch (NSException *e) {}
+        completion(data, resp, err);
+    };
+    return o_dataTask ? o_dataTask(self, _cmd, request, wrapped) : nil;
+}
+
 static void KSInstallHooks(void) {
     Class ud = NSClassFromString(@"UIDevice");
     if (ud) {
@@ -658,6 +758,11 @@ static void KSInstallHooks(void) {
     }
     if (ud) {
         hookInst(ud, NSSelectorFromString(@"identifierForVendor"), (IMP)ks_idfv, (IMP *)&o_idfv);
+    }
+    Class sess = NSClassFromString(@"NSURLSession");
+    if (sess) {
+        hookInst(sess, @selector(dataTaskWithRequest:completionHandler:),
+                 (IMP)ks_dataTask, (IMP *)&o_dataTask);
     }
     Class aim = NSClassFromString(@"ASIdentifierManager");
     if (aim) {
@@ -727,7 +832,8 @@ static NSString *KSDashboard(void) {
         @"开关: %@\n"
         @"安装时间: %@\n"
         @"安装状态: %@\n"
-        @"KC 诊断: 总%d 匹配%d 拦截%d\n\n"
+        @"KC 诊断: 总%d 匹配%d 拦截%d\n"
+        @"网络抓包: %d 条（看 Documents/ksnet_log.txt）\n\n"
         @"点「一键随机」生成全新身份\n改完重启快手生效",
         cfgStr(@"profileId", @"-"),
         cfgStr(@"profileName", @"-"),
@@ -743,7 +849,7 @@ static NSString *KSDashboard(void) {
         KSInstallTimeText(),
         (g_installHits && g_installHits.count)
             ? [g_installHits componentsJoinedByString:@", "] : @"(未 hook 到)",
-        g_kcTotal, g_kcMatch, g_kcBlocked];
+        g_kcTotal, g_kcMatch, g_kcBlocked, g_netCount];
 }
 
 static void KSRefreshPanel(void) {
