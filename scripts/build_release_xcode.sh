@@ -118,7 +118,21 @@ lipo -create build-ui1/KSSpooferManager_arm64 build-ui1/KSSpooferManager_arm64e 
 cp KSSpooferManager/Info.plist KSSpooferManager/AppIcon60x60@2x.png KSSpooferManager/AppIcon60x60@3x.png "$KSMGR_APP/"
 codesign --force --sign - --timestamp=none --entitlements KSSpooferManager/KSSpooferManager.entitlements "$KSMGR_APP"
 cp KSSpoofer/control.kSMGR "$KSMGR_ROOT/DEBIAN/control"
-printf '#!/bin/sh\nkillall -9 com.jiangjia.gif 2>/dev/null || true\nexit 0\n' > "$KSMGR_ROOT/DEBIAN/postinst"
+cat > "$KSMGR_ROOT/DEBIAN/postinst" << 'KSPOST'
+#!/bin/sh
+APP_PATH=/var/jb/Applications/KSSpooferManager.app
+[ -d "$APP_PATH" ] || APP_PATH=/Applications/KSSpooferManager.app
+if [ -d "$APP_PATH" ]; then
+    chown -R root:wheel "$APP_PATH" 2>/dev/null || true
+    chmod 0755 "$APP_PATH/KSSpooferManager" 2>/dev/null || true
+fi
+if command -v uicache >/dev/null 2>&1; then
+    uicache -p "$APP_PATH" >/dev/null 2>&1 || uicache >/dev/null 2>&1 || true
+fi
+killall -9 SpringBoard 2>/dev/null || true
+killall -9 com.jiangjia.gif 2>/dev/null || true
+exit 0
+KSPOST
 chmod 0755 "$KSMGR_ROOT/DEBIAN/postinst"
 printf '2.0\n' > build-ui1/ksmgrdeb/debian-binary
 COPYFILE_DISABLE=1 tar -C "$KSMGR_ROOT/DEBIAN" -czf build-ui1/ksmgrdeb/control.tar.gz .
