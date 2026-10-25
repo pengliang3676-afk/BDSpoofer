@@ -279,13 +279,30 @@ static void KSSaveConfig(void) {
 
 #pragma mark - 随机身份
 
-static const char *kMachines[] = {
-    "iPhone14,5", "iPhone15,2", "iPhone15,3", "iPhone16,1", "iPhone16,2",
-    "iPhone13,2", "iPhone13,3", "iPhone14,2", "iPhone12,1",
-};
-static const char *kModels[] = {
-    "D79AP", "D73AP", "D63AP", "D53gAP", "D54pAP",
-    "D52gAP", "D53gAP", "D53pAP", "N104AP",
+// 成套档案：机型 / 型号 / 内存 / 可选容量 / 支持的系统组
+// 15 系列（iPhone16,x）只支持 iOS 17；其余支持 16.x / 17.x
+typedef struct {
+    const char *machine;
+    const char *model;
+    int memMB;
+    const int *disks;
+    int ndisks;
+    const char *osGroup;
+} KSProfile;
+
+static const int kDiskA[] = { 64, 128, 256 };            // iPhone 12 / 12 mini
+static const int kDiskB[] = { 128, 256, 512 };           // 12 Pro / 13
+static const int kDiskC[] = { 128, 256, 512, 1024 };     // 14 Pro 系列
+static const int kDiskD[] = { 256, 512, 1024 };          // 15 Pro Max
+
+static const KSProfile kProfiles[] = {
+    { "iPhone13,2", "D52gAP", 4096, kDiskA, 3, "16" },
+    { "iPhone13,3", "D53gAP", 6144, kDiskB, 3, "16" },
+    { "iPhone14,5", "D16AP",  4096, kDiskB, 3, "16" },
+    { "iPhone15,2", "D73AP",  6144, kDiskC, 4, "16" },
+    { "iPhone15,3", "D74AP",  6144, kDiskC, 4, "16" },
+    { "iPhone16,1", "D37AP",  6144, kDiskB, 3, "17" },
+    { "iPhone16,2", "D54pAP", 8192, kDiskD, 3, "17" },
 };
 
 static NSString *KSRandomHex(int n) {
@@ -297,19 +314,26 @@ static NSString *KSRandomHex(int n) {
 }
 
 static void KSRandomizeIdentity(void) {
-    int i = arc4random_uniform(sizeof(kMachines) / sizeof(kMachines[0]));
-    g_mut[@"hwMachine"] = [NSString stringWithUTF8String:kMachines[i]];
-    g_mut[@"hwModel"] = [NSString stringWithUTF8String:kModels[i]];
-    static const char *vers[] = {"17.0.1", "17.0.2", "17.1", "16.6.1", "16.7"};
-    static const char *builds[] = {"21A340", "21A351", "21B80", "20G81", "20H18"};
-    int vi = arc4random_uniform(5);
-    g_mut[@"systemVersion"] = [NSString stringWithUTF8String:vers[vi]];
-    g_mut[@"systemBuild"] = [NSString stringWithUTF8String:builds[vi]];
+    const KSProfile *p = &kProfiles[arc4random_uniform(sizeof(kProfiles) / sizeof(kProfiles[0]))];
+    g_mut[@"hwMachine"] = [NSString stringWithUTF8String:p->machine];
+    g_mut[@"hwModel"] = [NSString stringWithUTF8String:p->model];
+    g_mut[@"memoryMB"] = @(p->memMB);
+    g_mut[@"diskGB"] = @(p->disks[arc4random_uniform(p->ndisks)]);
+
+    if (strcmp(p->osGroup, "17") == 0) {
+        static const char *vers[] = {"17.0.1", "17.0.2", "17.1"};
+        static const char *builds[] = {"21A340", "21A351", "21B80"};
+        int vi = arc4random_uniform(3);
+        g_mut[@"systemVersion"] = [NSString stringWithUTF8String:vers[vi]];
+        g_mut[@"systemBuild"] = [NSString stringWithUTF8String:builds[vi]];
+    } else {
+        static const char *vers[] = {"16.6.1", "16.7", "17.0.1", "17.1"};
+        static const char *builds[] = {"20G81", "20H18", "21A340", "21B80"};
+        int vi = arc4random_uniform(4);
+        g_mut[@"systemVersion"] = [NSString stringWithUTF8String:vers[vi]];
+        g_mut[@"systemBuild"] = [NSString stringWithUTF8String:builds[vi]];
+    }
     g_mut[@"deviceName"] = @"iPhone";
-    static const int mems[] = {4096, 6144, 8192};   // 单位 MB
-    g_mut[@"memoryMB"] = @(mems[arc4random_uniform(3)]);
-    static const int disks[] = {128, 256, 512};
-    g_mut[@"diskGB"] = @(disks[arc4random_uniform(3)]);
     // 安装时间也重置：下次读取时重新生成「今天随机时刻」
     g_mut[@"installTimeMs"] = @0;
     g_mut[@"enabled"] = @YES;
