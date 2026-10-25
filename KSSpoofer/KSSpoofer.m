@@ -267,7 +267,18 @@ static long long cfgInt(NSString *k, long long d) {
 }
 
 static void KSReloadConfig(void) {
-    g_cfg = [NSDictionary dictionaryWithContentsOfFile:KSConfigPath()] ?: @{};
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:KSConfigPath()];
+    if (![d isKindOfClass:NSDictionary.class] || d.count == 0) {
+        // 容器里没有配置 → 读「快手伪装」管理器的默认身份
+        NSDictionary *def = [NSDictionary dictionaryWithContentsOfFile:
+            @"/var/mobile/Library/Preferences/com.bds.ksspoofer.default.plist"];
+        if (![def isKindOfClass:NSDictionary.class] || def.count == 0) {
+            def = [NSDictionary dictionaryWithContentsOfFile:
+                @"/tmp/com.bds.ksspoofer.default.plist"];
+        }
+        if ([def isKindOfClass:NSDictionary.class] && def.count) d = def;
+    }
+    g_cfg = d ?: @{};
     g_mut = [g_cfg mutableCopy];
 }
 

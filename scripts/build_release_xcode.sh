@@ -102,3 +102,26 @@ COPYFILE_DISABLE=1 tar -C "$KSDEB_ROOT/DEBIAN" -czf "$KSDEB_OUT/control.tar.gz" 
 COPYFILE_DISABLE=1 tar -C "$KSDEB_ROOT" --exclude='./DEBIAN' -czf "$KSDEB_OUT/data.tar.gz" .
 (cd "$KSDEB_OUT" && ar -rc ../../dist-ui1/KSSpoofer_10.18.06_RootHide.deb debian-binary control.tar.gz data.tar.gz)
 (cd dist-ui1 && shasum -a 256 KSSpoofer_10.18.06_RootHide.deb >> SHA256SUMS.txt)
+
+# ── 快手伪装管理器 App（独立图标，先随机再启动快手）──
+KSMGR_ROOT=build-ui1/ksmanager
+KSMGR_APP="$KSMGR_ROOT/Applications/KSSpooferManager.app"
+rm -rf "$KSMGR_ROOT"
+mkdir -p "$KSMGR_APP" "$KSMGR_ROOT/DEBIAN" build-ui1/ksmgrdeb
+for BDS_ARCH in arm64 arm64e; do
+    xcrun --sdk iphoneos clang -arch "$BDS_ARCH" "${BDS_COMMON[@]}" \
+        -framework Foundation -framework UIKit -framework CoreGraphics \
+        KSSpooferManager/main.m -o "build-ui1/KSSpooferManager_$BDS_ARCH"
+done
+lipo -create build-ui1/KSSpooferManager_arm64 build-ui1/KSSpooferManager_arm64e \
+    -output "$KSMGR_APP/KSSpooferManager"
+cp KSSpooferManager/Info.plist KSSpooferManager/AppIcon60x60@2x.png KSSpooferManager/AppIcon60x60@3x.png "$KSMGR_APP/"
+codesign --force --sign - --timestamp=none --entitlements KSSpooferManager/KSSpooferManager.entitlements "$KSMGR_APP"
+cp KSSpoofer/control.kSMGR "$KSMGR_ROOT/DEBIAN/control"
+printf '#!/bin/sh\nkillall -9 com.jiangjia.gif 2>/dev/null || true\nexit 0\n' > "$KSMGR_ROOT/DEBIAN/postinst"
+chmod 0755 "$KSMGR_ROOT/DEBIAN/postinst"
+printf '2.0\n' > build-ui1/ksmgrdeb/debian-binary
+COPYFILE_DISABLE=1 tar -C "$KSMGR_ROOT/DEBIAN" -czf build-ui1/ksmgrdeb/control.tar.gz .
+COPYFILE_DISABLE=1 tar -C "$KSMGR_ROOT" --exclude='./DEBIAN' -czf build-ui1/ksmgrdeb/data.tar.gz .
+(cd build-ui1/ksmgrdeb && ar -rc ../../dist-ui1/KSSpooferManager_10.18.06.deb debian-binary control.tar.gz data.tar.gz)
+(cd dist-ui1 && shasum -a 256 KSSpooferManager_10.18.06.deb >> SHA256SUMS.txt)

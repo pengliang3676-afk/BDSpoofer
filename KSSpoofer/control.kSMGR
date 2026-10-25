@@ -1,0 +1,9 @@
+Package: com.bds.ksspoofer.manager
+Name: 快手伪装
+Version: 1.0.0+10.18.06
+Architecture: iphoneos-arm64
+Description: 快手伪装管理器：启动快手前先一键随机（写默认身份），快手启动时自动读取。
+Maintainer: Codex
+Author: Codex
+Section: Tweaks
+Depends: firmware (>= 15.0)
