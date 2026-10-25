@@ -378,6 +378,7 @@ static void KSRandomizeIdentity(void) {
     g_mut[@"profileId"] = [NSString stringWithFormat:@"1.%d", idx];
     g_mut[@"profileName"] = [NSString stringWithUTF8String:p->name];
     g_mut[@"installTimeMs"] = @0;
+    g_mut[@"didResetDone"] = @NO;
     g_mut[@"enabled"] = @YES;
     KSSaveConfig();
 }
@@ -587,6 +588,18 @@ static OSStatus ks_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result)
                 long long ms = cfgInt(@"installTimeMs", 0);
                 if (ms <= 0) {
                     KSFakeInstallMs();
+                    return errSecItemNotFound;
+                }
+            }
+            // 快手自己的 deviceId：首次伪装时让它查不到 → 快手重建新 did
+            if ([joined containsString:@"com.kuaishou.did"] ||
+                [joined containsString:@"kwai.did"] ||
+                [joined containsString:@"com.kuaishou.device"]) {
+                if (!cfgBool(@"didResetDone", NO)) {
+                    if (g_mut) {
+                        g_mut[@"didResetDone"] = @YES;
+                        KSSaveConfig();
+                    }
                     return errSecItemNotFound;
                 }
             }
