@@ -826,9 +826,11 @@ static void KSInit(void) {
             if (!g_cfg) g_cfg = @{};
             if (!g_mut) g_mut = [NSMutableDictionary dictionary];
             if (!cfgBool(@"enabled", YES)) return;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+            // hook 必须最早装：快手启动早期就会读设备名/机型并缓存上报
+            KSInstallHooks();
+            // UI 需要等 window scene 就绪，延迟装
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
-                KSInstallHooks();
                 KSInstallUI();
             });
         } @catch (NSException *e) {}
