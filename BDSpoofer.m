@@ -4,6 +4,9 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  10.26.01：自检新增「设备标识实测（只读）」面板。反射枚举并真实调用
+//    BBACuidSDK / BaiduMobStat / UTDIDMain 等只读方法，显示真实 CUID 明文与长度
+//    （合法 CUID 长度=51、无空格），不 hook、不改任何返回值，用于抓真实 CUID 结构。
 //  10.18.05：UDID 只替换百度自己的读取方法，不钩系统钥匙串。
 //  10.18.02：每个容器记住自己的 UDID，显示在主界面。不写进共享钥匙串。
 //  10.18.01：删掉仅走代理网。代理检测隐藏仍单独保留，不跟 L2TP 绑在一起。
@@ -4335,6 +4338,7 @@ static const NSTimeInterval BDSButtonCollapseDelay = 10.0;
 - (void)editScreenStorage;
 - (void)showSelfTest;
 - (void)showPublicAPITest;
+- (void)showDeviceIDProbe;
 - (void)showHookDiagnostics;
 - (void)copyDiagnosticText:(NSString *)text;
 - (void)shareDiagnosticText:(NSString *)text;
@@ -4972,6 +4976,142 @@ static NSString *BDSConfigSummary(void) {
     return summary;
 }
 
+#pragma mark - 设备标识只读实测（抓真实 CUID 结构，不 hook、不改任何值）
+
+// 写/删/动作类方法黑名单：只按「方法名前缀」判断，避免 contains 误伤
+// cuidFromStorage（含 store）、cuidAddingPercentEscapes（含 add）这类只读 getter。
+// 带参数的写方法已由「不含冒号」规则排除，这里再拦无参的动作类方法。
+static BOOL bds_probe_is_dangerous(NSString *sel) {
+    static NSArray *badPrefixes;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        badPrefixes = @[@"delete", @"set", @"save", @"write", @"erase", @"reset", @"clear",
+                        @"remove", @"regist", @"sync", @"clean", @"flush", @"commit", @"send",
+                        @"post", @"upload", @"apply", @"launch", @"enable", @"disable",
+                        @"start", @"request", @"update", @"create", @"migrat", @"store",
+                        @"add", @"put", @"refresh", @"report", @"track", @"close", @"init",
+                        @"preinit", @"new", @"build", @"generat", @"fetch", @"modify",
+                        @"change", @"make"];
+    });
+    NSString *l = sel.lowercaseString;
+    for (NSString *p in badPrefixes) {
+        if ([l hasPrefix:p]) return YES;
+    }
+    return NO;
+}
+
+// 调用某对象的无参方法，返回可读字符串（不改变任何返回值，纯只读）
+static NSString *bds_probe_obj_value(id target, NSString *selName) {
+    if (!target) return @"(无目标)";
+    SEL s = NSSelectorFromString(selName);
+    if (!s || ![target respondsToSelector:s]) return @"(无此方法)";
+    @try {
+        IMP imp = [target methodForSelector:s];
+        if (!imp) return @"(无 IMP)";
+        id r = ((id(*)(id, SEL))imp)(target, s);
+        if (!r) return @"(nil)";
+        if ([r isKindOfClass:NSString.class]) {
+            NSString *str = (NSString *)r;
+            return [NSString stringWithFormat:@"%@\n      ［len=%lu，%@空格］",
+                    str, (unsigned long)str.length,
+                    [str rangeOfString:@" "].location == NSNotFound ? @"无" : @"含"];
+        }
+        if ([r isKindOfClass:NSDictionary.class]) {
+            return [NSString stringWithFormat:@"%@", r];
+        }
+        if ([r isKindOfClass:NSArray.class]) {
+            return [NSString stringWithFormat:@"%@", r];
+        }
+        if ([r isKindOfClass:NSNumber.class]) {
+            return [NSString stringWithFormat:@"%@", r];
+        }
+        return [NSString stringWithFormat:@"(%@) %@", NSStringFromClass([r class]), r];
+    } @catch (NSException *e) {
+        return [NSString stringWithFormat:@"[异常 %@: %@]", e.name, e.reason];
+    }
+}
+
+// 枚举类方法（元类）：无参、返回对象(@)、非危险，逐个真实调用；keywordFilter 非空时只取含关键词的
+static void bds_probe_enum_class_methods(NSMutableString *out, NSString *cls,
+                                         NSArray *keywordFilter) {
+    Class c = objc_getClass(cls.UTF8String);
+    if (!c) {
+        [out appendFormat:@"\n[%@] 类不存在（未加载）", cls];
+        return;
+    }
+    Class meta = object_getClass(c);
+    unsigned int n = 0;
+    Method *ms = class_copyMethodList(meta, &n);
+    NSMutableArray *sels = [NSMutableArray array];
+    for (unsigned i = 0; i < n; i++) {
+        SEL s = method_getName(ms[i]);
+        NSString *sn = NSStringFromSelector(s);
+        if ([sn containsString:@":"]) continue;
+        if (bds_probe_is_dangerous(sn)) continue;
+        const char *te = method_getTypeEncoding(ms[i]);
+        if (!te || te[0] != '@') continue;
+        if (keywordFilter) {
+            NSString *l = sn.lowercaseString;
+            BOOL ok = NO;
+            for (NSString *k in keywordFilter) if ([l containsString:k]) { ok = YES; break; }
+            if (!ok) continue;
+        }
+        [sels addObject:sn];
+    }
+    free(ms);
+    [sels sortUsingSelector:@selector(compare:)];
+    [out appendFormat:@"\n[%@] %@类方法 %lu 个：", cls,
+        keywordFilter ? [NSString stringWithFormat:@"含[%@] ", [keywordFilter componentsJoinedByString:@"/"]] : @"只读",
+        (unsigned long)sels.count];
+    if (sels.count == 0) [out appendString:@"（无）"];
+    for (NSString *sn in sels) {
+        [out appendFormat:@"\n  +%@ = %@", sn, bds_probe_obj_value(c, sn)];
+    }
+}
+
+// 枚举单例实例方法（需要先取单例）
+static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
+                                            NSArray *sharedSels, NSArray *keywordFilter) {
+    Class c = objc_getClass(cls.UTF8String);
+    if (!c) { [out appendFormat:@"\n[%@] 类不存在", cls]; return; }
+    id inst = nil;
+    for (NSString *ss in sharedSels) {
+        SEL s = NSSelectorFromString(ss);
+        if (s && [c respondsToSelector:s]) {
+            @try {
+                id r = ((id(*)(id, SEL))[c methodForSelector:s])(c, s);
+                if (r && r != c) { inst = r; break; }
+            } @catch (__unused NSException *e) {}
+        }
+    }
+    if (!inst) { [out appendFormat:@"\n[%@] 取不到单例（试过 %@）", cls, [sharedSels componentsJoinedByString:@","]]; return; }
+    unsigned int n = 0;
+    Method *ms = class_copyMethodList(c, &n);
+    NSMutableArray *sels = [NSMutableArray array];
+    for (unsigned i = 0; i < n; i++) {
+        SEL s = method_getName(ms[i]);
+        NSString *sn = NSStringFromSelector(s);
+        if ([sn containsString:@":"]) continue;
+        if (bds_probe_is_dangerous(sn)) continue;
+        const char *te = method_getTypeEncoding(ms[i]);
+        if (!te || te[0] != '@') continue;
+        if (keywordFilter) {
+            NSString *l = sn.lowercaseString;
+            BOOL ok = NO;
+            for (NSString *k in keywordFilter) if ([l containsString:k]) { ok = YES; break; }
+            if (!ok) continue;
+        }
+        [sels addObject:sn];
+    }
+    free(ms);
+    [sels sortUsingSelector:@selector(compare:)];
+    [out appendFormat:@"\n[%@ 单例 %@] 含关键词实例只读方法 %lu 个：", cls, [inst class], (unsigned long)sels.count];
+    if (sels.count == 0) [out appendString:@"（无）"];
+    for (NSString *sn in sels) {
+        [out appendFormat:@"\n  -%@ = %@", sn, bds_probe_obj_value(inst, sn)];
+    }
+}
+
 // The system alert title reserves a large bottom inset.  Use a compact custom
 // header so all five lines remain unchanged while the first action moves up.
 @implementation BDSUIController
@@ -5134,7 +5274,7 @@ static NSString *BDSConfigSummary(void) {
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 10.18.05";
+    page.title=@"卐解 10.26.01";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5879,6 +6019,11 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{ [self showPublicAPITest]; });
     }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"设备标识实测（只读·抓CUID） ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self showDeviceIDProbe]; });
+    }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Hook 命中统计  ›" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
@@ -6269,6 +6414,100 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
         [alert addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
             (void)action;
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ [self showSelfTest]; });
+        }]];
+        [presenter presentViewController:alert animated:YES completion:nil];
+    });
+}
+
+- (void)showDeviceIDProbe {
+    NSMutableString *m = [NSMutableString string];
+    [m appendString:@"【只读探针 · 不 hook、不改任何值】\n"
+                  "直接调用 App 真实读取方法，抓真实 CUID 明文。\n"
+                  "操作：新容器一键随机 → 杀进程 → Crane 开容器 → 登新号 → 回这里 → 分享 TXT。\n"
+                  "重点：[BBACuidSDK] +cuid 的 len 必须=51 且无空格。"];
+
+    // 一、核心：BBACuidSDK 全部只读类方法（不过滤，抓全）
+    [m appendString:@"\n\n========== 一、CUID 主出口：BBACuidSDK（Swift 真实类）=========="];
+    bds_probe_enum_class_methods(m, @"BBACuidSDK", nil);
+    {
+        Class c = objc_getClass("BBACuidSDK");
+        if (c && [c respondsToSelector:NSSelectorFromString(@"isDeviceCloned")]) {
+            @try {
+                BOOL cloned = ((BOOL(*)(id, SEL))[c methodForSelector:NSSelectorFromString(@"isDeviceCloned")])
+                              (c, NSSelectorFromString(@"isDeviceCloned"));
+                [m appendFormat:@"\n  +isDeviceCloned = %@",
+                    cloned ? @"YES ★被判定克隆/多开" : @"NO（未克隆，正常）"];
+            } @catch (NSException *e) {
+                [m appendFormat:@"\n  +isDeviceCloned = [异常 %@]", e.name];
+            }
+        } else {
+            [m appendString:@"\n  +isDeviceCloned = (无此方法)"];
+        }
+    }
+
+    // 二、统计 SDK 对照
+    [m appendString:@"\n\n========== 二、BaiduMobStat / MTJ（统计 SDK 对照）=========="];
+    bds_probe_enum_instance_methods(m, @"BaiduMobStat",
+        @[@"defaultStatisticService", @"sharedInstance", @"sharedStatistic", @"sharedStatisticService"],
+        @[@"cuid", @"deviceid", @"utdid", @"testdevice"]);
+    bds_probe_enum_class_methods(m, @"BaiduMtjCuidSDK", @[@"cuid", @"deviceid", @"utdid"]);
+    bds_probe_enum_class_methods(m, @"BaiduMTJNewCUID", @[@"cuid", @"deviceid", @"utdid"]);
+    bds_probe_enum_class_methods(m, @"PPACUID", @[@"cuid", @"deviceid", @"utdid"]);
+
+    // 三、UTDID（阿里 UTDID SDK，真实类 UTDIDMain 等）
+    [m appendString:@"\n\n========== 三、UTDID（阿里 UTDID，真实类 UTDIDMain）=========="];
+    bds_probe_enum_class_methods(m, @"UTDIDMain", @[@"utdid", @"deviceid", @"uuid", @"device"]);
+    bds_probe_enum_class_methods(m, @"UTDIDHelper", @[@"utdid", @"deviceid", @"uuid", @"device"]);
+    bds_probe_enum_class_methods(m, @"UTDIDData", @[@"utdid", @"deviceid", @"uuid", @"device"]);
+
+    // 四、列出所有类名含 CUID/UTDID/DeviceID 的类及其无参类方法名（只列名，不调用），帮定位遗漏出口
+    [m appendString:@"\n\n========== 四、相关类清单（方法名仅列出，不调用）=========="];
+    {
+        int numClasses = objc_getClassList(NULL, 0);
+        Class *classes = (Class *)calloc((unsigned)MAX(numClasses, 1), sizeof(Class));
+        numClasses = objc_getClassList(classes, numClasses);
+        NSArray *kw = @[@"cuid", @"utdid", @"deviceid", @"deviceidentifier"];
+        int shown = 0;
+        for (int i = 0; i < numClasses && shown < 45; i++) {
+            const char *cn = class_getName(classes[i]);
+            if (!cn) continue;
+            NSString *cname = [NSString stringWithUTF8String:cn];
+            NSString *lc = cname.lowercaseString;
+            BOOL hit = NO;
+            for (NSString *k in kw) if ([lc containsString:k]) { hit = YES; break; }
+            if (!hit) continue;
+            unsigned int mn = 0;
+            Method *mms = class_copyMethodList(object_getClass(classes[i]), &mn);
+            NSMutableArray *names = [NSMutableArray array];
+            for (unsigned j = 0; j < mn; j++) {
+                NSString *sn = NSStringFromSelector(method_getName(mms[j]));
+                if (![sn containsString:@":"]) [names addObject:[NSString stringWithFormat:@"+%@", sn]];
+            }
+            free(mms);
+            [m appendFormat:@"\n%@ : %@", cname,
+                names.count ? [names componentsJoinedByString:@", "] : @"(无无参类方法)"];
+            shown++;
+        }
+        free(classes);
+    }
+
+    UIViewController *presenter = BDSTopController();
+    if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"设备标识实测（只读）"
+                                                                       message:m
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"复制结果" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+            (void)a; [self copyDiagnosticText:m];
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"分享 TXT" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+            (void)a; [self shareDiagnosticText:m];
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:^(UIAlertAction *a) {
+            (void)a;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{ [self showSelfTest]; });
         }]];
         [presenter presentViewController:alert animated:YES completion:nil];
