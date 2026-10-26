@@ -4,6 +4,11 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  10.27.01：修复主 CUID 从未被随机的根因。新容器/新随机首次启动用 SecItemDelete
+//    物理清空共享钥匙串 CUID 组（B83JBVZ6M5.com.baidu.baidumobile.cuid，含 seedid），
+//    让 SDK 自然重新生成合法 51 位 CUID；hook 7.17.0 真实类（BBACuidSDK /
+//    BaiduMtjCuidSDK / BaiduMTJNewCUID / PPACUID / UTDIDMain），首次取 SDK 新值后
+//    锁定到容器 Documents/bds_cuid_lock.plist；isDeviceCloned 固定 NO。自检新增"零"段。
 //  10.26.01：自检新增「设备标识实测（只读）」面板。反射枚举并真实调用
 //    BBACuidSDK / BaiduMobStat / UTDIDMain 等只读方法，显示真实 CUID 明文与长度
 //    （合法 CUID 长度=51、无空格），不 hook、不改任何返回值，用于抓真实 CUID 结构。
@@ -1620,24 +1625,202 @@ static NSDictionary *new_attributesOfFileSystemForPath(id self, SEL _cmd, id pat
 static NSRecursiveLock *g_baiduLock = nil;
 static NSMutableDictionary<NSString *, NSValue *> *g_baiduOrigImps = nil;
 static NSMutableSet<NSString *> *g_baiduHookedKeys = nil;
+// impKey(ClassName.selector.C/I) -> 锁定槽位（cuid/iid/mtjNewCuid/ppaCuid/utdid/...）
+static NSMutableDictionary<NSString *, NSString *> *g_baiduSlotForImp = nil;
 
-static NSString *bds_cuid_value(void) {
-    return BDSRandomModeWasRun(g_config, @"advanced") ? cfgStr(@"cuid", @"") : @"";
-}
-static NSString *bds_utdid_value(void) {
-    return BDSRandomModeWasRun(g_config, @"advanced") ? cfgStr(@"utdid", @"") : @"";
-}
-static NSString *bds_deviceID_value(void) {
-    return BDSRandomModeWasRun(g_config, @"advanced") ? cfgStr(@"deviceID", @"") : @"";
+#pragma mark - 百度 CUID 容器隔离（v10.27.01）
+//
+// 根因：真正的主 CUID 是 51 位、存于共享钥匙串 key com.baidu.baidumobile.mainCUID
+// （access group B83JBVZ6M5.com.baidu.baidumobile.cuid）。7.17.0 里所有 delete CUID
+// 的 SDK 方法都是空壳，无法用 SDK API 删除；Crane 共享 keychain 使"删容器重建"后
+// 旧 CUID 残留，新号继承旧设备前科被关联。旧 hook 的 5 个类名（CuidSDK/MobStat/
+// UTDIDModule/DeviceIdentifierFetcher 等）在 7.17.0 全部不存在，只改了 40 位私有废弃值。
+//
+// 做法（不自己造 CUID，避免 A-P 后缀/校验被服务器拒）：
+//   1) 新容器/新随机首次启动、且在 SDK 读到 CUID 之前，用 SecItemDelete 物理清空整个
+//      CUID 共享组（含 cuidsdkSeedid），让 SDK 像全新安装一样自然重新生成合法 51 位 CUID。
+//   2) hook 7.17.0 真实存在的 CUID/UTDID 输出类；首次调原 IMP 拿到 SDK 生成的新值，
+//      校验长度后锁定到容器（Documents/bds_cuid_lock.plist，随 Crane 容器隔离），之后固定返回。
+//   3) isDeviceCloned 固定 NO。
+// 不 hook 通用 SecItem 读取，只在启动早期一次性 SecItemDelete（正常 API，不闪退）。
+
+// bds_udid_value 定义在后面的"容器 UDID"段，这里前向声明。
+static NSString *bds_udid_value(void);
+
+static NSString *const kBDSCuidAccessGroup = @"B83JBVZ6M5.com.baidu.baidumobile.cuid";
+
+static NSArray<NSString *> *BDSCuidKeychainKeys(void) {
+    static NSArray *keys;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        keys = @[
+            @"com.baidu.baidumobile.mainCUID",
+            @"com.baidu.baidumobile.cuid",
+            @"com.baidu.baidumobile.cuidPrevious",
+            @"com.baidu.baidumobile.tempCUID",
+            @"com.baidu.baidumobile.tempCUIDCreator",
+            @"com.baidu.baidumobile.cuidDeviceInfo",
+            @"com.baidu.baidumobile.cuidsdkSeedid",
+            @"com.baidu.uuidPrivacy126.mainApp",
+        ];
+    });
+    return keys;
 }
 
-static NSString *bds_fake_value_for_cmd(SEL _cmd) {
-    NSString *selName = NSStringFromSelector(_cmd).lowercaseString;
-    if ([selName containsString:@"utdid"]) return bds_utdid_value();
-    if ([selName containsString:@"cuid"]) return bds_cuid_value();
-    return bds_deviceID_value();
+// ---- 容器锁文件（Documents 随 Crane 容器隔离，新容器为空）----
+static NSString *bds_cuidLockPath(void) {
+    return [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/bds_cuid_lock.plist"];
+}
+static NSMutableDictionary *bds_cuidLockRoot(void) {
+    NSMutableDictionary *root = [NSMutableDictionary dictionaryWithContentsOfFile:bds_cuidLockPath()];
+    if (![root isKindOfClass:NSMutableDictionary.class]) root = [NSMutableDictionary dictionary];
+    return root;
+}
+static void bds_cuidLockWrite(NSDictionary *root) {
+    if (root) [root writeToFile:bds_cuidLockPath() atomically:YES];
+}
+// 一键随机后调用：删掉锁文件，下次启动重新清空钥匙串、重新捕获。
+static void bds_cuidLockInvalidate(void) {
+    [[NSFileManager defaultManager] removeItemAtPath:bds_cuidLockPath() error:nil];
 }
 
+// ---- 内存槽位（slot -> 锁定值）----
+static NSMutableDictionary<NSString *, NSString *> *g_cuidSlots = nil;
+static NSString *g_cuidResetUDID = nil;
+static NSString *g_cuidBeforeReset = nil;
+static NSMutableString *g_cuidResetLog = nil;
+static BOOL g_cuidResetRanThisLaunch = NO;
+
+static OSStatus (*bds_realSecItemDelete)(CFDictionaryRef) = NULL;
+static OSStatus (*bds_realSecItemCopyRaw)(CFDictionaryRef, CFTypeRef *) = NULL;
+static void bds_ensureSecFns(void) {
+    if (!bds_realSecItemDelete)
+        bds_realSecItemDelete = (OSStatus (*)(CFDictionaryRef))dlsym(RTLD_NEXT, "SecItemDelete");
+    if (!bds_realSecItemDelete)
+        bds_realSecItemDelete = (OSStatus (*)(CFDictionaryRef))dlsym(RTLD_DEFAULT, "SecItemDelete");
+    if (!bds_realSecItemCopyRaw)
+        bds_realSecItemCopyRaw = (OSStatus (*)(CFDictionaryRef, CFTypeRef *))dlsym(RTLD_NEXT, "SecItemCopyMatching");
+    if (!bds_realSecItemCopyRaw)
+        bds_realSecItemCopyRaw = (OSStatus (*)(CFDictionaryRef, CFTypeRef *))dlsym(RTLD_DEFAULT, "SecItemCopyMatching");
+}
+
+static void bds_cuidEnsureSlots(void) {
+    if (g_cuidSlots) return;
+    NSMutableDictionary *root = bds_cuidLockRoot();
+    id rid = root[@"resetUDID"];
+    g_cuidResetUDID = [rid isKindOfClass:NSString.class] ? rid : nil;
+    id slots = root[@"slots"];
+    g_cuidSlots = [([slots isKindOfClass:NSDictionary.class] ? slots : @{}) mutableCopy];
+    if (!g_cuidSlots) g_cuidSlots = [NSMutableDictionary dictionary];
+}
+
+// 读一个共享钥匙串字符串（重置前对比用；access group 固定，account/service 都试）。
+static NSString *bds_readSharedString(NSString *key) {
+    if (!bds_realSecItemCopyRaw || !key.length) return nil;
+    NSArray *classes = @[(__bridge id)kSecClassGenericPassword, (__bridge id)kSecClassInternetPassword];
+    for (id cls in classes) {
+        for (int variant = 0; variant < 3; variant++) {
+            NSMutableDictionary *q = [NSMutableDictionary dictionary];
+            q[(__bridge id)kSecClass] = cls;
+            q[(__bridge id)kSecAttrAccessGroup] = kBDSCuidAccessGroup;
+            q[(__bridge id)kSecReturnData] = @YES;
+            q[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
+            if (variant == 0) q[(__bridge id)kSecAttrAccount] = key;
+            else if (variant == 1) q[(__bridge id)kSecAttrService] = key;
+            else { q[(__bridge id)kSecAttrAccount] = key; q[(__bridge id)kSecAttrService] = key; }
+            CFTypeRef result = NULL;
+            OSStatus st = bds_realSecItemCopyRaw((__bridge CFDictionaryRef)q, &result);
+            if (st == errSecSuccess && result) {
+                NSString *text = nil;
+                if (CFGetTypeID(result) == CFDataGetTypeID())
+                    text = [[NSString alloc] initWithData:(__bridge NSData *)result encoding:NSUTF8StringEncoding];
+                else if (CFGetTypeID(result) == CFStringGetTypeID())
+                    text = [(__bridge NSString *)result copy];
+                CFRelease(result);
+                if (text.length) return text;
+            }
+        }
+    }
+    return nil;
+}
+
+static void bds_cuidDelete(NSString *tag, NSDictionary *query) {
+    if (!bds_realSecItemDelete) return;
+    OSStatus st = bds_realSecItemDelete((__bridge CFDictionaryRef)query);
+    [g_cuidResetLog appendFormat:@"%@=%d ", tag, (int)st];
+}
+
+// 物理清空 CUID 共享组，并顺带清 UTDID（阿里 OpenUDID，service 通常为 org.OpenUDID）。
+static void bds_cuidPurgeSharedKeychain(void) {
+    if (!g_cuidResetLog) g_cuidResetLog = [NSMutableString string];
+    NSArray *classes = @[(__bridge id)kSecClassGenericPassword, (__bridge id)kSecClassInternetPassword];
+
+    // 1) 按 access group 整组删（generic / internet）
+    int ci = 0;
+    for (id cls in classes) {
+        bds_cuidDelete([NSString stringWithFormat:@"grp%d", ci++],
+            @{(__bridge id)kSecClass: cls,
+              (__bridge id)kSecAttrAccessGroup: kBDSCuidAccessGroup});
+    }
+    // 2) 按具体 key 逐个兜底（account / service 各试），防止组级删除未命中
+    for (NSString *key in BDSCuidKeychainKeys()) {
+        NSString *tag = [[key componentsSeparatedByString:@"."] lastObject] ?: key;
+        for (id cls in classes) {
+            bds_cuidDelete([tag stringByAppendingString:@".a"],
+                @{(__bridge id)kSecClass: cls,
+                  (__bridge id)kSecAttrAccessGroup: kBDSCuidAccessGroup,
+                  (__bridge id)kSecAttrAccount: key});
+            bds_cuidDelete([tag stringByAppendingString:@".s"],
+                @{(__bridge id)kSecClass: cls,
+                  (__bridge id)kSecAttrAccessGroup: kBDSCuidAccessGroup,
+                  (__bridge id)kSecAttrService: key});
+        }
+    }
+    // 3) UTDID（只删 service=org.OpenUDID 这一个特定项，不波及其它数据）
+    for (id cls in classes) {
+        bds_cuidDelete(@"utdid.s",
+            @{(__bridge id)kSecClass: cls, (__bridge id)kSecAttrService: @"org.OpenUDID"});
+    }
+}
+
+// 新容器/新随机首次启动：清空共享钥匙串，让 SDK 自然重生。
+static void bds_cuidResetIfNeeded(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        @autoreleasepool {
+            if (!cfgBool(@"spoofBaiduSDK", NO)) return;
+            bds_ensureSecFns();
+            bds_cuidEnsureSlots();
+            NSString *udid = bds_udid_value();
+            if (!udid.length) return;
+
+            if (g_cuidResetUDID.length && [g_cuidResetUDID isEqualToString:udid]) {
+                return;  // 本容器已重置过，保持稳定
+            }
+            // 新容器 / 新随机：先抓重置前主 CUID，再物理清空
+            g_cuidBeforeReset = bds_readSharedString(@"com.baidu.baidumobile.mainCUID");
+            bds_cuidPurgeSharedKeychain();
+            [g_cuidSlots removeAllObjects];
+            NSMutableDictionary *newRoot = [NSMutableDictionary dictionary];
+            newRoot[@"resetUDID"] = udid;
+            newRoot[@"slots"] = g_cuidSlots;
+            bds_cuidLockWrite(newRoot);
+            g_cuidResetUDID = udid;
+            g_cuidResetRanThisLaunch = YES;
+        }
+    });
+}
+
+// 各 slot 合法长度（不合法不锁，下次再捕获）。
+static BOOL bds_cuidSlotValid(NSString *slot, NSString *value) {
+    if (![value isKindOfClass:NSString.class] || !value.length) return NO;
+    if ([value rangeOfString:@" "].location != NSNotFound) return NO;
+    if ([slot isEqualToString:@"utdid"]) return value.length == 36;
+    if ([slot isEqualToString:@"ppaCuid"]) return value.length == 32;
+    return value.length == 51;
+}
+
+// hook 统一出口：已锁定固定返回容器值；首次调原 IMP 拿 SDK 自然值，合法后锁定。
 static NSString *new_baidu_string_sync(id self, SEL _cmd) {
     BOOL isClassMethod = object_isClass(self);
     NSString *className = isClassMethod ? NSStringFromClass(self) : NSStringFromClass([self class]);
@@ -1645,12 +1828,12 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
                         className, NSStringFromSelector(_cmd),
                         isClassMethod ? @"C" : @"I"];
 
-    NSValue *origValue = nil;
     [g_baiduLock lock];
-    origValue = g_baiduOrigImps[impKey];
-    [g_baiduLock unlock];
+    NSValue *origValue = g_baiduOrigImps[impKey];
+    NSString *slot = g_baiduSlotForImp[impKey];
 
-    if (!cfgBool(@"spoofBaiduSDK", NO)) {
+    if (!cfgBool(@"spoofBaiduSDK", NO) || !origValue || !slot.length) {
+        [g_baiduLock unlock];
         BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStatePassed);
         if (origValue) {
             IMP orig = [origValue pointerValue];
@@ -1659,23 +1842,65 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
         return nil;
     }
 
-    if (origValue) {
-        IMP orig = [origValue pointerValue];
-        id result = ((id (*)(id, SEL))orig)(self, _cmd);
-        if ([result isKindOfClass:[NSString class]]) {
-            NSString *fake = bds_fake_value_for_cmd(_cmd);
-            if (!fake.length) {
-                BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStatePassed);
-                return result;
-            }
-            BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStateChanged);
-            return fake;
-        }
-        BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStatePassed);
-        return result;
+    bds_cuidEnsureSlots();
+
+    // 已锁定：固定返回容器值
+    NSString *locked = g_cuidSlots[slot];
+    if (locked.length) {
+        [g_baiduLock unlock];
+        BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStateChanged);
+        return locked;
     }
-    BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStateChanged);
-    return bds_fake_value_for_cmd(_cmd);
+
+    // 首次：调原 IMP 拿 SDK 自然值（g_baiduLock 是递归锁，原 IMP 内部再入 hook 不会死锁）
+    IMP orig = [origValue pointerValue];
+    id result = ((id (*)(id, SEL))orig)(self, _cmd);
+
+    NSString *out = nil;
+    if ([result isKindOfClass:NSString.class]) {
+        if (bds_cuidSlotValid(slot, (NSString *)result)) {
+            [g_cuidSlots setObject:(NSString *)result forKey:slot];
+            NSMutableDictionary *root = bds_cuidLockRoot();
+            root[@"resetUDID"] = g_cuidResetUDID ?: bds_udid_value();
+            root[@"slots"] = g_cuidSlots;
+            bds_cuidLockWrite(root);
+            BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStateChanged);
+        } else {
+            BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStatePassed);
+        }
+        out = (NSString *)result;
+    }
+    [g_baiduLock unlock];
+    return out;
+}
+
+// 自检面板：CUID 容器隔离状态（供 showDeviceIDProbe 调用）。
+static NSString *bds_cuidDiagnosticsString(void) {
+    NSMutableString *m = [NSMutableString string];
+    [m appendString:@"\n========== 零、CUID 容器隔离（补丁 v10.27.01）=========="];
+    bds_cuidEnsureSlots();
+    [m appendFormat:@"\n当前容器UDID: %@", bds_udid_value()];
+    [m appendFormat:@"\n已重置标记: %@", g_cuidResetUDID ?: @"(无)"];
+    [m appendFormat:@"\n本次启动是否执行重置: %@", g_cuidResetRanThisLaunch ? @"是 ★已清空并重生" : @"否(沿用本容器已锁定值)"];
+    [m appendFormat:@"\n重置前主CUID: %@", g_cuidBeforeReset ?: @"(本次未重置 / 没读到残留)"];
+    [m appendFormat:@"\nSecItemDelete结果: %@", g_cuidResetLog.length ? g_cuidResetLog : @"(本次未执行)"];
+    [m appendFormat:@"\n[OSStatus 0=成功, -25300=无此项(也属正常)]"];
+    for (NSString *slot in @[@"cuid", @"cuidPrevious", @"iid", @"mtjNewCuid", @"ppaCuid", @"utdid"]) {
+        NSString *v = g_cuidSlots[slot];
+        [m appendFormat:@"\n[%@] len=%lu %@", slot, (unsigned long)v.length,
+            v ?: @"(尚未捕获/SDK还没生成)"];
+    }
+    Class c = objc_getClass("BBACuidSDK");
+    if (c && [c respondsToSelector:NSSelectorFromString(@"isDeviceCloned")]) {
+        @try {
+            BOOL cloned = ((BOOL(*)(id,SEL))[c methodForSelector:NSSelectorFromString(@"isDeviceCloned")])
+                          (c, NSSelectorFromString(@"isDeviceCloned"));
+            [m appendFormat:@"\nisDeviceCloned 实测 = %@", cloned ? @"YES ★异常" : @"NO（正常）"];
+        } @catch (NSException *e) {
+            [m appendFormat:@"\nisDeviceCloned 实测 = [异常 %@]", e.name];
+        }
+    }
+    return m;
 }
 
 static BOOL bds_isSafeSyncMethod(Method m) {
@@ -1686,62 +1911,80 @@ static BOOL bds_isSafeSyncMethod(Method m) {
     return retType[0] == '@';
 }
 
-static void bds_tryHookMethod(Class cls, SEL sel, BOOL isClassMethod) {
-    if (!cls) return;
+// 只 hook 无参、返回对象的类方法（这些 CUID/UTDID 出口在 7.17.0 全是 + 类方法）。
+static void bds_tryHookMethodWithSlot(Class cls, SEL sel, NSString *slot) {
+    if (!cls || !slot.length) return;
     NSString *className = NSStringFromClass(cls);
-    NSString *key = [NSString stringWithFormat:@"%@.%@.%s",
-                     className, NSStringFromSelector(sel), isClassMethod ? "C" : "I"];
-    NSString *impKey = [NSString stringWithFormat:@"%@.%@.%@",
-                        className, NSStringFromSelector(sel),
-                        isClassMethod ? @"C" : @"I"];
+    NSString *key = [NSString stringWithFormat:@"%@.%@.C", className, NSStringFromSelector(sel)];
 
     [g_baiduLock lock];
-
     if ([g_baiduHookedKeys containsObject:key]) {
         [g_baiduLock unlock];
         return;
     }
-
-    Method m = isClassMethod ? class_getClassMethod(cls, sel) : class_getInstanceMethod(cls, sel);
+    Method m = class_getClassMethod(cls, sel);
     if (!m || !bds_isSafeSyncMethod(m)) {
         [g_baiduLock unlock];
         return;
     }
-
-    Class targetCls = isClassMethod ? object_getClass(cls) : cls;
-    IMP oldImp = class_replaceMethod(targetCls, sel, (IMP)new_baidu_string_sync,
+    Class meta = object_getClass(cls);
+    IMP oldImp = class_replaceMethod(meta, sel, (IMP)new_baidu_string_sync,
                                      method_getTypeEncoding(m));
-    if (!oldImp) {
-        oldImp = method_getImplementation(m);
-    }
-
-    [g_baiduOrigImps setObject:[NSValue valueWithPointer:oldImp] forKey:impKey];
+    if (!oldImp) oldImp = method_getImplementation(m);
+    [g_baiduOrigImps setObject:[NSValue valueWithPointer:oldImp] forKey:key];
+    [g_baiduSlotForImp setObject:slot forKey:key];
     [g_baiduHookedKeys addObject:key];
     [g_baiduLock unlock];
 }
 
-static void bds_tryHookClass(NSString *className, NSArray<NSString *> *selectors) {
+// isDeviceCloned 固定返回 NO（正常设备就是 NO；防止被判定为克隆/多开）。
+static BOOL bds_new_isDeviceCloned(id self, SEL _cmd) {
+    (void)self; (void)_cmd;
+    return NO;
+}
+static void bds_hookIsDeviceCloned(NSString *className) {
+    if (!cfgBool(@"spoofBaiduSDK", NO)) return;
     Class cls = objc_getClass(className.UTF8String);
     if (!cls) return;
-    for (NSString *selName in selectors) {
-        SEL sel = NSSelectorFromString(selName);
-        bds_tryHookMethod(cls, sel, YES);
-        bds_tryHookMethod(cls, sel, NO);
-    }
+    SEL sel = sel_registerName("isDeviceCloned");
+    Method m = class_getClassMethod(cls, sel);
+    if (!m) return;
+    char ret[8] = {0};
+    method_getReturnType(m, ret, sizeof(ret));
+    if (ret[0] != 'B' && ret[0] != 'c') return;
+    class_replaceMethod(object_getClass(cls), sel, (IMP)bds_new_isDeviceCloned,
+                        method_getTypeEncoding(m));
 }
 
+// 7.17.0 实测存在的真实类（Mach-O ObjC 元数据解析确认，非旧版猜的类名）。
+// 每组：slot(锁定槽位) + 该槽位要 hook 的无参类方法。
 static NSArray<NSDictionary *> *bds_baiduTargets(void) {
     static NSArray *targets;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        NSArray *cuidSels = @[@"cuid", @"cuidFromStorage", @"cuidAddingPercentEscapes",
+                              @"readCUIDFromSharingKeyChain"];
+        NSArray *iidSels = @[@"iid", @"iidForWidget"];
         targets = @[
-            @{@"class": @"CuidSDK", @"selectors": @[@"cuid", @"getCUID", @"getCuid", @"CUID"]},
-            @{@"class": @"CuidSDK18BBADevAccountPatch", @"selectors": @[@"cuid", @"getCUID", @"getCuid"]},
-            @{@"class": @"UTDIDModule", @"selectors": @[@"utdid", @"getUTDID", @"UTDID"]},
-            @{@"class": @"MobStat", @"selectors": @[@"deviceId", @"getDeviceId", @"deviceID", @"getDeviceID",
-                                                     @"getDeviceIdentification", @"deviceIdentification"]},
-            @{@"class": @"DeviceIdentifierFetcher", @"selectors": @[@"deviceIdentifier", @"getDeviceIdentifier",
-                                                                     @"sharedIdentifier", @"fetchIdentifier"]}
+            @{@"class": @"BBACuidSDK", @"cloned": @YES, @"groups": @[
+                @{@"slot": @"cuid",         @"selectors": cuidSels},
+                @{@"slot": @"cuidPrevious", @"selectors": @[@"cuidPrevious"]},
+                @{@"slot": @"iid",          @"selectors": iidSels},
+            ]},
+            @{@"class": @"BaiduMtjCuidSDK", @"cloned": @YES, @"groups": @[
+                @{@"slot": @"cuid",         @"selectors": cuidSels},
+                @{@"slot": @"cuidPrevious", @"selectors": @[@"cuidPrevious"]},
+                @{@"slot": @"iid",          @"selectors": iidSels},
+            ]},
+            @{@"class": @"BaiduMTJNewCUID", @"cloned": @NO, @"groups": @[
+                @{@"slot": @"mtjNewCuid", @"selectors": @[@"cuid"]},
+            ]},
+            @{@"class": @"PPACUID", @"cloned": @NO, @"groups": @[
+                @{@"slot": @"ppaCuid", @"selectors": @[@"cuid"]},
+            ]},
+            @{@"class": @"UTDIDMain", @"cloned": @NO, @"groups": @[
+                @{@"slot": @"utdid", @"selectors": @[@"uniqueGlobalDeviceIdentifier"]},
+            ]},
         ];
     });
     return targets;
@@ -1752,9 +1995,19 @@ static void bds_scanBaiduSDKClasses(void) {
         g_baiduLock = [[NSRecursiveLock alloc] init];
         g_baiduOrigImps = [NSMutableDictionary dictionary];
         g_baiduHookedKeys = [NSMutableSet set];
+        g_baiduSlotForImp = [NSMutableDictionary dictionary];
     }
+    bds_cuidEnsureSlots();
     for (NSDictionary *target in bds_baiduTargets()) {
-        bds_tryHookClass(target[@"class"], target[@"selectors"]);
+        Class cls = objc_getClass([target[@"class"] UTF8String]);
+        if (!cls) continue;
+        for (NSDictionary *group in target[@"groups"]) {
+            NSString *slot = group[@"slot"];
+            for (NSString *selName in group[@"selectors"]) {
+                bds_tryHookMethodWithSlot(cls, NSSelectorFromString(selName), slot);
+            }
+        }
+        if ([target[@"cloned"] boolValue]) bds_hookIsDeviceCloned(target[@"class"]);
     }
 }
 
@@ -5274,7 +5527,7 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 10.26.01";
+    page.title=@"卐解 10.27.01";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5436,6 +5689,8 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
         [self presentMessage:@"配置文件写入失败，基础参数没有更换。" title:@"保存失败"];
         return;
     }
+    // 作废 CUID 容器锁：下次启动重新清空共享 CUID 钥匙串并重新生成。
+    bds_cuidLockInvalidate();
     NSString *message = [NSString stringWithFormat:
         @"已随机并保存基础参数。\n"
          "基础 6 项、高级前 3 项、反关联前 12 项已打开。\n"
@@ -5574,6 +5829,8 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
         [self presentMessage:@"配置文件写入失败，高级参数没有更换。" title:@"保存失败"];
         return;
     }
+    // 作废 CUID 容器锁：下次启动重新清空共享 CUID 钥匙串并重新生成。
+    bds_cuidLockInvalidate();
     BOOL idfaHit = bds_diag_load64(&g_diagAdvertising.hits) > 0;
     BOOL idfvHit = bds_diag_load64(&g_diagIDFV.hits) > 0;
     BOOL baiduHit = bds_diag_load64(&g_diagBaiduSDK.hits) > 0;
@@ -6427,6 +6684,11 @@ static NSDictionary *BDSProfileApplyValues(NSDictionary *device) {
                   "操作：新容器一键随机 → 杀进程 → Crane 开容器 → 登新号 → 回这里 → 分享 TXT。\n"
                   "重点：[BBACuidSDK] +cuid 的 len 必须=51 且无空格。"];
 
+    // 零、补丁状态：CUID 容器隔离（清空共享钥匙串 + 自然重生 + 锁定）
+    if (cfgBool(@"spoofBaiduSDK", NO)) {
+        [m appendString:bds_cuidDiagnosticsString()];
+    }
+
     // 一、核心：BBACuidSDK 全部只读类方法（不过滤，抓全）
     [m appendString:@"\n\n========== 一、CUID 主出口：BBACuidSDK（Swift 真实类）=========="];
     bds_probe_enum_class_methods(m, @"BBACuidSDK", nil);
@@ -6729,8 +6991,10 @@ hookInst(cls, @selector(systemUptime), (IMP)new_systemUptime, &orig_systemUptime
             hookInst(cls, @selector(attributesOfFileSystemForPath:error:), (IMP)new_attributesOfFileSystemForPath, &orig_attributesOfFileSystemForPath);
         }
 
-        // 百度 SDK 设备标识 hook
+        // 百度 SDK 设备标识：新容器先物理清空共享 CUID 钥匙串（必须在 SDK 读 CUID 前），
+        // 再 hook 真实输出类，让 SDK 自然重生并锁定容器值。
         if (cfgBool(@"spoofBaiduSDK", NO)) {
+            bds_cuidResetIfNeeded();
             installBaiduSDKHooks();
             if (basicEnabled) installPassportLoginArchiveHooks();
         }

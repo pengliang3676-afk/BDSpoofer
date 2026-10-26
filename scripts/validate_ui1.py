@@ -42,7 +42,7 @@ assert 'closeApp' not in manager and 'NSSelectorFromString(@"suspend")' not in m
 assert 'config[@"deviceProfileName"] ?: config[@"hwMachine"]' in manager
 assert 'config[@"targetedDeviceProfileName"] ?: config[@"targetedHwMachine"]' in manager
 assert 'NSString *currentSuffix = @"（当前）"' in manager and 'UIColor.systemRedColor' in manager
-assert 'page.title=@"卐解 10.26.01"' in plugin
+assert 'page.title=@"卐解 10.27.01"' in plugin
 assert 'didRandomize%@%@' in policy
 for text in ['BDSMarkRandomModeRun','BDSRandomModeWasRun','BDSConfigForPersistentStorage']:
     assert text in plugin+manager+policy,text
@@ -64,7 +64,7 @@ assert 'y_mission_withdraw' in blocker and 'c_pv_withdraw' in blocker
 assert 'BDSInstallCashTelemetryBlocking();' in plugin
 assert plugin.count('loadConfig();') >= 3
 assert '0.50' not in release and '触发风控' not in release
-assert 'BDSpoofer_1.8.1_UI1.3_10.26.01.dylib' in build and 'UI1.1.dylib' not in build
+assert 'BDSpoofer_1.8.1_UI1.3_10.27.01.dylib' in build and 'UI1.1.dylib' not in build
 assert 'BDSpooferCraneManager_1.0.3-ui1_10.18.02_RootHide.deb' in build
 assert 'BDSLoginDeviceDict' in plugin and 'ssologin' in plugin
 assert 'BDSPassEncryptedDi' in plugin and 'deviceInfoForLogin' in plugin
