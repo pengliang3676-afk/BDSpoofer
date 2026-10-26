@@ -38,7 +38,7 @@ int main(int argc,char **argv) {
             NSDictionary *next=BDSCreateRandomConfig(config,BDSRandomModeBasic,[NSSet set]);
             unchangedOutside(config,next,basic);
             NSArray *groups=BDSSettingGroups();
-            for(NSDictionary *item in groups[0]) assert([next[item[@"key"]] boolValue]);
+            for(NSDictionary *item in groups[0]) if(![item[@"off"] boolValue]) assert([next[item[@"key"]] boolValue]);
             for(NSUInteger n=0;n<3;n++) assert([next[groups[1][n][@"key"]] boolValue]);
             for(NSUInteger n=3;n<((NSArray *)groups[1]).count;n++) assert(![next[groups[1][n][@"key"]] boolValue]);
             for(NSUInteger n=0;n<12;n++) assert([next[groups[2][n][@"key"]] boolValue]);

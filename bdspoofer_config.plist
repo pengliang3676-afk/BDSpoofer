@@ -18,6 +18,8 @@
 	<true/>
 	<key>spoofStorage</key>
 	<true/>
+	<key>cuidIsolation</key>
+	<false/>
 	<key>spoofBaiduSDK</key>
 	<true/>
 	<key>spoofSysctl</key>

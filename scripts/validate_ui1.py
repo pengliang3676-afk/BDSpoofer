@@ -9,9 +9,9 @@ release=(root/'RELEASE_UI1.md').read_text(encoding='utf-8')
 build=(root/'scripts/build_release_xcode.sh').read_text(encoding='utf-8')
 config=plistlib.loads((root/'bdspoofer_config.plist').read_bytes())
 items=re.findall(r'@\{@"key":@"([^"]+)",@"name":@"[^"]+"(,@"off":@YES)?(?:,@"note":@"[^"]*")?\}',policy)
-assert len(items)==27
+assert len(items)==28
 regular=[key for key,off in items if not off];risk=[key for key,off in items if off]
-assert len(regular)==21 and len(risk)==6
+assert len(regular)==21 and len(risk)==7
 assert all(config[k] is True for k in regular)
 for k in risk:
     if k in ('blockStatCashTelemetry',):
@@ -42,7 +42,7 @@ assert 'closeApp' not in manager and 'NSSelectorFromString(@"suspend")' not in m
 assert 'config[@"deviceProfileName"] ?: config[@"hwMachine"]' in manager
 assert 'config[@"targetedDeviceProfileName"] ?: config[@"targetedHwMachine"]' in manager
 assert 'NSString *currentSuffix = @"（当前）"' in manager and 'UIColor.systemRedColor' in manager
-assert 'page.title=@"卐解 10.27.02"' in plugin
+assert 'page.title=@"卐解 10.27.03"' in plugin
 assert 'didRandomize%@%@' in policy
 for text in ['BDSMarkRandomModeRun','BDSRandomModeWasRun','BDSConfigForPersistentStorage']:
     assert text in plugin+manager+policy,text
@@ -64,9 +64,16 @@ assert 'y_mission_withdraw' in blocker and 'c_pv_withdraw' in blocker
 assert 'BDSInstallCashTelemetryBlocking();' in plugin
 assert plugin.count('loadConfig();') >= 3
 assert '0.50' not in release and '触发风控' not in release
-assert 'BDSpoofer_1.8.1_UI1.3_10.27.02.dylib' in build and 'UI1.1.dylib' not in build
+assert 'BDSpoofer_1.8.1_UI1.3_10.27.03.dylib' in build and 'UI1.1.dylib' not in build
 assert 'BDSpooferCraneManager_1.0.3-ui1_10.18.02_RootHide.deb' in build
 assert 'bds_cuidPurgeMTJPasteboard' in plugin and 'com.baidu.mtj.pasteboard.cuid.name' in plugin and 'setItems:@[]' in plugin
+# 10.27.03：CUID 设备标识隔离从百度身份参数拆成独立开关（默认关、一键基础开、恢复安全关）
+assert '@"key":@"cuidIsolation"' in policy and '设备标识(CUID)隔离' in policy
+assert config['cuidIsolation'] is False, 'CUID 隔离默认关'
+assert 'values[@"cuidIsolation"]=@NO;' in policy, '恢复安全必须关 CUID 隔离'
+assert 'values[@"cuidIsolation"] = @YES;' in plugin, '一键基础必须显式开 CUID 隔离'
+assert plugin.count('cfgBool(@"cuidIsolation"') >= 4, 'CUID 门控点都要改用新开关'
+assert 'cfgBool(@"cuidIsolation", NO) || !origValue || !slot.length' in plugin, 'CUID hook 出口必须改新开关'
 assert 'BDSLoginDeviceDict' in plugin and 'ssologin' in plugin
 assert 'BDSPassEncryptedDi' in plugin and 'deviceInfoForLogin' in plugin
 assert 'BDSPassEnsureDVIF' in plugin and 'bds_my_uname' in plugin and '{"uname"' in plugin
@@ -213,6 +220,16 @@ assert 'static NSArray<NSString *> *BDSFirstEnabledKeys' in policy
 assert 'BDSFirstEnabledKeys(groups[1], 3)' in plugin
 assert 'BDSFirstEnabledKeys(groups[1], 3)' in manager
 assert 'if([item[@"off"] boolValue]) continue;' in policy
+# 10.27.03：CUID 三个门控函数体内必须用新开关、不得再挂百度身份总开关
+_creset=function(plugin,'bds_cuidResetIfNeeded')
+assert 'cfgBool(@"cuidIsolation"' in _creset and 'cfgBool(@"spoofBaiduSDK"' not in _creset
+assert 'cfgBool(@"cuidIsolation"' in function(plugin,'bds_hookIsDeviceCloned')
+assert 'cfgBool(@"cuidIsolation"' in function(plugin,'new_baidu_string_sync')
+# di/DVIF 等百度身份项仍归 spoofBaiduSDK，不能被一起拆走
+assert 'cfgBool(@"spoofBaiduSDK"' in function(plugin,'BDSLoginDeviceDict')
+assert 'cfgBool(@"spoofBaiduSDK"' in function(plugin,'BDSPassEnsureDVIF')
+# 一键基础必须开 CUID 隔离
+assert 'values[@"cuidIsolation"] = @YES;' in function(plugin,'randomizeBasicProfile')
 # 一键基础打开的定向屏幕开关之后，防越狱检测必须是关的
 assert 'merged[@"bypassJailbreakDetect"] = @NO;' in plugin
 # 关键顺序：迁移必须写在 BDSApplyInitialDefaults 之后。
@@ -361,4 +378,4 @@ sync=function(plugin,'BDSBaiduScreenSyncValues')
 for bad in ['spoofBaiduTargetedModel','spoofBaiduTargetedSystem',
             'spoofBaiduTargetedPush','spoofBaiduTargeted"']:
     assert bad not in sync, bad
-print('PASS UI1.3 10.01.01: v188, 20 on / 6 off, runtime switch honored by the cash blocker, X/M advanced-random parity, SE2 out of the random pool, boundary-matched dlopen paths, measured C-hook self-check, 9 baseline jailbreak functions unchanged')
+print('PASS UI1.3 10.27.03: 21 regular on / 7 off (incl. cuidIsolation), CUID isolation split into its own base switch, runtime switch honored by the cash blocker, X/M advanced-random parity, SE2 out of the random pool, boundary-matched dlopen paths, measured C-hook self-check, 9 baseline jailbreak functions unchanged')

@@ -4,6 +4,10 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  10.27.03：把 CUID 五件套容器隔离（cuid/iid/mtjNewCuid/ppaCuid/utdid 的重生/锁定/
+//    MTJ 剪贴板清理/isDeviceCloned）从「百度身份参数」总开关拆出，独立成基础组开关
+//    「设备标识(CUID)隔离」(cuidIsolation)。默认关、仅一键基础显式打开、恢复安全关；
+//    其余百度身份项（di/DVIF/UA/IDFV/登录设备信息）仍跟随 spoofBaiduSDK，两者解耦。
 //  10.27.02：补 10.27.01 残留——BaiduMTJNewCUID（统计 CUID）不走钥匙串，存于 named
 //    UIPasteboard（com.baidu.mtj.pasteboard.cuid，系统级、跨 Crane 容器共享），所以清
 //    钥匙串后它仍是旧值。hook 首次捕获 mtjNewCuid 前先清空该剪贴板，原 IMP 读空后回退
@@ -1632,7 +1636,7 @@ static NSMutableSet<NSString *> *g_baiduHookedKeys = nil;
 // impKey(ClassName.selector.C/I) -> 锁定槽位（cuid/iid/mtjNewCuid/ppaCuid/utdid/...）
 static NSMutableDictionary<NSString *, NSString *> *g_baiduSlotForImp = nil;
 
-#pragma mark - 百度 CUID 容器隔离（v10.27.02）
+#pragma mark - 百度 CUID 容器隔离（v10.27.03）
 //
 // 根因：真正的主 CUID 是 51 位、存于共享钥匙串 key com.baidu.baidumobile.mainCUID
 // （access group B83JBVZ6M5.com.baidu.baidumobile.cuid）。7.17.0 里所有 delete CUID
@@ -1841,7 +1845,8 @@ static void bds_cuidResetIfNeeded(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         @autoreleasepool {
-            if (!cfgBool(@"spoofBaiduSDK", NO)) return;
+            // CUID 容器隔离从「百度身份参数」总开关拆出，独立由基础组「设备标识(CUID)隔离」控制。
+            if (!cfgBool(@"cuidIsolation", NO)) return;
             bds_ensureSecFns();
             bds_cuidEnsureSlots();
             NSString *udid = bds_udid_value();
@@ -1885,7 +1890,7 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
     NSValue *origValue = g_baiduOrigImps[impKey];
     NSString *slot = g_baiduSlotForImp[impKey];
 
-    if (!cfgBool(@"spoofBaiduSDK", NO) || !origValue || !slot.length) {
+    if (!cfgBool(@"cuidIsolation", NO) || !origValue || !slot.length) {
         [g_baiduLock unlock];
         BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStatePassed);
         if (origValue) {
@@ -1936,8 +1941,9 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
 // 自检面板：CUID 容器隔离状态（供 showDeviceIDProbe 调用）。
 static NSString *bds_cuidDiagnosticsString(void) {
     NSMutableString *m = [NSMutableString string];
-    [m appendString:@"\n========== 零、CUID 容器隔离（补丁 v10.27.02）=========="];
+    [m appendString:@"\n========== 零、CUID 容器隔离（补丁 v10.27.03）=========="];
     bds_cuidEnsureSlots();
+    [m appendFormat:@"\nCUID隔离开关: %@", cfgBool(@"cuidIsolation", NO) ? @"开 ★" : @"关（未隔离，仅透传）"];
     [m appendFormat:@"\n当前容器UDID: %@", bds_udid_value()];
     [m appendFormat:@"\n已重置标记: %@", g_cuidResetUDID ?: @"(无)"];
     [m appendFormat:@"\n本次启动是否执行重置: %@", g_cuidResetRanThisLaunch ? @"是 ★已清空并重生" : @"否(沿用本容器已锁定值)"];
@@ -2003,7 +2009,7 @@ static BOOL bds_new_isDeviceCloned(id self, SEL _cmd) {
     return NO;
 }
 static void bds_hookIsDeviceCloned(NSString *className) {
-    if (!cfgBool(@"spoofBaiduSDK", NO)) return;
+    if (!cfgBool(@"cuidIsolation", NO)) return;
     Class cls = objc_getClass(className.UTF8String);
     if (!cls) return;
     SEL sel = sel_registerName("isDeviceCloned");
@@ -5587,7 +5593,7 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 10.27.02";
+    page.title=@"卐解 10.27.03";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5733,6 +5739,9 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
     }
     values[@"spoofProxyDetection"] = @YES;
     values[@"proxyHideDefaultOn"] = @YES;
+    // CUID 设备标识隔离默认关、在 groups[0] 标 off（不占前 6 名额），
+    // 一键基础必须显式打开，否则新容器不会做 CUID 容器隔离。
+    values[@"cuidIsolation"] = @YES;
     // 屏幕与系统同步必须放在上面这些开关循环之后：spoofBaiduTargetedScreen /
     // spoofBaiduTargetedUA 落在 groups[1] 的 i>=3 档，写在循环之前会被 @NO 循环覆盖。
     if (g_lastBasicDevice) {
@@ -7051,12 +7060,16 @@ hookInst(cls, @selector(systemUptime), (IMP)new_systemUptime, &orig_systemUptime
             hookInst(cls, @selector(attributesOfFileSystemForPath:error:), (IMP)new_attributesOfFileSystemForPath, &orig_attributesOfFileSystemForPath);
         }
 
-        // 百度 SDK 设备标识：新容器先物理清空共享 CUID 钥匙串（必须在 SDK 读 CUID 前），
+        // CUID 五件套容器隔离：独立开关「设备标识(CUID)隔离」（已从百度身份参数拆出）。
+        // 新容器先物理清空共享 CUID 钥匙串（必须在 SDK 读 CUID 前），
         // 再 hook 真实输出类，让 SDK 自然重生并锁定容器值。
-        if (cfgBool(@"spoofBaiduSDK", NO)) {
+        if (cfgBool(@"cuidIsolation", NO)) {
             bds_cuidResetIfNeeded();
             installBaiduSDKHooks();
-            if (basicEnabled) installPassportLoginArchiveHooks();
+        }
+        // 登录归档(di/DVIF) 仍跟随「百度身份参数」总开关，与 CUID 隔离解耦。
+        if (basicEnabled && cfgBool(@"spoofBaiduSDK", NO)) {
+            installPassportLoginArchiveHooks();
         }
 
         // 定向机型/iOS/屏幕不依赖基础总开关；内部 IDFV 出口随高级身份一起安装并共用同一个值。

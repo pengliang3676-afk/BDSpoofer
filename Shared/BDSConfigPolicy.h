@@ -7,7 +7,8 @@ static NSArray<NSArray<NSDictionary *> *> *BDSSettingGroups(void) {
           @{@"key":@"spoofProcessHardware",@"name":@"主机名与内存参数"},
           @{@"key":@"spoofLocale",@"name":@"语言与地区参数"},
           @{@"key":@"spoofCarrier",@"name":@"运营商参数"},
-          @{@"key":@"spoofStorage",@"name":@"存储参数"}],
+          @{@"key":@"spoofStorage",@"name":@"存储参数"},
+          @{@"key":@"cuidIsolation",@"name":@"设备标识(CUID)隔离",@"off":@YES,@"note":@"一键基础开启；每容器独立重生 cuid/iid/utdid/ppaCuid。"}],
         @[@{@"key":@"spoofBaiduSDK",@"name":@"百度身份参数"},
           @{@"key":@"spoofSysctl",@"name":@"系统硬件参数"},
           @{@"key":@"bypassJailbreakDetect",@"name":@"防越狱检测",@"off":@YES},
@@ -104,6 +105,9 @@ static NSDictionary *BDSSafeSwitchValues(void) {
     for(NSString *key in BDSSelectedTargetKeys()) values[key]=@NO;
     values[@"spoofScreen"]=@NO;
     values[@"spoofBaiduTargeted"]=@NO;
+    // CUID 设备标识隔离是默认关闭、仅一键基础打开的项（不在 RegularKeys 里），
+    // 恢复安全时也要显式关掉，否则 merge 保存会保留它上一次被一键基础打开的状态。
+    values[@"cuidIsolation"]=@NO;
     // 恢复安全会关掉其它开关。代理检测隐藏保持开，不跟随机、也不跟这一键走。
     values[@"spoofProxyDetection"]=@YES;
     values[@"proxyHideDefaultOn"]=@YES;
