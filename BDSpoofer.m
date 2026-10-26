@@ -4,6 +4,10 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  10.27.02：补 10.27.01 残留——BaiduMTJNewCUID（统计 CUID）不走钥匙串，存于 named
+//    UIPasteboard（com.baidu.mtj.pasteboard.cuid，系统级、跨 Crane 容器共享），所以清
+//    钥匙串后它仍是旧值。hook 首次捕获 mtjNewCuid 前先清空该剪贴板，原 IMP 读空后回退
+//    取 BaiduMtjCuidSDK.cuid（本容器已换新的主 CUID）并自然写回，从而重生为新值再锁定。
 //  10.27.01：修复主 CUID 从未被随机的根因。新容器/新随机首次启动用 SecItemDelete
 //    物理清空共享钥匙串 CUID 组（B83JBVZ6M5.com.baidu.baidumobile.cuid，含 seedid），
 //    让 SDK 自然重新生成合法 51 位 CUID；hook 7.17.0 真实类（BBACuidSDK /
@@ -1628,7 +1632,7 @@ static NSMutableSet<NSString *> *g_baiduHookedKeys = nil;
 // impKey(ClassName.selector.C/I) -> 锁定槽位（cuid/iid/mtjNewCuid/ppaCuid/utdid/...）
 static NSMutableDictionary<NSString *, NSString *> *g_baiduSlotForImp = nil;
 
-#pragma mark - 百度 CUID 容器隔离（v10.27.01）
+#pragma mark - 百度 CUID 容器隔离（v10.27.02）
 //
 // 根因：真正的主 CUID 是 51 位、存于共享钥匙串 key com.baidu.baidumobile.mainCUID
 // （access group B83JBVZ6M5.com.baidu.baidumobile.cuid）。7.17.0 里所有 delete CUID
@@ -1648,6 +1652,12 @@ static NSMutableDictionary<NSString *, NSString *> *g_baiduSlotForImp = nil;
 static NSString *bds_udid_value(void);
 
 static NSString *const kBDSCuidAccessGroup = @"B83JBVZ6M5.com.baidu.baidumobile.cuid";
+
+// BaiduMTJNewCUID（统计 CUID）不走钥匙串，存于 named UIPasteboard；该剪贴板由系统
+// 统一管理、跨 Crane 容器共享，删容器重建后旧值仍在。二进制确认 +cuid 先读剪贴板，
+// 为空才回退取 BaiduMtjCuidSDK.cuid（已 hook 的新主 CUID）并写回剪贴板。
+static NSString *const kBDSMTJPasteboardName = @"com.baidu.mtj.pasteboard.cuid.name";
+static NSString *const kBDSMTJPasteboardType = @"com.baidu.mtj.pasteboard.cuid.type";
 
 static NSArray<NSString *> *BDSCuidKeychainKeys(void) {
     static NSArray *keys;
@@ -1689,6 +1699,7 @@ static NSMutableDictionary<NSString *, NSString *> *g_cuidSlots = nil;
 static NSString *g_cuidResetUDID = nil;
 static NSString *g_cuidBeforeReset = nil;
 static NSMutableString *g_cuidResetLog = nil;
+static NSMutableString *g_mtjPasteboardLog = nil;
 static BOOL g_cuidResetRanThisLaunch = NO;
 
 static OSStatus (*bds_realSecItemDelete)(CFDictionaryRef) = NULL;
@@ -1783,6 +1794,48 @@ static void bds_cuidPurgeSharedKeychain(void) {
     }
 }
 
+// 清空 BaiduMTJNewCUID 的 named 剪贴板（跨容器共享）。在 SDK 首次调 +cuid 时由 hook
+// 调用：此时 UIKit 已就绪，且时机严格早于原 IMP 读到旧值。清空后原 IMP 读剪贴板为空，
+// 回退取 BaiduMtjCuidSDK.cuid（本容器已换新的主 CUID）并自然写回，从而重生为新值。
+// 每次进程启动只清一次。
+static void bds_cuidPurgeMTJPasteboard(void) {
+    if (g_mtjPasteboardLog) return;
+    g_mtjPasteboardLog = [NSMutableString string];
+    @try {
+        Class PB = objc_getClass("UIPasteboard");
+        SEL getSel = NSSelectorFromString(@"pasteboardWithName:create:");
+        if (!PB || ![PB respondsToSelector:getSel]) {
+            [g_mtjPasteboardLog appendString:@"UIPasteboard类/方法不可用"];
+            return;
+        }
+        UIPasteboard *(*getPB)(id, SEL, NSString *, BOOL) =
+            (UIPasteboard *(*)(id, SEL, NSString *, BOOL))[PB methodForSelector:getSel];
+        UIPasteboard *pb = getPB(PB, getSel, kBDSMTJPasteboardName, NO);  // create:NO，不新建
+        if (!pb) {
+            [g_mtjPasteboardLog appendString:@"无该named剪贴板(本来就干净)"];
+            return;
+        }
+        NSUInteger beforeLen = 0, afterLen = 0;
+        @try {
+            NSData *before = [pb dataForPasteboardType:kBDSMTJPasteboardType];
+            beforeLen = before.length;
+        } @catch (NSException *e) {}
+        // 1) 整体清空该 named pasteboard
+        @try { [pb setItems:@[]]; } @catch (NSException *e) {}
+        // 2) 兜底：把该 type 覆盖成空 data（MTJ 解档空数据返回 nil，等同未命中）
+        @try { [pb setData:[NSData data] forPasteboardType:kBDSMTJPasteboardType]; } @catch (NSException *e) {}
+        @try {
+            NSData *after = [pb dataForPasteboardType:kBDSMTJPasteboardType];
+            afterLen = after.length;
+        } @catch (NSException *e) {}
+        [g_mtjPasteboardLog appendFormat:@"MTJ剪贴板 清前len=%lu→清后len=%lu%@",
+            (unsigned long)beforeLen, (unsigned long)afterLen,
+            (afterLen == 0) ? @" ★已清空" : @" ★仍有残留"];
+    } @catch (NSException *e) {
+        [g_mtjPasteboardLog appendFormat:@"MTJ剪贴板清理异常:%@", e.name];
+    }
+}
+
 // 新容器/新随机首次启动：清空共享钥匙串，让 SDK 自然重生。
 static void bds_cuidResetIfNeeded(void) {
     static dispatch_once_t once;
@@ -1852,6 +1905,12 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
         return locked;
     }
 
+    // MTJ 新 CUID 存跨容器共享剪贴板：首次捕获前先清剪贴板，逼原 IMP 读空→回退到
+    // BaiduMtjCuidSDK.cuid（本容器已换新的主 CUID）→ 自然重生并写回，再被本 hook 捕获锁定。
+    if ([slot isEqualToString:@"mtjNewCuid"]) {
+        bds_cuidPurgeMTJPasteboard();
+    }
+
     // 首次：调原 IMP 拿 SDK 自然值（g_baiduLock 是递归锁，原 IMP 内部再入 hook 不会死锁）
     IMP orig = [origValue pointerValue];
     id result = ((id (*)(id, SEL))orig)(self, _cmd);
@@ -1877,7 +1936,7 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
 // 自检面板：CUID 容器隔离状态（供 showDeviceIDProbe 调用）。
 static NSString *bds_cuidDiagnosticsString(void) {
     NSMutableString *m = [NSMutableString string];
-    [m appendString:@"\n========== 零、CUID 容器隔离（补丁 v10.27.01）=========="];
+    [m appendString:@"\n========== 零、CUID 容器隔离（补丁 v10.27.02）=========="];
     bds_cuidEnsureSlots();
     [m appendFormat:@"\n当前容器UDID: %@", bds_udid_value()];
     [m appendFormat:@"\n已重置标记: %@", g_cuidResetUDID ?: @"(无)"];
@@ -1885,6 +1944,7 @@ static NSString *bds_cuidDiagnosticsString(void) {
     [m appendFormat:@"\n重置前主CUID: %@", g_cuidBeforeReset ?: @"(本次未重置 / 没读到残留)"];
     [m appendFormat:@"\nSecItemDelete结果: %@", g_cuidResetLog.length ? g_cuidResetLog : @"(本次未执行)"];
     [m appendFormat:@"\n[OSStatus 0=成功, -25300=无此项(也属正常)]"];
+    [m appendFormat:@"\n%@", g_mtjPasteboardLog.length ? g_mtjPasteboardLog : @"MTJ剪贴板: (SDK尚未读取MTJ CUID, 读取前会先清)"];
     for (NSString *slot in @[@"cuid", @"cuidPrevious", @"iid", @"mtjNewCuid", @"ppaCuid", @"utdid"]) {
         NSString *v = g_cuidSlots[slot];
         [m appendFormat:@"\n[%@] len=%lu %@", slot, (unsigned long)v.length,
@@ -5527,7 +5587,7 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 10.27.01";
+    page.title=@"卐解 10.27.02";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
