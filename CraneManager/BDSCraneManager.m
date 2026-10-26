@@ -504,6 +504,7 @@ static void *BDSLoadCraneLibrary(void) {
 @property(nonatomic, strong) NSMutableSet<NSString *> *targetedSelectionKeys;
 - (void)randomizeBasicForSelectedContainers;
 - (void)showAssociationSettings;
+- (void)showCuidSettings;
 - (void)restoreSafeSettings;
 - (BOOL)saveSwitchChanges:(NSDictionary *)changes;
 - (NSDictionary *)selectedSwitchConfiguration;
@@ -613,7 +614,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"卍解 1.0.3 10.18.02";
+    self.title = @"卍解 1.0.3 10.27.04";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];
@@ -650,9 +651,9 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     CGFloat width=CGRectGetWidth(self.tableView.bounds);
     UIView *header=[[UIView alloc] initWithFrame:CGRectMake(0,0,width,8)];
     self.tableView.tableHeaderView=header;
-    UIView *footer=[[UIView alloc] initWithFrame:CGRectMake(0,0,width,288)];
-    NSArray *titles=@[@"一键随机基础整套设置",@"一键随机高级整套设置",@"一键随机定向指纹设置",@"反关联项",@"恢复安全",@"清除推送编号"];
-    NSArray *selectors=@[NSStringFromSelector(@selector(randomizeBasicForSelectedContainers)),NSStringFromSelector(@selector(randomizeAdvancedForSelectedContainers)),NSStringFromSelector(@selector(randomizeTargetedForSelectedContainers)),NSStringFromSelector(@selector(showAssociationSettings)),NSStringFromSelector(@selector(restoreSafeSettings)),NSStringFromSelector(@selector(clearPushIdentityForSelectedContainers))];
+    UIView *footer=[[UIView alloc] initWithFrame:CGRectMake(0,0,width,344)];
+    NSArray *titles=@[@"一键随机基础整套设置",@"一键随机高级整套设置",@"一键随机定向指纹设置",@"反关联项",@"恢复安全",@"清除推送编号",@"设备标识(CUID)"];
+    NSArray *selectors=@[NSStringFromSelector(@selector(randomizeBasicForSelectedContainers)),NSStringFromSelector(@selector(randomizeAdvancedForSelectedContainers)),NSStringFromSelector(@selector(randomizeTargetedForSelectedContainers)),NSStringFromSelector(@selector(showAssociationSettings)),NSStringFromSelector(@selector(restoreSafeSettings)),NSStringFromSelector(@selector(clearPushIdentityForSelectedContainers)),NSStringFromSelector(@selector(showCuidSettings))];
     for(NSUInteger i=0;i<titles.count;i++) {
         UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem];
         button.autoresizingMask=UIViewAutoresizingFlexibleWidth;
@@ -698,6 +699,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
     [footer viewWithTag:1003].frame=CGRectMake(sideInset,6+3*rowStep,pairWidth,buttonHeight);
     [footer viewWithTag:1004].frame=CGRectMake(sideInset+pairWidth+pairGap,6+3*rowStep,pairWidth,buttonHeight);
     [footer viewWithTag:1005].frame=CGRectMake(sideInset,6+4*rowStep,buttonWidth,buttonHeight);
+    [footer viewWithTag:1006].frame=CGRectMake(sideInset,6+5*rowStep,buttonWidth,buttonHeight);
 }
 
 - (void)viewDidLayoutSubviews {
@@ -945,6 +947,15 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 - (void)showAssociationSettings {
     if(!self.selectedContainerIDs.count) { [self showMessage:@"尚未选择容器" detail:@"请先选择需要配置的容器。"]; return; }
     BDSAssociationPage *page=[[BDSAssociationPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    page.configuration=[self selectedSwitchConfiguration];
+    __weak BDSManagerViewController *weakSelf=self;
+    page.saveChanges=^BOOL(NSDictionary *changes) { return [weakSelf saveSwitchChanges:changes]; };
+    [self.navigationController pushViewController:page animated:YES];
+}
+
+- (void)showCuidSettings {
+    if(!self.selectedContainerIDs.count) { [self showMessage:@"尚未选择容器" detail:@"请先选择需要配置的容器。"]; return; }
+    BDSCuidPage *page=[[BDSCuidPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
     page.configuration=[self selectedSwitchConfiguration];
     __weak BDSManagerViewController *weakSelf=self;
     page.saveChanges=^BOOL(NSDictionary *changes) { return [weakSelf saveSwitchChanges:changes]; };

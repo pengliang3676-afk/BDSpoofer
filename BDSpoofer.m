@@ -4,6 +4,11 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  10.27.04：CUID 隔离改为 X 面板单独控制。M 一键基础不再自动开 cuidIsolation（默认关、
+//    不删 CUID 锁）；X 面板新增「设备标识(CUID)」页面：一个总开关 + 5 个子开关
+//    （cuid/iid/mtjNewCuid/ppaCuid/utdid，未写默认全开）。物理重置按子项删共享存储：
+//    主 CUID/IID 任一开删 CUID 组（物理绑定一起重生）、UTDID 开删 org.OpenUDID、
+//    统计 CUID 走剪贴板、PPA 运行时。自检零段显示总开关与各子项状态。
 //  10.27.03：把 CUID 五件套容器隔离（cuid/iid/mtjNewCuid/ppaCuid/utdid 的重生/锁定/
 //    MTJ 剪贴板清理/isDeviceCloned）从「百度身份参数」总开关拆出，独立成基础组开关
 //    「设备标识(CUID)隔离」(cuidIsolation)。默认关、仅一键基础显式打开、恢复安全关；
@@ -1636,7 +1641,7 @@ static NSMutableSet<NSString *> *g_baiduHookedKeys = nil;
 // impKey(ClassName.selector.C/I) -> 锁定槽位（cuid/iid/mtjNewCuid/ppaCuid/utdid/...）
 static NSMutableDictionary<NSString *, NSString *> *g_baiduSlotForImp = nil;
 
-#pragma mark - 百度 CUID 容器隔离（v10.27.03）
+#pragma mark - 百度 CUID 容器隔离（v10.27.04）
 //
 // 根因：真正的主 CUID 是 51 位、存于共享钥匙串 key com.baidu.baidumobile.mainCUID
 // （access group B83JBVZ6M5.com.baidu.baidumobile.cuid）。7.17.0 里所有 delete CUID
@@ -1765,12 +1770,13 @@ static void bds_cuidDelete(NSString *tag, NSDictionary *query) {
     [g_cuidResetLog appendFormat:@"%@=%d ", tag, (int)st];
 }
 
-// 物理清空 CUID 共享组，并顺带清 UTDID（阿里 OpenUDID，service 通常为 org.OpenUDID）。
-static void bds_cuidPurgeSharedKeychain(void) {
+// 物理清空 CUID 共享钥匙串组（cuid/iid 相关；不删 org.OpenUDID）。
+// 子开关：主 CUID 或 IID 任一启用时由 bds_cuidResetIfNeeded 调用。
+static void bds_cuidPurgeCUIDKeychain(void) {
     if (!g_cuidResetLog) g_cuidResetLog = [NSMutableString string];
     NSArray *classes = @[(__bridge id)kSecClassGenericPassword, (__bridge id)kSecClassInternetPassword];
 
-    // 1) 按 access group 整组删（generic / internet）
+    // 1) 按 access group 整组删（generic / internet；org.OpenUDID 不在本组，不会被删）
     int ci = 0;
     for (id cls in classes) {
         bds_cuidDelete([NSString stringWithFormat:@"grp%d", ci++],
@@ -1791,7 +1797,13 @@ static void bds_cuidPurgeSharedKeychain(void) {
                   (__bridge id)kSecAttrService: key});
         }
     }
-    // 3) UTDID（只删 service=org.OpenUDID 这一个特定项，不波及其它数据）
+}
+
+// 只删 UTDID（阿里 OpenUDID，service 通常为 org.OpenUDID；与 CUID 组独立）。
+// 子开关：UTDID 启用时由 bds_cuidResetIfNeeded 调用。
+static void bds_cuidPurgeUTDIDKeychain(void) {
+    if (!g_cuidResetLog) g_cuidResetLog = [NSMutableString string];
+    NSArray *classes = @[(__bridge id)kSecClassGenericPassword, (__bridge id)kSecClassInternetPassword];
     for (id cls in classes) {
         bds_cuidDelete(@"utdid.s",
             @{(__bridge id)kSecClass: cls, (__bridge id)kSecAttrService: @"org.OpenUDID"});
@@ -1840,12 +1852,23 @@ static void bds_cuidPurgeMTJPasteboard(void) {
     }
 }
 
-// 新容器/新随机首次启动：清空共享钥匙串，让 SDK 自然重生。
+// 某 slot 的子开关是否启用：cuidPrevious 跟随主 cuid；5 个子项读各自开关（未写默认全开）。
+static BOOL bds_cuidSlotChildActive(NSString *slot) {
+    if ([slot isEqualToString:@"cuidPrevious"]) slot = @"cuid";
+    if (!slot.length) return YES;
+    static NSSet *known;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ known = [NSSet setWithArray:BDSCuidSlotKeys()]; });
+    if (![known containsObject:slot]) return YES;
+    return cfgBool(BDSCuidChildKeyForSlot(slot), YES);
+}
+
+// 新容器首次启动（总开关开）：按子开关清空对应共享存储，让 SDK 自然重生。
 static void bds_cuidResetIfNeeded(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         @autoreleasepool {
-            // CUID 容器隔离从「百度身份参数」总开关拆出，独立由基础组「设备标识(CUID)隔离」控制。
+            // 总开关：设备标识(CUID)隔离。默认关，X 面板「设备标识(CUID)」手动开。
             if (!cfgBool(@"cuidIsolation", NO)) return;
             bds_ensureSecFns();
             bds_cuidEnsureSlots();
@@ -1855,10 +1878,20 @@ static void bds_cuidResetIfNeeded(void) {
             if (g_cuidResetUDID.length && [g_cuidResetUDID isEqualToString:udid]) {
                 return;  // 本容器已重置过，保持稳定
             }
-            // 新容器 / 新随机：先抓重置前主 CUID，再物理清空
+            // 按子开关选择要清空的共享存储：
+            //   主 CUID / IID 任一开 → 删 CUID 组（它们物理上共用一套钥匙串，一起重生）；
+            //   UTDID 开 → 删 org.OpenUDID；
+            //   统计 CUID 走 named 剪贴板（hook 首次捕获时清）、PPA 运行时计算，均不在此删。
             g_cuidBeforeReset = bds_readSharedString(@"com.baidu.baidumobile.mainCUID");
-            bds_cuidPurgeSharedKeychain();
-            [g_cuidSlots removeAllObjects];
+            if (bds_cuidSlotChildActive(@"cuid") || bds_cuidSlotChildActive(@"iid"))
+                bds_cuidPurgeCUIDKeychain();
+            if (bds_cuidSlotChildActive(@"utdid"))
+                bds_cuidPurgeUTDIDKeychain();
+            // 只清"要重新隔离"的子项锁定值；未选中的子项保持原锁定（透传/不隔离）。
+            for (NSString *slot in BDSCuidSlotKeys()) {
+                if (bds_cuidSlotChildActive(slot)) [g_cuidSlots removeObjectForKey:slot];
+            }
+            [g_cuidSlots removeObjectForKey:@"cuidPrevious"];  // 跟随主 cuid
             NSMutableDictionary *newRoot = [NSMutableDictionary dictionary];
             newRoot[@"resetUDID"] = udid;
             newRoot[@"slots"] = g_cuidSlots;
@@ -1890,7 +1923,7 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
     NSValue *origValue = g_baiduOrigImps[impKey];
     NSString *slot = g_baiduSlotForImp[impKey];
 
-    if (!cfgBool(@"cuidIsolation", NO) || !origValue || !slot.length) {
+    if (!cfgBool(@"cuidIsolation", NO) || !bds_cuidSlotChildActive(slot) || !origValue || !slot.length) {
         [g_baiduLock unlock];
         BDS_DIAG_RECORD(g_diagBaiduSDK, BDSDiagStatePassed);
         if (origValue) {
@@ -1941,9 +1974,14 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
 // 自检面板：CUID 容器隔离状态（供 showDeviceIDProbe 调用）。
 static NSString *bds_cuidDiagnosticsString(void) {
     NSMutableString *m = [NSMutableString string];
-    [m appendString:@"\n========== 零、CUID 容器隔离（补丁 v10.27.03）=========="];
+    [m appendString:@"\n========== 零、CUID 容器隔离（补丁 v10.27.04）=========="];
     bds_cuidEnsureSlots();
-    [m appendFormat:@"\nCUID隔离开关: %@", cfgBool(@"cuidIsolation", NO) ? @"开 ★" : @"关（未隔离，仅透传）"];
+    [m appendFormat:@"\nCUID隔离总开关: %@", cfgBool(@"cuidIsolation", NO) ? @"开 ★" : @"关（未隔离，仅透传）"];
+    // 5 个子开关状态（X 面板「设备标识(CUID)」控制；未写默认全开）
+    [m appendString:@"\n子项选择:"];
+    for (NSString *slot in BDSCuidSlotKeys()) {
+        [m appendFormat:@"\n  %@: %@", slot, bds_cuidSlotChildActive(slot) ? @"开" : @"关（透传）"];
+    }
     [m appendFormat:@"\n当前容器UDID: %@", bds_udid_value()];
     [m appendFormat:@"\n已重置标记: %@", g_cuidResetUDID ?: @"(无)"];
     [m appendFormat:@"\n本次启动是否执行重置: %@", g_cuidResetRanThisLaunch ? @"是 ★已清空并重生" : @"否(沿用本容器已锁定值)"];
@@ -5593,7 +5631,7 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 10.27.03";
+    page.title=@"卐解 10.27.04";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5739,9 +5777,8 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
     }
     values[@"spoofProxyDetection"] = @YES;
     values[@"proxyHideDefaultOn"] = @YES;
-    // CUID 设备标识隔离默认关、在 groups[0] 标 off（不占前 6 名额），
-    // 一键基础必须显式打开，否则新容器不会做 CUID 容器隔离。
-    values[@"cuidIsolation"] = @YES;
+    // CUID 设备标识隔离（cuidIsolation）默认关、不随一键基础打开：
+    // 改由 X 面板「设备标识(CUID)」单独手动开并勾选子项，这里不写该键、不碰 CUID 锁。
     // 屏幕与系统同步必须放在上面这些开关循环之后：spoofBaiduTargetedScreen /
     // spoofBaiduTargetedUA 落在 groups[1] 的 i>=3 档，写在循环之前会被 @NO 循环覆盖。
     if (g_lastBasicDevice) {
@@ -5758,8 +5795,7 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
         [self presentMessage:@"配置文件写入失败，基础参数没有更换。" title:@"保存失败"];
         return;
     }
-    // 作废 CUID 容器锁：下次启动重新清空共享 CUID 钥匙串并重新生成。
-    bds_cuidLockInvalidate();
+    // 一键基础不再处理 CUID：不删 CUID 锁、不改变 X 面板写入的 CUID 隔离状态。
     NSString *message = [NSString stringWithFormat:
         @"已随机并保存基础参数。\n"
          "基础 6 项、高级前 3 项、反关联前 12 项已打开。\n"

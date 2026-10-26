@@ -11,13 +11,13 @@
 
 | 项 | 值 |
 |---|---|
-| **M 卐解 dylib**（`BDSpoofer.m`） | **10.27.03**（CUID 隔离拆成独立开关） |
-| **X 卍解管理器**（`CraneManager/BDSCraneManager.m`） | **10.18.02**（本次未改，保持） |
-| 基线 commit | `4003875`（= v10.27.02，`ship/10.14-01`） |
-| 基线 tag | **`v10.27.02`**（本次改前干净基线） |
-| 本地产物 | `Desktop\极速\卐-10.27.03.dylib`（CI 出） |
-| 本地快照 | `Desktop\极速\backups\10.27.03\`（源码 zip + 产物 + INDEX.txt） |
-| 当前状态 | CUID 五件套（cuid/iid/mtjNewCuid/ppaCuid/utdid）容器隔离已从「百度身份参数」总开关拆出，独立成基础组开关「设备标识(CUID)隔离」(cuidIsolation)：默认关、一键基础开、恢复安全关；di/DVIF/UA/IDFV 等仍归 spoofBaiduSDK。三容器真机验证跨容器 CUID 已全部不同。 |
+| **M 卐解 dylib**（`BDSpoofer.m`） | **10.27.04**（CUID 改 X 面板控制，一键基础不自动开） |
+| **X 卍解管理器**（`CraneManager/BDSCraneManager.m`） | **10.27.04**（新增「设备标识(CUID)」页面，需重装 X） |
+| 基线 commit | `c39469a`（= v10.27.03，`ship/10.14-01`） |
+| 基线 tag | **`v10.27.03`**（本次改前干净基线） |
+| 本地产物 | `Desktop\极速\卐-10.27.04.dylib`（CI 出，M） |
+| 本地快照 | `Desktop\极速\backups\10.27.04\`（源码 zip + 产物 + INDEX.txt） |
+| 当前状态 | CUID 隔离改为 X 面板单独控制：X 新增「设备标识(CUID)」页面，一个总开关（cuidIsolation）+ 5 个子开关（cuid/iid/mtjNewCuid/ppaCuid/utdid，未写默认全开）。M 一键基础不再自动开、不删 CUID 锁；物理重置按子开关删共享存储（主 CUID/IID 任一开删 CUID 组、UTDID 开删 org.OpenUDID、统计 CUID 走剪贴板、PPA 运行时）。di/DVIF/UA/IDFV 等仍归 spoofBaiduSDK。 |
 
 ---
 
@@ -25,6 +25,7 @@
 
 | 日期 | M(dylib) | X(管理器) | commit | tag | 主要改动 |
 |---|---|---|---|---|---|
+| 10-27 | 10.27.04 | 10.27.04 | 见 `v10.27.04` | `v10.27.04` | CUID 隔离改为 X 面板单独控制：X 新增「设备标识(CUID)」页面，一个总开关 + 5 个子开关（cuid/iid/mtjNewCuid/ppaCuid/utdid，默认全开）。M 一键基础不再自动开、不删 CUID 锁；物理重置按子开关删共享存储（主 CUID/IID 任一开删 CUID 组、UTDID 开删 org.OpenUDID、统计 CUID 走剪贴板、PPA 运行时）。M/X 同次重编，手机需重装 X。自检零段显示总开关+各子项。 |
 | 10-27 | 10.27.03 | 10.18.02 | 见 `v10.27.03` | `v10.27.03` | CUID 五件套容器隔离从「百度身份参数」总开关拆成独立基础组开关「设备标识(CUID)隔离」(cuidIsolation)：默认关、一键基础显式开、恢复安全关；di/DVIF/UA/IDFV 等其余百度身份项仍归 spoofBaiduSDK。仅 M 升，X 不重编（手机上旧 X 不显示该开关，用 M 悬浮球一键基础即可）。自检零段加开关状态行。 |
 | 10-27 | 10.27.02 | 10.18.02 | `4003875` | `v10.27.02` | 修 BaiduMTJNewCUID（统计 CUID）跨容器剪贴板残留：它不走钥匙串而存 named UIPasteboard（com.baidu.mtj.pasteboard.cuid，跨容器共享），hook 首次捕获前先清空，逼原 IMP 回退取本容器已换新的主 CUID 自然写回。三容器真机验证跨容器五标识两两不同。 |
 | 10-27 | 10.27.01 | 10.18.02 | `dfb71cb` | `v10.27.01` | 修主 CUID 从未被随机的根因：新容器/新随机首启 SecItemDelete 物理清空共享钥匙串 CUID 组（B83JBVZ6M5.com.baidu.baidumobile.cuid，含 seedid），让 SDK 自然重生合法 51 位 CUID；hook 7.17.0 真实类（BBACuidSDK/BaiduMtjCuidSDK/BaiduMTJNewCUID/PPACUID/UTDIDMain），首次取新值后按容器锁定，isDeviceCloned 固定 NO。 |

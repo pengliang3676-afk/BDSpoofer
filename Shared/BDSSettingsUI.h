@@ -250,3 +250,71 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
     if(self.randomize) self.randomize();
 }
 @end
+
+// 设备标识(CUID) 页面：一个总开关 + 5 个子开关（v10.27.04）。
+@interface BDSCuidPage : UITableViewController
+@property(nonatomic,copy) NSDictionary *configuration;
+@property(nonatomic,copy) BOOL (^saveChanges)(NSDictionary *);
+@end
+@implementation BDSCuidPage
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title=@"设备标识(CUID)";
+    self.tableView.rowHeight=UITableViewAutomaticDimension;
+    self.tableView.estimatedRowHeight=56;
+}
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return section==0 ? 1 : BDSCuidSlotKeys().count;
+}
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    return section==0 ? @"总开关" : @"子项（默认全开，可单独关）";
+}
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    if (section==0) return @"默认关；开启后下面勾选的标识按容器隔离。M 一键基础不再自动开。";
+    return @"主 CUID 与 IID 物理上共用一套钥匙串，建议一起开/关；统计 CUID、PPA、UTDID 可独立。改完彻底杀进程、Crane 重开。";
+}
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
+    UISwitch *toggle=[[UISwitch alloc] init];
+    cell.detailTextLabel.numberOfLines=0;
+    if (indexPath.section==0) {
+        cell.textLabel.text=@"设备标识(CUID)隔离";
+        cell.detailTextLabel.text=@"总开关；默认关，M 一键基础不自动开";
+        toggle.on=[self.configuration[@"cuidIsolation"] boolValue];
+        toggle.tag=0;
+    } else {
+        NSArray *names=@[@"主 CUID",@"安装标识 IID",@"统计 CUID (MTJ)",@"PPA CUID",@"UTDID"];
+        NSArray *notes=@[@"主设备标识，51 位",
+                        @"安装标识，与主 CUID 物理绑定",
+                        @"统计 SDK 用，存跨容器剪贴板",
+                        @"运行时设备指纹，容器相关",
+                        @"阿里 OpenUDID，36 位"];
+        NSString *slot=BDSCuidSlotKeys()[indexPath.row];
+        cell.textLabel.text=names[indexPath.row];
+        cell.detailTextLabel.text=notes[indexPath.row];
+        toggle.on=BDSCuidChildEnabled(self.configuration, slot);
+        toggle.tag=100+indexPath.row;
+    }
+    [toggle addTarget:self action:@selector(changeSwitch:) forControlEvents:UIControlEventValueChanged];
+    cell.accessoryView=toggle;
+    cell.selectionStyle=UITableViewCellSelectionStyleNone;
+    return cell;
+}
+- (void)changeSwitch:(UISwitch *)sender {
+    NSString *key = (sender.tag==0)
+        ? @"cuidIsolation"
+        : BDSCuidChildKeyForSlot(BDSCuidSlotKeys()[sender.tag-100]);
+    NSDictionary *changes=@{key:@(sender.on)};
+    if (self.saveChanges && self.saveChanges(changes)) {
+        NSMutableDictionary *updated=[self.configuration mutableCopy];
+        [updated addEntriesFromDictionary:changes];
+        self.configuration=updated;
+    } else {
+        sender.on=!sender.on;
+        UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"保存失败" message:@"设置没有完整写入，请返回后刷新再试。" preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+    }
+}
+@end
