@@ -271,7 +271,7 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
     return section==0 ? @"总开关" : @"子项（默认全开，可单独关）";
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section==0) return @"默认关；开启后下面勾选的标识按容器隔离。M 一键基础不再自动开。";
+    if (section==0) return @"默认关。在极速里面打开这一页就能设，不用另装管理器。开了之后，勾选的标识按容器分开。改完彻底关掉极速再重开。";
     return @"主 CUID 与 IID 物理上共用一套钥匙串，建议一起开/关；统计 CUID、PPA、UTDID 可独立。改完彻底杀进程、Crane 重开。";
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -280,7 +280,7 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
     cell.detailTextLabel.numberOfLines=0;
     if (indexPath.section==0) {
         cell.textLabel.text=@"设备标识(CUID)隔离";
-        cell.detailTextLabel.text=@"总开关；默认关，M 一键基础不自动开";
+        cell.detailTextLabel.text=@"总开关。在极速自己的面板里打开，不用另装管理器";
         toggle.on=[self.configuration[@"cuidIsolation"] boolValue];
         toggle.tag=0;
     } else {

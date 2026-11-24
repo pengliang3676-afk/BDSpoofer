@@ -4,6 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  11.24.01：设备标识(CUID) 开关放进极速自己的面板。注入 dylib 后直接打开，不用再装管理器 deb。
 //  10.27.04：CUID 隔离改为 X 面板单独控制。M 一键基础不再自动开 cuidIsolation（默认关、
 //    不删 CUID 锁）；X 面板新增「设备标识(CUID)」页面：一个总开关 + 5 个子开关
 //    （cuid/iid/mtjNewCuid/ppaCuid/utdid，未写默认全开）。物理重置按子项删共享存储：
@@ -1868,7 +1869,7 @@ static void bds_cuidResetIfNeeded(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         @autoreleasepool {
-            // 总开关：设备标识(CUID)隔离。默认关，X 面板「设备标识(CUID)」手动开。
+            // 总开关：设备标识(CUID)隔离。默认关，在极速自己的面板里手动开。
             if (!cfgBool(@"cuidIsolation", NO)) return;
             bds_ensureSecFns();
             bds_cuidEnsureSlots();
@@ -1974,7 +1975,7 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
 // 自检面板：CUID 容器隔离状态（供 showDeviceIDProbe 调用）。
 static NSString *bds_cuidDiagnosticsString(void) {
     NSMutableString *m = [NSMutableString string];
-    [m appendString:@"\n========== 零、CUID 容器隔离（补丁 v10.27.04）=========="];
+    [m appendString:@"\n========== 零、CUID 容器隔离（补丁 v11.24.01）=========="];
     bds_cuidEnsureSlots();
     [m appendFormat:@"\nCUID隔离总开关: %@", cfgBool(@"cuidIsolation", NO) ? @"开 ★" : @"关（未隔离，仅透传）"];
     // 5 个子开关状态（X 面板「设备标识(CUID)」控制；未写默认全开）
@@ -5631,11 +5632,11 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 10.27.04";
+    page.title=@"卐解 11.24.01";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
-    NSArray *titles=@[@"一键随机整套基础参数",@"一键随机整套高级参数",@"一键随机定向指纹参数",@"反关联项",@"诊断自检",@"恢复安全",@"关闭"];
+    NSArray *titles=@[@"一键随机整套基础参数",@"一键随机整套高级参数",@"一键随机定向指纹参数",@"反关联项",@"诊断自检",@"恢复安全",@"设备标识(CUID)",@"关闭"];
     NSMutableArray *items=[NSMutableArray array];
     for(NSUInteger i=0;i<titles.count;i++) {
         NSMutableDictionary *item=[@{@"title":titles[i]} mutableCopy];
@@ -5643,6 +5644,7 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
         item[@"action"]=[^{
             if(i==2) { [self showBaiduTargetedSwitches]; return; }
             if(i==3) { [self showAssociationSettings]; return; }
+            if(i==6) { [self showCuidSettings]; return; }
             [weakPage dismissViewControllerAnimated:YES completion:^{
                 if(i==0) [self randomizeBasicProfile];
                 else if(i==1) [self randomizeAdvancedProfile];
@@ -5656,6 +5658,29 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
     UINavigationController *nav=[[UINavigationController alloc] initWithRootViewController:page];
     nav.modalPresentationStyle=UIModalPresentationPageSheet;
     [presenter presentViewController:nav animated:YES completion:nil];
+}
+
+- (void)showCuidSettings {
+    loadConfig();
+    UIViewController *presenter = BDSTopController();
+    if (!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
+    BDSCuidPage *page = [[BDSCuidPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    page.configuration = g_config ?: @{};
+    page.saveChanges = ^BOOL(NSDictionary *changes) {
+        BOOL ok = saveConfigValues(changes);
+        if (ok) loadConfig();
+        return ok;
+    };
+    if (presenter.navigationController) {
+        [presenter.navigationController pushViewController:page animated:YES];
+        return;
+    }
+    page.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"关闭"
+                                                                              style:UIBarButtonItemStylePlain
+                                                                             target:self
+                                                                             action:@selector(closeSettingsPage)];
+    [presenter presentViewController:[[UINavigationController alloc] initWithRootViewController:page]
+                            animated:YES completion:nil];
 }
 
 - (void)showAssociationSettings {
