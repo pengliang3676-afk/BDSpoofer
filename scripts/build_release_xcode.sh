@@ -23,14 +23,14 @@ codesign --force --sign - --timestamp=none --entitlements CraneManager/BDSCraneM
 printf '2.0\n' > build-ui1/deb/debian-binary
 COPYFILE_DISABLE=1 tar -C build-ui1/package/DEBIAN -czf build-ui1/deb/control.tar.gz .
 COPYFILE_DISABLE=1 tar -C build-ui1/package --exclude='./DEBIAN' -czf build-ui1/deb/data.tar.gz .
-(cd build-ui1/deb && ar -rc ../../dist-ui1/BDSpooferCraneManager_1.0.3-ui1_11.24.01_RootHide.deb debian-binary control.tar.gz data.tar.gz)
+python3 scripts/make_deb_ar.py dist-ui1/BDSpooferCraneManager_1.0.3-ui1_11.24.01_RootHide.deb build-ui1/deb/debian-binary build-ui1/deb/control.tar.gz build-ui1/deb/data.tar.gz
 codesign --verify --strict dist-ui1/BDSpoofer_1.8.1_UI1.3_11.24.01.dylib
 codesign --verify --strict "$BDS_APP"
 lipo -info dist-ui1/BDSpoofer_1.8.1_UI1.3_11.24.01.dylib
 lipo -info "$BDS_APP/BDSCraneManager"
 otool -hv dist-ui1/BDSpoofer_1.8.1_UI1.3_11.24.01.dylib
 otool -L dist-ui1/BDSpoofer_1.8.1_UI1.3_11.24.01.dylib
-ar -t dist-ui1/BDSpooferCraneManager_1.0.3-ui1_11.24.01_RootHide.deb
+python3 -c 'import sys; b=open(sys.argv[1],"rb").read(); assert b.startswith(b"!<arch>\n") and b"debian-binary" in b and len(b)>10000, len(b)' dist-ui1/BDSpooferCraneManager_1.0.3-ui1_11.24.01_RootHide.deb
 tar -tzf build-ui1/deb/data.tar.gz
 cp RELEASE_UI1.md bdspoofer_config.plist dist-ui1/
 cp dist-ui1/BDSpoofer_1.8.1_UI1.3_11.24.01.dylib "dist-ui1/鍗愯В_1.8.1_UI1.3_11.24.01.dylib"
@@ -62,7 +62,7 @@ codesign --force --sign - --timestamp=none "$GUARD_ROOT/var/jb/Library/MobileSub
 printf '2.0\n' > build-ui1/guarddeb/debian-binary
 COPYFILE_DISABLE=1 tar -C "$GUARD_ROOT/DEBIAN" -czf build-ui1/guarddeb/control.tar.gz .
 COPYFILE_DISABLE=1 tar -C "$GUARD_ROOT" --exclude='./DEBIAN' -czf build-ui1/guarddeb/data.tar.gz .
-(cd build-ui1/guarddeb && ar -rc ../../dist-ui1/L2TPGuard_10.17.09_RootHide.deb debian-binary control.tar.gz data.tar.gz)
+python3 scripts/make_deb_ar.py dist-ui1/L2TPGuard_10.17.09_RootHide.deb build-ui1/guarddeb/debian-binary build-ui1/guarddeb/control.tar.gz build-ui1/guarddeb/data.tar.gz
 (cd dist-ui1 && shasum -a 256 L2TPGuard_10.17.09_RootHide.deb >> SHA256SUMS.txt)
 
 # ── 快手检测探针（只读，不修改 App 逻辑）──
@@ -100,7 +100,7 @@ codesign --force --sign - --timestamp=none "$KSDEB_ROOT/var/jb/Library/MobileSub
 printf '2.0\n' > "$KSDEB_OUT/debian-binary"
 COPYFILE_DISABLE=1 tar -C "$KSDEB_ROOT/DEBIAN" -czf "$KSDEB_OUT/control.tar.gz" .
 COPYFILE_DISABLE=1 tar -C "$KSDEB_ROOT" --exclude='./DEBIAN' -czf "$KSDEB_OUT/data.tar.gz" .
-(cd "$KSDEB_OUT" && ar -rc ../../dist-ui1/KSSpoofer_10.18.06_RootHide.deb debian-binary control.tar.gz data.tar.gz)
+python3 scripts/make_deb_ar.py dist-ui1/KSSpoofer_10.18.06_RootHide.deb "$KSDEB_OUT/debian-binary" "$KSDEB_OUT/control.tar.gz" "$KSDEB_OUT/data.tar.gz"
 (cd dist-ui1 && shasum -a 256 KSSpoofer_10.18.06_RootHide.deb >> SHA256SUMS.txt)
 
 # ── 快手伪装管理器 App（独立图标，先随机再启动快手）──
@@ -146,7 +146,7 @@ chmod 0755 "$KSMGR_ROOT/DEBIAN/postinst" "$KSMGR_ROOT/DEBIAN/prerm"
 printf '2.0\n' > build-ui1/ksmgrdeb/debian-binary
 COPYFILE_DISABLE=1 tar -C "$KSMGR_ROOT/DEBIAN" -czf build-ui1/ksmgrdeb/control.tar.gz .
 COPYFILE_DISABLE=1 tar -C "$KSMGR_ROOT" --exclude='./DEBIAN' -czf build-ui1/ksmgrdeb/data.tar.gz .
-(cd build-ui1/ksmgrdeb && ar -rc ../../dist-ui1/KSSpooferManager_10.18.06.deb debian-binary control.tar.gz data.tar.gz)
+python3 scripts/make_deb_ar.py dist-ui1/KSSpooferManager_10.18.06.deb build-ui1/ksmgrdeb/debian-binary build-ui1/ksmgrdeb/control.tar.gz build-ui1/ksmgrdeb/data.tar.gz
 (cd dist-ui1 && shasum -a 256 KSSpooferManager_10.18.06.deb >> SHA256SUMS.txt)
 
 # ── 管理器 IPA（TrollStore 安装，一定有图标）──
