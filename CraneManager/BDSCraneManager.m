@@ -54,25 +54,16 @@ static NSArray<NSDictionary *> *BDSDeviceProfiles(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         profiles = @[
-            BDSDevice(@"iPhone 8", @"iPhone10,1", @"D20AP", 375, 667, 750, 1334, 2, 2048, @[@64,@256], @"15.0", 16),
-            BDSDevice(@"iPhone 8 Plus", @"iPhone10,2", @"D21AP", 414, 736, 1080, 1920, 3, 3072, @[@64,@256], @"15.0", 16),
-            BDSDevice(@"iPhone X", @"iPhone10,3", @"D22AP", 375, 812, 1125, 2436, 3, 3072, @[@64,@256], @"15.0", 16),
-            BDSDevice(@"iPhone XR", @"iPhone11,8", @"N841AP", 414, 896, 828, 1792, 2, 3072, @[@64,@128,@256], @"15.0", 18),
-            BDSDevice(@"iPhone XS", @"iPhone11,2", @"D321AP", 375, 812, 1125, 2436, 3, 4096, @[@64,@256,@512], @"15.0", 18),
-            BDSDevice(@"iPhone XS Max", @"iPhone11,6", @"D331pAP", 414, 896, 1242, 2688, 3, 4096, @[@64,@256,@512], @"15.0", 18),
             BDSDevice(@"iPhone 11", @"iPhone12,1", @"N104AP", 414, 896, 828, 1792, 2, 4096, @[@64,@128,@256], @"15.0", 26),
             BDSDevice(@"iPhone 11 Pro", @"iPhone12,3", @"D421AP", 375, 812, 1125, 2436, 3, 4096, @[@64,@256,@512], @"15.0", 26),
             BDSDevice(@"iPhone 11 Pro Max", @"iPhone12,5", @"D431AP", 414, 896, 1242, 2688, 3, 4096, @[@64,@256,@512], @"15.0", 26),
             BDSDevice(@"iPhone SE (2nd generation)", @"iPhone12,8", @"D79AP", 375, 667, 750, 1334, 2, 3072, @[@64,@128,@256], @"15.0", 26),
-            BDSDevice(@"iPhone 12 mini", @"iPhone13,1", @"D52gAP", 375, 812, 1080, 2340, 3, 4096, @[@64,@128,@256], @"15.0", 26),
             BDSDevice(@"iPhone 12", @"iPhone13,2", @"D53gAP", 390, 844, 1170, 2532, 3, 4096, @[@64,@128,@256], @"15.0", 26),
             BDSDevice(@"iPhone 12 Pro", @"iPhone13,3", @"D53pAP", 390, 844, 1170, 2532, 3, 6144, @[@128,@256,@512], @"15.0", 26),
             BDSDevice(@"iPhone 12 Pro Max", @"iPhone13,4", @"D54pAP", 428, 926, 1284, 2778, 3, 6144, @[@128,@256,@512], @"15.0", 26),
-            BDSDevice(@"iPhone 13 mini", @"iPhone14,4", @"D16AP", 375, 812, 1080, 2340, 3, 4096, @[@128,@256,@512], @"15.0", 26),
             BDSDevice(@"iPhone 13", @"iPhone14,5", @"D17AP", 390, 844, 1170, 2532, 3, 4096, @[@128,@256,@512], @"15.0", 26),
             BDSDevice(@"iPhone 13 Pro", @"iPhone14,2", @"D63AP", 390, 844, 1170, 2532, 3, 6144, @[@128,@256,@512,@1024], @"15.0", 26),
             BDSDevice(@"iPhone 13 Pro Max", @"iPhone14,3", @"D64AP", 428, 926, 1284, 2778, 3, 6144, @[@128,@256,@512,@1024], @"15.0", 26),
-            BDSDevice(@"iPhone SE (3rd generation)", @"iPhone14,6", @"D49AP", 375, 667, 750, 1334, 2, 4096, @[@64,@128,@256], @"15.4", 26),
             BDSDevice(@"iPhone 14", @"iPhone14,7", @"D27AP", 390, 844, 1170, 2532, 3, 6144, @[@128,@256,@512], @"16.0", 26),
             BDSDevice(@"iPhone 14 Pro", @"iPhone15,2", @"D73AP", 393, 852, 1179, 2556, 3, 6144, @[@128,@256,@512,@1024], @"16.0", 26),
             BDSDevice(@"iPhone 14 Pro Max", @"iPhone15,3", @"D74AP", 430, 932, 1290, 2796, 3, 6144, @[@128,@256,@512,@1024], @"16.0", 26),
@@ -89,8 +80,9 @@ static NSArray<NSDictionary *> *BDSDeviceProfiles(void) {
             BDSDevice(@"iPhone 17", @"iPhone18,3", @"V57AP", 402, 874, 1206, 2622, 3, 8192, @[@256,@512], @"26.0", 26),
             BDSDevice(@"iPhone 17 Pro", @"iPhone18,1", @"V53AP", 402, 874, 1206, 2622, 3, 12288, @[@256,@512,@1024], @"26.0", 26),
             BDSDevice(@"iPhone 17 Pro Max", @"iPhone18,2", @"V54AP", 440, 956, 1320, 2868, 3, 12288, @[@256,@512,@1024], @"26.0", 26),
-            BDSDevice(@"iPhone Air", @"iPhone18,4", @"D23AP", 420, 912, 1260, 2736, 3, 12288, @[@256,@512,@1024], @"26.0", 26),
             BDSDevice(@"iPhone 17e", @"iPhone18,5", @"V159AP", 390, 844, 1170, 2532, 3, 8192, @[@128,@256,@512], @"26.3.1", 26),
+            BDSDevice(@"iPhone 18 Pro", @"iPhone19,2", @"V63AP", 402, 874, 1206, 2622, 3, 12288, @[@256,@512,@1024,@2048], @"27.0", 27),
+            BDSDevice(@"iPhone 18 Pro Max", @"iPhone19,7", @"V64sAP", 440, 956, 1320, 2868, 3, 12288, @[@256,@512,@1024,@2048], @"27.0", 27),
         ];
     });
     return profiles;
@@ -143,8 +135,10 @@ static NSArray<NSDictionary *> *BDSSystemProfiles(void) {
             BDSSystem(@"18.7.1", @"22H31"), BDSSystem(@"18.7.2", @"22H123"),
             BDSSystem(@"18.7.9", @"22H355"), BDSSystem(@"18.7.10", @"22H374"),
             BDSSystem(@"26.4.2", @"23E261"), BDSSystem(@"26.5", @"23F77"),
-            BDSSystem(@"26.5.2", @"23F84"), BDSSystem(@"26.6", @"23G71"),
+            BDSSystem(@"26.5.2", @"23F84"),             BDSSystem(@"26.6", @"23G71"),
             BDSSystem(@"26.6.1", @"23G83"),
+            BDSSystem(@"27.0", @"24A437"), BDSSystem(@"27.0.1", @"24A446"),
+            BDSSystem(@"27.2", @"24B119"), BDSSystem(@"27.2.1", @"24B156"),
         ];
     });
     return profiles;
@@ -172,6 +166,7 @@ static BOOL BDSVersionInRange(NSString *version, NSDictionary *device) {
     if ([version hasPrefix:@"18.7.9"] || [version hasPrefix:@"18.7.10"]) {
         return [machine hasPrefix:@"iPhone11,"];
     }
+    if (version.integerValue == 27 && ![machine hasPrefix:@"iPhone19,"]) return NO;
     if (version.integerValue == 26 && ![machine hasPrefix:@"iPhone12,"] &&
         ![machine hasPrefix:@"iPhone13,"] && ![machine hasPrefix:@"iPhone14,"] &&
         ![machine hasPrefix:@"iPhone15,"] && ![machine hasPrefix:@"iPhone16,"] &&
@@ -614,7 +609,7 @@ static BOOL BDSWriteContainerConfig(NSString *path, NSDictionary *config) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"卍解 11.24.02";
+    self.title = @"卍解 11.24.03";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     self.selectedContainerIDs = [NSMutableSet set];
     self.targetedSelectionKeys = [NSMutableSet set];

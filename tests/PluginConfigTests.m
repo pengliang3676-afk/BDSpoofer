@@ -43,9 +43,9 @@ int main(void) {
         for(NSDictionary *device in BDSUnifiedDeviceProfiles()) {
             if([device[@"machine"] isEqual:@"iPhone12,8"]) sawSE2=YES;
         }
-        assert(sawSE2 && BDSUnifiedDeviceProfiles().count==37);
+        assert(sawSE2 && BDSUnifiedDeviceProfiles().count==29);
         // SE2 保留在机型池里，但不参与随机抽取
-        assert(BDSRandomEligibleProfiles().count==36);
+        assert(BDSRandomEligibleProfiles().count==28);
         BOOL se2Eligible=NO, se2InRange=NO;
         for(NSDictionary *device in BDSRandomEligibleProfiles()) {
             if([device[@"machine"] isEqual:@"iPhone12,8"]) se2Eligible=YES;

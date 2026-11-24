@@ -19,7 +19,7 @@ int main(int argc,char **argv) {
         assert(![basicFresh[@"idfv"] length] && ![basicFresh[@"idfa"] length] && ![basicFresh[@"deviceID"] length] && ![basicFresh[@"cuid"] length] && ![basicFresh[@"utdid"] length]);
         assert(!basicFresh[@"configVersion"] && [basicFresh[@"spoofWiFi"] boolValue] && [basicFresh[@"enabled"] boolValue]);
         assert(![basicFresh[@"spoofKeychain"] boolValue] && [basicFresh[@"spoofBattery"] boolValue] && [basicFresh[@"blockStatCashTelemetry"] boolValue]);
-        assert([basicFresh[@"hwMachine"] isEqual:@"iPhone10,1"]);
+        assert([basicFresh[@"hwMachine"] isEqual:@"iPhone12,1"]);
         NSMutableDictionary *config=BDSMergedConfig(defaults);
         BDSSeedIdentityIfNeeded(config,YES);
         assert([config[@"configVersion"] integerValue]==189);
@@ -64,7 +64,7 @@ int main(int argc,char **argv) {
         for(NSDictionary *device in BDSDeviceProfiles()) {
             if([device[@"machine"] isEqual:@"iPhone12,8"]) sawSE2=YES;
         }
-        assert(sawSE2 && BDSDeviceProfiles().count==37);  // 池里保留 SE2 作为兼容记录
+        assert(sawSE2 && BDSDeviceProfiles().count==29);  // 池里保留 SE2 作为兼容记录
         // SE2 不参与随机抽取：跑 200 次一键基础，一次都不许抽到它
         for(int i=0;i<200;i++) {
             NSDictionary *picked=BDSCreateRandomConfig(defaults,BDSRandomModeBasic,[NSSet set]);
