@@ -69,7 +69,7 @@ static NSArray<NSString *> *BDSTargetedStoredValueKeys(void) {
 }
 // ---- CUID 设备标识隔离：总开关 + 5 个子项（v10.27.04）----
 // 总开关 cuidIsolation（见 groups[0]）。下面 5 个子开关各自决定该标识是否容器隔离：
-// 子开关默认全开（总开关开时），用户在 X 面板单独关掉某一项后，该标识透传、不隔离。
+// 子开关默认关。总开关开着时，只有手动打开的子项才按容器隔离。
 // 注意：主 CUID 与 IID 物理上共用同一套钥匙串、SDK 一起生成，无法只换一个，
 // 建议这两个一起开/关；统计 CUID / PPA CUID / UTDID 可完全独立选择。
 static NSArray<NSString *> *BDSCuidSlotKeys(void) {
@@ -78,11 +78,11 @@ static NSArray<NSString *> *BDSCuidSlotKeys(void) {
 static NSString *BDSCuidChildKeyForSlot(NSString *slot) {
     return [NSString stringWithFormat:@"cuidChild_%@", slot];
 }
-// UI 读取某子项：子开关未写过时默认全开（跟随总开关），手动关过（@NO）则保持关。
+// UI 读取某子项：没写过时默认关。手动打开后保持开。
 static BOOL BDSCuidChildEnabled(NSDictionary *config, NSString *slot) {
-    if (![config isKindOfClass:NSDictionary.class] || !slot.length) return YES;
+    if (![config isKindOfClass:NSDictionary.class] || !slot.length) return NO;
     id v = config[BDSCuidChildKeyForSlot(slot)];
-    return v ? [v boolValue] : YES;
+    return v ? [v boolValue] : NO;
 }
 static BOOL BDSRandomModeWasRun(NSDictionary *config, NSString *mode) {
     if (![config isKindOfClass:NSDictionary.class] || !mode.length) return NO;
@@ -125,7 +125,7 @@ static NSDictionary *BDSSafeSwitchValues(void) {
     // CUID 设备标识隔离是默认关闭、仅一键基础打开的项（不在 RegularKeys 里），
     // 恢复安全时也要显式关掉，否则 merge 保存会保留它上一次被一键基础打开的状态。
     values[@"cuidIsolation"]=@NO;
-    // CUID 5 个子开关恢复安全时一并关掉（默认全开，这里显式写关）。
+    // CUID 5 个子开关恢复安全时一并关掉。默认也是关。
     for (NSString *slot in BDSCuidSlotKeys()) values[BDSCuidChildKeyForSlot(slot)]=@NO;
     // 恢复安全会关掉其它开关。代理检测隐藏保持开，不跟随机、也不跟这一键走。
     values[@"spoofProxyDetection"]=@YES;

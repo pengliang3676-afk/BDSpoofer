@@ -279,7 +279,7 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
     return section==0 ? 1 : BDSCuidSlotKeys().count;
 }
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return section==0 ? @"总开关" : @"子项（默认全开，可单独关）";
+    return section==0 ? @"总开关" : @"子项（默认关，可单独开）";
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section==0) return @"默认关。在极速里面打开这一页就能设，不用另装管理器。开了之后，勾选的标识按容器分开。改完彻底关掉极速再重开。";

@@ -43,7 +43,7 @@ assert 'closeApp' not in manager and 'NSSelectorFromString(@"suspend")' not in m
 assert 'config[@"deviceProfileName"] ?: config[@"hwMachine"]' in manager
 assert 'config[@"targetedDeviceProfileName"] ?: config[@"targetedHwMachine"]' in manager
 assert 'NSString *currentSuffix = @"（当前）"' in manager and 'UIColor.systemRedColor' in manager
-assert 'page.title=@"卐解 11.24.03"' in plugin
+assert 'page.title=@"卐解 11.24.04"' in plugin
 assert '总一键随机' in plugin and 'colorWithRed:0.92 green:0.42 blue:0.02' in plugin
 assert '@[@4,@5],@[@6,@7]' in plugin, '四个少用按钮排成两行'
 assert 'if(i==0) [self randomizeAllProfile];' in plugin
@@ -71,8 +71,8 @@ assert 'y_mission_withdraw' in blocker and 'c_pv_withdraw' in blocker
 assert 'BDSInstallCashTelemetryBlocking();' in plugin
 assert plugin.count('loadConfig();') >= 3
 assert '0.50' not in release and '触发风控' not in release
-assert 'BDSpoofer_1.8.1_UI1.3_11.24.03.dylib' in build and 'UI1.1.dylib' not in build
-assert 'BDSpooferCraneManager_1.0.3-ui1_11.24.03_RootHide.deb' in build
+assert 'BDSpoofer_1.8.1_UI1.3_11.24.04.dylib' in build and 'UI1.1.dylib' not in build
+assert 'BDSpooferCraneManager_1.0.3-ui1_11.24.04_RootHide.deb' in build
 assert 'bds_cuidPurgeMTJPasteboard' in plugin and 'com.baidu.mtj.pasteboard.cuid.name' in plugin and 'setItems:@[]' in plugin
 # 10.27.04：CUID 隔离改为 X 面板单独控制（总开关 + 5 子开关）；M 一键基础不自动开
 assert '@"key":@"cuidIsolation"' in policy and '设备标识(CUID)隔离' in policy
@@ -89,7 +89,7 @@ assert 'cfgBool(@"cuidIsolation", NO) || !bds_cuidSlotChildActive(slot) || !orig
 assert 'BDSLoginDeviceDict' in plugin and 'ssologin' in plugin
 assert 'BDSPassEncryptedDi' in plugin and 'deviceInfoForLogin' in plugin
 assert 'BDSPassEnsureDVIF' in plugin and 'bds_my_uname' in plugin and '{"uname"' in plugin
-assert 'self.title = @"卍解 11.24.03"' in manager
+assert 'self.title = @"卍解 11.24.04"' in manager
 assert '[verified isEqualToDictionary:config]' in manager
 assert 'targetedScreenHwMachine' in plugin and 'targetedScreenHwMachine' in manager
 def function(text,name):
@@ -113,9 +113,10 @@ def function(text,name):
         if depth==0:return text[match.start():i+1]
     raise AssertionError(name)
 assert 'values[@"cuidIsolation"]' not in function(plugin,'randomizeBasicProfile'), '单独的一键基础不得打开设备标识'
-assert 'values[@"cuidIsolation"] = @YES;' in function(plugin,'randomizeAllProfile')
-assert 'bds_cuidLockInvalidate();' in function(plugin,'randomizeAllProfile')
+assert 'values[@"cuidIsolation"]' not in function(plugin,'randomizeAllProfile'), '总一键随机不得打开设备标识'
+assert 'bds_cuidLockInvalidate();' not in function(plugin,'randomizeAllProfile'), '总一键随机不得重建设备标识'
 assert 'BDSRandomIdentityValues()' in function(plugin,'randomizeAllProfile')
+assert '[values removeObjectForKey:@"cuid"]' in function(plugin,'randomizeAllProfile'), '总一键随机不得更换 CUID'
 def plugin_devices(text):
     body=function(text,'BDSDeviceProfiles')
     blocks=re.findall(r'@\{@"name":\s*@"[^"]+".*?@"disks":\s*@\[(.*?)\]\}',body,re.S)
@@ -162,7 +163,7 @@ for name in ['bds_my_stat','bds_my_lstat','bds_my_access','bds_my_fopen','bds_my
     assert strip_guards(plugin,name)==strip_guards(base,name),name
 for path in ['bdspoofer_config.plist','CraneManager/Info.plist','CraneManager/BDSCraneManager.entitlements','CraneManager/BDSCraneManager.libSandy.plist']:plistlib.loads((root/path).read_bytes())
 manager_info=plistlib.loads((root/'CraneManager/Info.plist').read_bytes())
-assert manager_info['CFBundleVersion']=='11.24.03' and manager_info['CFBundleShortVersionString']=='1.0.3-11.24.03'
+assert manager_info['CFBundleVersion']=='11.24.04' and manager_info['CFBundleShortVersionString']=='1.0.3-11.24.04'
 assert 'CPU iPhone OS ' in plugin and 'setCustomUserAgent:' in plugin
 assert 'if (hw.length && f.count > 3) f[3] = hw;' in plugin
 assert 'if (sv.length && f.count > 4) f[4] = sv;' in plugin
@@ -398,4 +399,4 @@ sync=function(plugin,'BDSBaiduScreenSyncValues')
 for bad in ['spoofBaiduTargetedModel','spoofBaiduTargetedSystem',
             'spoofBaiduTargetedPush','spoofBaiduTargeted"']:
     assert bad not in sync, bad
-print('PASS UI1.3 11.24.03: orange total random keeps the three separate random buttons, four rare actions are two rows, runtime switch honored by the cash blocker, X/M advanced-random parity, SE2 out of the random pool, boundary-matched dlopen paths, measured C-hook self-check, 9 baseline jailbreak functions unchanged')
+print('PASS UI1.3 11.24.04: orange total random keeps the three separate random buttons, four rare actions are two rows, runtime switch honored by the cash blocker, X/M advanced-random parity, SE2 out of the random pool, boundary-matched dlopen paths, measured C-hook self-check, 9 baseline jailbreak functions unchanged')

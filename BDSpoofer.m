@@ -4,6 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  11.24.04：设备标识总开关和五个子项默认保持关闭。总一键随机不打开、不重新生成。
 //  11.24.03：随机机型去掉 8、X、XR、XS、12 mini、13 mini、SE 第三代和 Air，补上 iPhone 18 Pro、18 Pro Max。
 //  11.24.02：橙色「总一键随机」放在一键基础上面。一次换基础参数、高级身份，并打开设备标识。
 //    红、绿、蓝三个一键随机仍单独可点。反关联项、诊断自检、恢复安全、设备标识排成两行。
@@ -714,6 +715,13 @@ static void loadConfig() {
         merged[@"blockStatCashTelemetry"] = @YES;
         merged[@"cashBlockDefault192"] = @YES;
         merged[@"configVersion"] = @192;
+        [merged writeToFile:p1 atomically:YES];
+    }
+    // 11.24.04：设备标识总开关和五个子项默认保持关闭。总一键不打开。已经打开过的，这次启动关掉一次。
+    if (![loaded[@"cuidOff112404"] boolValue]) {
+        merged[@"cuidIsolation"] = @NO;
+        for (NSString *slot in BDSCuidSlotKeys()) merged[BDSCuidChildKeyForSlot(slot)] = @NO;
+        merged[@"cuidOff112404"] = @YES;
         [merged writeToFile:p1 atomically:YES];
     }
     // 代理检测隐藏：不随机也开着。老配置里写成关的，补开一次并落盘。
@@ -1856,15 +1864,15 @@ static void bds_cuidPurgeMTJPasteboard(void) {
     }
 }
 
-// 某 slot 的子开关是否启用：cuidPrevious 跟随主 cuid；5 个子项读各自开关（未写默认全开）。
+// 某 slot 的子开关是否启用：cuidPrevious 跟随主 cuid；5 个子项没写过时默认关。
 static BOOL bds_cuidSlotChildActive(NSString *slot) {
     if ([slot isEqualToString:@"cuidPrevious"]) slot = @"cuid";
-    if (!slot.length) return YES;
+    if (!slot.length) return NO;
     static NSSet *known;
     static dispatch_once_t once;
     dispatch_once(&once, ^{ known = [NSSet setWithArray:BDSCuidSlotKeys()]; });
-    if (![known containsObject:slot]) return YES;
-    return cfgBool(BDSCuidChildKeyForSlot(slot), YES);
+    if (![known containsObject:slot]) return NO;
+    return cfgBool(BDSCuidChildKeyForSlot(slot), NO);
 }
 
 // 新容器首次启动（总开关开）：按子开关清空对应共享存储，让 SDK 自然重生。
@@ -1978,10 +1986,10 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
 // 自检面板：CUID 容器隔离状态（供 showDeviceIDProbe 调用）。
 static NSString *bds_cuidDiagnosticsString(void) {
     NSMutableString *m = [NSMutableString string];
-    [m appendString:@"\n========== 零、CUID 容器隔离（补丁 v11.24.03）=========="];
+    [m appendString:@"\n========== 零、CUID 容器隔离（补丁 v11.24.04）=========="];
     bds_cuidEnsureSlots();
     [m appendFormat:@"\nCUID隔离总开关: %@", cfgBool(@"cuidIsolation", NO) ? @"开 ★" : @"关（未隔离，仅透传）"];
-    // 5 个子开关状态（X 面板「设备标识(CUID)」控制；未写默认全开）
+    // 5 个子开关状态（设备标识页控制；没写过默认关）
     [m appendString:@"\n子项选择:"];
     for (NSString *slot in BDSCuidSlotKeys()) {
         [m appendFormat:@"\n  %@: %@", slot, bds_cuidSlotChildActive(slot) ? @"开" : @"关（透传）"];
@@ -5616,7 +5624,7 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 11.24.03";
+    page.title=@"卐解 11.24.04";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5800,17 +5808,15 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
         [values addEntriesFromDictionary:BDSBaiduSystemSyncValues(g_lastBasicSystem)];
     }
     [values addEntriesFromDictionary:BDSRandomIdentityValues()];
+    [values removeObjectForKey:@"cuid"];
     BDSMarkRandomModeRun(values, @"advanced");
-    values[@"cuidIsolation"] = @YES;
-    for (NSString *slot in BDSCuidSlotKeys()) values[BDSCuidChildKeyForSlot(slot)] = @YES;
     values[@"configVersion"] = @190;
     if (!saveConfigValues(values)) {
         [self presentMessage:@"配置文件写入失败，参数没有更换。" title:@"保存失败"];
         return;
     }
-    bds_cuidLockInvalidate();
     NSString *message = [NSString stringWithFormat:
-        @"已随机基础参数和高级身份，并打开设备标识。\n"
+        @"已随机基础参数和高级身份。设备标识保持关闭，CUID 没有换。\n"
          "高级里防越狱检测、Keychain、App Group、WebKit Cookie、自定义 User-Agent 保持关闭。\n"
          "请彻底关闭 App 后重新打开。\n\n"
          "机型：%@\n系统：%@ (%@)",
