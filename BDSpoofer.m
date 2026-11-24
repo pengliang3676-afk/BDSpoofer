@@ -4,6 +4,8 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  11.24.02：橙色「总一键随机」放在一键基础上面。一次换基础参数、高级身份，并打开设备标识。
+//    红、绿、蓝三个一键随机仍单独可点。反关联项、诊断自检、恢复安全、设备标识排成两行。
 //  11.24.01：设备标识(CUID) 开关放进极速自己的面板。注入 dylib 后直接打开，不用再装管理器 deb。
 //  10.27.04：CUID 隔离改为 X 面板单独控制。M 一键基础不再自动开 cuidIsolation（默认关、
 //    不删 CUID 锁）；X 面板新增「设备标识(CUID)」页面：一个总开关 + 5 个子开关
@@ -1975,7 +1977,7 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
 // 自检面板：CUID 容器隔离状态（供 showDeviceIDProbe 调用）。
 static NSString *bds_cuidDiagnosticsString(void) {
     NSMutableString *m = [NSMutableString string];
-    [m appendString:@"\n========== 零、CUID 容器隔离（补丁 v11.24.01）=========="];
+    [m appendString:@"\n========== 零、CUID 容器隔离（补丁 v11.24.02）=========="];
     bds_cuidEnsureSlots();
     [m appendFormat:@"\nCUID隔离总开关: %@", cfgBool(@"cuidIsolation", NO) ? @"开 ★" : @"关（未隔离，仅透传）"];
     // 5 个子开关状态（X 面板「设备标识(CUID)」控制；未写默认全开）
@@ -4676,6 +4678,7 @@ static const NSTimeInterval BDSButtonCollapseDelay = 10.0;
 - (void)editSystemVersion;
 - (void)editDeviceName;
 - (void)editIdentifiers;
+- (void)randomizeAllProfile;
 - (void)randomizeBasicProfile;
 - (void)randomizeAdvancedProfile;
 - (void)randomizeTargetedProfile;
@@ -5632,24 +5635,27 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 11.24.01";
+    page.title=@"卐解 11.24.02";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
-    NSArray *titles=@[@"一键随机整套基础参数",@"一键随机整套高级参数",@"一键随机定向指纹参数",@"反关联项",@"诊断自检",@"恢复安全",@"设备标识(CUID)",@"关闭"];
+    NSArray *titles=@[@"总一键随机",@"一键随机整套基础参数",@"一键随机整套高级参数",@"一键随机定向指纹参数",@"反关联项",@"诊断自检",@"恢复安全",@"设备标识",@"关闭"];
+    page.rowGroups=@[@[@0],@[@1],@[@2],@[@3],@[@4,@5],@[@6,@7],@[@8]];
     NSMutableArray *items=[NSMutableArray array];
     for(NSUInteger i=0;i<titles.count;i++) {
         NSMutableDictionary *item=[@{@"title":titles[i]} mutableCopy];
-        if(i<3) item[@"color"]=BDSRandomButtonColor(i);
+        if(i==0) item[@"color"]=[UIColor colorWithRed:0.92 green:0.42 blue:0.02 alpha:1];
+        else if(i<=3) item[@"color"]=BDSRandomButtonColor(i-1);
         item[@"action"]=[^{
-            if(i==2) { [self showBaiduTargetedSwitches]; return; }
-            if(i==3) { [self showAssociationSettings]; return; }
-            if(i==6) { [self showCuidSettings]; return; }
+            if(i==3) { [self showBaiduTargetedSwitches]; return; }
+            if(i==4) { [self showAssociationSettings]; return; }
+            if(i==7) { [self showCuidSettings]; return; }
             [weakPage dismissViewControllerAnimated:YES completion:^{
-                if(i==0) [self randomizeBasicProfile];
-                else if(i==1) [self randomizeAdvancedProfile];
-                else if(i==4) [self showSelfTest];
-                else if(i==5) [self showRestartNotice:saveConfigValues(BDSSafeSwitchValues())];
+                if(i==0) [self randomizeAllProfile];
+                else if(i==1) [self randomizeBasicProfile];
+                else if(i==2) [self randomizeAdvancedProfile];
+                else if(i==5) [self showSelfTest];
+                else if(i==6) [self showRestartNotice:saveConfigValues(BDSSafeSwitchValues())];
             }];
         } copy];
         [items addObject:item];
@@ -5786,6 +5792,49 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
         [self showRestartNotice:saveConfigValues(@{@"idfv": idfv, @"idfa": idfa})];
     }]];
     [presenter presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)randomizeAllProfile {
+    NSMutableDictionary *values = [BDSRandomBasicProfileValues() mutableCopy];
+    if (!values.count) {
+        [self presentMessage:@"没有找到可用的机型。" title:@"总一键随机失败"];
+        return;
+    }
+    NSArray<NSArray<NSDictionary *> *> *groups = BDSSettingGroups();
+    for (NSString *key in BDSFirstEnabledKeys(groups[0], 6)) values[key] = @YES;
+    for (NSString *key in BDSFirstEnabledKeys(groups[1], 3)) values[key] = @YES;
+    for (NSDictionary *item in groups[1]) {
+        if (![item[@"off"] boolValue] && !values[item[@"key"]]) values[item[@"key"]] = @NO;
+    }
+    for (NSString *key in BDSFirstEnabledKeys(groups[2], 13)) values[key] = @YES;
+    for (NSDictionary *item in groups[2]) {
+        if (![item[@"off"] boolValue] && !values[item[@"key"]]) values[item[@"key"]] = @NO;
+    }
+    values[@"spoofProxyDetection"] = @YES;
+    values[@"proxyHideDefaultOn"] = @YES;
+    if (g_lastBasicDevice) {
+        [values addEntriesFromDictionary:BDSBaiduScreenSyncValues(g_lastBasicDevice)];
+    }
+    if (g_lastBasicSystem) {
+        [values addEntriesFromDictionary:BDSBaiduSystemSyncValues(g_lastBasicSystem)];
+    }
+    [values addEntriesFromDictionary:BDSRandomIdentityValues()];
+    BDSMarkRandomModeRun(values, @"advanced");
+    values[@"cuidIsolation"] = @YES;
+    for (NSString *slot in BDSCuidSlotKeys()) values[BDSCuidChildKeyForSlot(slot)] = @YES;
+    values[@"configVersion"] = @190;
+    if (!saveConfigValues(values)) {
+        [self presentMessage:@"配置文件写入失败，参数没有更换。" title:@"保存失败"];
+        return;
+    }
+    bds_cuidLockInvalidate();
+    NSString *message = [NSString stringWithFormat:
+        @"已随机基础参数和高级身份，并打开设备标识。\n"
+         "高级里防越狱检测、Keychain、App Group、WebKit Cookie、自定义 User-Agent 保持关闭。\n"
+         "请彻底关闭 App 后重新打开。\n\n"
+         "机型：%@\n系统：%@ (%@)",
+        values[@"deviceProfileName"], values[@"systemVersion"], values[@"systemBuild"]];
+    [self presentMessage:message title:@"总一键随机已完成"];
 }
 
 - (void)randomizeBasicProfile {

@@ -10,6 +10,7 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
 
 @interface BDSActionPage : UITableViewController
 @property(nonatomic,copy) NSArray<NSDictionary *> *items;
+@property(nonatomic,copy) NSArray<NSArray<NSNumber *> *> *rowGroups;
 @property(nonatomic,copy) NSString *pageSummary;
 @property(nonatomic,copy) NSString *(^summaryProvider)(void);
 @end
@@ -28,8 +29,15 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
     [self.tableView reloadData];
 }
 - (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }
-- (BOOL)usesCompactActionRow { return self.items.count==7; }
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return [self usesCompactActionRow] ? 5 : self.items.count; }
+- (BOOL)usesCompactActionRow { return !self.rowGroups.count && self.items.count==7; }
+- (NSArray<NSArray<NSNumber *> *> *)resolvedRows {
+    if(self.rowGroups.count) return self.rowGroups;
+    if([self usesCompactActionRow]) return @[@[@0],@[@1],@[@2],@[@3,@4,@5],@[@6]];
+    NSMutableArray *rows=[NSMutableArray array];
+    for(NSUInteger i=0;i<self.items.count;i++) [rows addObject:@[@(i)]];
+    return rows;
+}
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return [self resolvedRows].count; }
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
     CGFloat textWidth=MAX(120, CGRectGetWidth(tableView.bounds)-68);
     CGRect bounds=[self.pageSummary ?: @"" boundingRectWithSize:CGSizeMake(textWidth,CGFLOAT_MAX)
@@ -60,13 +68,15 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
     UITableViewCell *cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
     cell.backgroundColor=UIColor.clearColor;
     cell.selectionStyle=UITableViewCellSelectionStyleNone;
-    if([self usesCompactActionRow] && indexPath.row==3) {
+    NSArray<NSNumber *> *group=[self resolvedRows][indexPath.row];
+    if(group.count>1) {
         UIStackView *row=[[UIStackView alloc] init];
         row.translatesAutoresizingMaskIntoConstraints=NO;
         row.axis=UILayoutConstraintAxisHorizontal;
         row.distribution=UIStackViewDistributionFillEqually;
         row.spacing=6;
-        for(NSUInteger i=3;i<=5;i++) {
+        for(NSNumber *index in group) {
+            NSUInteger i=index.unsignedIntegerValue;
             UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem];
             button.tag=i;
             button.backgroundColor=UIColor.secondarySystemGroupedBackgroundColor;
@@ -88,7 +98,7 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
             [row.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-5]]];
         return cell;
     }
-    NSUInteger itemIndex=([self usesCompactActionRow] && indexPath.row==4) ? 6 : indexPath.row;
+    NSUInteger itemIndex=group[0].unsignedIntegerValue;
     NSDictionary *item=self.items[itemIndex];
     UILabel *label=[[UILabel alloc] init];
     label.translatesAutoresizingMaskIntoConstraints=NO;
@@ -115,8 +125,9 @@ static UIColor *BDSRandomButtonColor(NSUInteger index) {
     if(action) action();
 }
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    if([self usesCompactActionRow] && indexPath.row==3) return;
-    NSUInteger itemIndex=([self usesCompactActionRow] && indexPath.row==4) ? 6 : indexPath.row;
+    NSArray<NSNumber *> *group=[self resolvedRows][indexPath.row];
+    if(group.count!=1) return;
+    NSUInteger itemIndex=group[0].unsignedIntegerValue;
     void (^action)(void)=self.items[itemIndex][@"action"];
     if(action) action();
 }
