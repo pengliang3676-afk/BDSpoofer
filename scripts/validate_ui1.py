@@ -236,7 +236,7 @@ assert 'BOOL rewriteUA = tg_ua_enabled();' in plugin
 assert 'static NSArray<NSString *> *BDSFirstEnabledKeys' in policy
 assert 'BDSFirstEnabledKeys(groups[1], 3)' in plugin
 assert 'BDSFirstEnabledKeys(groups[1], 3)' in manager
-assert 'if([item[@"off"] boolValue]) continue;' in policy
+assert 'if([item[@"off"] boolValue] || [item[@"pin"] boolValue]) continue;' in policy
 # 10.27.04：CUID 门控函数用总开关（不挂百度身份总开关），物理重置按子开关
 _creset=function(plugin,'bds_cuidResetIfNeeded')
 assert 'cfgBool(@"cuidIsolation"' in _creset and 'cfgBool(@"spoofBaiduSDK"' not in _creset
