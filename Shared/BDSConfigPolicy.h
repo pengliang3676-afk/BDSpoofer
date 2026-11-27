@@ -2,7 +2,7 @@
 
 static NSArray<NSArray<NSDictionary *> *> *BDSSettingGroups(void) {
     return @[
-        @[@{@"key":@"shareLogin",@"name":@"共用登录",@"note":@"默认开启。各容器共用百度登录。",@"pin":@YES},
+        @[@{@"key":@"shareLogin",@"name":@"共用登录",@"off":@YES,@"note":@"默认关闭。点总一键随机后打开。各容器共用百度登录。",@"pin":@YES},
           @{@"key":@"enabled",@"name":@"基础功能"},
           @{@"key":@"spoofAdvertisingIdentifiers",@"name":@"广告标识参数"},
           @{@"key":@"spoofProcessHardware",@"name":@"主机名与内存参数"},
@@ -131,8 +131,7 @@ static NSDictionary *BDSSafeSwitchValues(void) {
     // 恢复安全会关掉其它开关。代理检测隐藏保持开，不跟随机、也不跟这一键走。
     values[@"spoofProxyDetection"]=@YES;
     values[@"proxyHideDefaultOn"]=@YES;
-    values[@"shareLogin"]=@YES;
-    values[@"shareLoginDefaultOn"]=@YES;
+    values[@"shareLogin"]=@NO;
     return values;
 }
 // 老配置在 1.8.1 被写成关，只有一键基础才会再打开。这里补开一次。

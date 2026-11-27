@@ -4,6 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  11.28.02：共用登录仍在基础参数第一行，默认关。点总一键随机才打开。
 //  11.28.01：反关联设置的基础参数第一行增加「共用登录」，默认开。各容器读写同一套百度登录钥匙串。
 //  11.24.04：设备标识总开关和五个子项默认保持关闭。总一键随机不打开、不重新生成。
 //  11.24.03：随机机型去掉 8、X、XR、XS、12 mini、13 mini、SE 第三代和 Air，补上 iPhone 18 Pro、18 Pro Max。
@@ -318,7 +319,7 @@ static BOOL BDSCashTelemetrySwitchEnabled(void) {
 static BOOL BDSHasEnabledCHookFeature(void) {
     return cfgBool(@"spoofSysctl", NO) ||
            cfgBool(@"spoofKeychain", NO) ||
-           cfgBool(@"shareLogin", YES) ||
+           cfgBool(@"shareLogin", NO) ||
            cfgBool(@"bypassJailbreakDetect", NO) ||
            cfgBool(@"spoofWiFi", NO) ||
            cfgBool(@"spoofLocalIP", NO) ||
@@ -463,8 +464,7 @@ static void loadConfig() {
         // 其他开关保持关（用户策略）。cfgBool 默认值也兜底 YES，这里只是让 UI 显示开。
         g_config = @{@"blockLaunchTimeUpload": @YES,
                      @"blockStatCashTelemetry": @YES, @"cashBlockDefault192": @YES,
-                     @"spoofProxyDetection": @YES, @"proxyHideDefaultOn": @YES,
-                     @"shareLogin": @YES, @"shareLoginDefaultOn": @YES};
+                     @"spoofProxyDetection": @YES, @"proxyHideDefaultOn": @YES};
         bds_update_c_cache();
         return;
     }
@@ -727,10 +727,11 @@ static void loadConfig() {
         merged[@"cuidOff112404"] = @YES;
         [merged writeToFile:p1 atomically:YES];
     }
-    // 11.28.01：共用登录默认开。只强制一次，之后手动关掉仍然有效。
-    if (![loaded[@"shareLoginDefaultOn"] boolValue]) {
-        merged[@"shareLogin"] = @YES;
-        merged[@"shareLoginDefaultOn"] = @YES;
+    // 11.28.02：共用登录默认关。11.28.01 强制开过的，这次启动关掉一次。
+    // 之后点总一键随机会打开，手动再开也保持。
+    if (![loaded[@"shareLoginOff112802"] boolValue]) {
+        merged[@"shareLogin"] = @NO;
+        merged[@"shareLoginOff112802"] = @YES;
         [merged writeToFile:p1 atomically:YES];
     }
     // 代理检测隐藏：不随机也开着。老配置里写成关的，补开一次并落盘。
@@ -1995,7 +1996,7 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
 // 自检面板：CUID 容器隔离状态（供 showDeviceIDProbe 调用）。
 static NSString *bds_cuidDiagnosticsString(void) {
     NSMutableString *m = [NSMutableString string];
-    [m appendString:@"\n========== 零、CUID 容器隔离（补丁 v11.28.01）=========="];
+    [m appendString:@"\n========== 零、CUID 容器隔离（补丁 v11.28.02）=========="];
     bds_cuidEnsureSlots();
     [m appendFormat:@"\nCUID隔离总开关: %@", cfgBool(@"cuidIsolation", NO) ? @"开 ★" : @"关（未隔离，仅透传）"];
     // 5 个子开关状态（设备标识页控制；没写过默认关）
@@ -3615,7 +3616,7 @@ static BOOL bds_isShareLoginQuery(CFDictionaryRef query) {
 }
 
 static CFDictionaryRef bds_canonShareLoginQuery(CFDictionaryRef query) {
-    if (!cfgBool(@"shareLogin", YES) || !bds_isShareLoginQuery(query)) return query;
+    if (!cfgBool(@"shareLogin", NO) || !bds_isShareLoginQuery(query)) return query;
     CFStringRef canon = (__bridge CFStringRef)kBDSShareLoginGroup;
     CFTypeRef group = CFDictionaryGetValue(query, kSecAttrAccessGroup);
     if (group && CFGetTypeID(group) == CFStringGetTypeID() && CFEqual(group, canon)) return query;
@@ -5692,7 +5693,7 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 11.28.01";
+    page.title=@"卐解 11.28.02";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5869,6 +5870,7 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
     }
     values[@"spoofProxyDetection"] = @YES;
     values[@"proxyHideDefaultOn"] = @YES;
+    values[@"shareLogin"] = @YES;
     if (g_lastBasicDevice) {
         [values addEntriesFromDictionary:BDSBaiduScreenSyncValues(g_lastBasicDevice)];
     }
@@ -5884,7 +5886,7 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
         return;
     }
     NSString *message = [NSString stringWithFormat:
-        @"已随机基础参数和高级身份。设备标识保持关闭，CUID 没有换。\n"
+        @"已随机基础参数和高级身份。共用登录已打开。设备标识保持关闭，CUID 没有换。\n"
          "高级里防越狱检测、Keychain、App Group、WebKit Cookie、自定义 User-Agent 保持关闭。\n"
          "请彻底关闭 App 后重新打开。\n\n"
          "机型：%@\n系统：%@ (%@)",

@@ -7,7 +7,7 @@
 	<key>enabled</key>
 	<true/>
 	<key>shareLogin</key>
-	<true/>
+	<false/>
 	<key>spoofScreen</key>
 	<false/>
 	<key>spoofAdvertisingIdentifiers</key>
