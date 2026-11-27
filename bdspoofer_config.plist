@@ -6,6 +6,8 @@
 	<integer>189</integer>
 	<key>enabled</key>
 	<true/>
+	<key>shareLogin</key>
+	<true/>
 	<key>spoofScreen</key>
 	<false/>
 	<key>spoofAdvertisingIdentifiers</key>

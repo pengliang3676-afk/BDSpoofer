@@ -4,6 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  11.28.01：反关联设置的基础参数第一行增加「共用登录」，默认开。各容器读写同一套百度登录钥匙串。
 //  11.24.04：设备标识总开关和五个子项默认保持关闭。总一键随机不打开、不重新生成。
 //  11.24.03：随机机型去掉 8、X、XR、XS、12 mini、13 mini、SE 第三代和 Air，补上 iPhone 18 Pro、18 Pro Max。
 //  11.24.02：橙色「总一键随机」放在一键基础上面。一次换基础参数、高级身份，并打开设备标识。
@@ -317,6 +318,7 @@ static BOOL BDSCashTelemetrySwitchEnabled(void) {
 static BOOL BDSHasEnabledCHookFeature(void) {
     return cfgBool(@"spoofSysctl", NO) ||
            cfgBool(@"spoofKeychain", NO) ||
+           cfgBool(@"shareLogin", YES) ||
            cfgBool(@"bypassJailbreakDetect", NO) ||
            cfgBool(@"spoofWiFi", NO) ||
            cfgBool(@"spoofLocalIP", NO) ||
@@ -461,7 +463,8 @@ static void loadConfig() {
         // 其他开关保持关（用户策略）。cfgBool 默认值也兜底 YES，这里只是让 UI 显示开。
         g_config = @{@"blockLaunchTimeUpload": @YES,
                      @"blockStatCashTelemetry": @YES, @"cashBlockDefault192": @YES,
-                     @"spoofProxyDetection": @YES, @"proxyHideDefaultOn": @YES};
+                     @"spoofProxyDetection": @YES, @"proxyHideDefaultOn": @YES,
+                     @"shareLogin": @YES, @"shareLoginDefaultOn": @YES};
         bds_update_c_cache();
         return;
     }
@@ -722,6 +725,12 @@ static void loadConfig() {
         merged[@"cuidIsolation"] = @NO;
         for (NSString *slot in BDSCuidSlotKeys()) merged[BDSCuidChildKeyForSlot(slot)] = @NO;
         merged[@"cuidOff112404"] = @YES;
+        [merged writeToFile:p1 atomically:YES];
+    }
+    // 11.28.01：共用登录默认开。只强制一次，之后手动关掉仍然有效。
+    if (![loaded[@"shareLoginDefaultOn"] boolValue]) {
+        merged[@"shareLogin"] = @YES;
+        merged[@"shareLoginDefaultOn"] = @YES;
         [merged writeToFile:p1 atomically:YES];
     }
     // 代理检测隐藏：不随机也开着。老配置里写成关的，补开一次并落盘。
@@ -1986,7 +1995,7 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
 // 自检面板：CUID 容器隔离状态（供 showDeviceIDProbe 调用）。
 static NSString *bds_cuidDiagnosticsString(void) {
     NSMutableString *m = [NSMutableString string];
-    [m appendString:@"\n========== 零、CUID 容器隔离（补丁 v11.24.04）=========="];
+    [m appendString:@"\n========== 零、CUID 容器隔离（补丁 v11.28.01）=========="];
     bds_cuidEnsureSlots();
     [m appendFormat:@"\nCUID隔离总开关: %@", cfgBool(@"cuidIsolation", NO) ? @"开 ★" : @"关（未隔离，仅透传）"];
     // 5 个子开关状态（设备标识页控制；没写过默认关）
@@ -3591,6 +3600,32 @@ static BOOL bds_keychainValueContainsBaidu(id value) {
                                     options:NSCaseInsensitiveSearch].location != NSNotFound;
 }
 
+static NSString *const kBDSShareLoginGroup = @"B83JBVZ6M5.com.baidu.shareLoginAccount";
+
+static BOOL bds_isShareLoginQuery(CFDictionaryRef query) {
+    if (!query || CFGetTypeID(query) != CFDictionaryGetTypeID()) return NO;
+    CFTypeRef group = CFDictionaryGetValue(query, kSecAttrAccessGroup);
+    if (group && CFGetTypeID(group) == CFStringGetTypeID() &&
+        [(__bridge NSString *)group containsString:@"com.baidu.shareLoginAccount"]) return YES;
+    id svc = (__bridge id)CFDictionaryGetValue(query, kSecAttrService);
+    id acc = (__bridge id)CFDictionaryGetValue(query, kSecAttrAccount);
+    NSString *svcText = [svc isKindOfClass:NSString.class] ? svc : nil;
+    NSString *accText = [acc isKindOfClass:NSString.class] ? acc : nil;
+    return [svcText containsString:@"sapi_share_login"] || [accText containsString:@"sapi_share_login"];
+}
+
+static CFDictionaryRef bds_canonShareLoginQuery(CFDictionaryRef query) {
+    if (!cfgBool(@"shareLogin", YES) || !bds_isShareLoginQuery(query)) return query;
+    CFStringRef canon = (__bridge CFStringRef)kBDSShareLoginGroup;
+    CFTypeRef group = CFDictionaryGetValue(query, kSecAttrAccessGroup);
+    if (group && CFGetTypeID(group) == CFStringGetTypeID() && CFEqual(group, canon)) return query;
+    CFMutableDictionaryRef copy = CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, query);
+    CFDictionarySetValue(copy, kSecAttrAccessGroup, canon);
+    return copy;
+}
+
+static OSStatus (*orig_SecItemDelete)(CFDictionaryRef) = NULL;
+
 static OSStatus bds_my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
     // Keychain 是高级功能，不能再依赖基础总开关 enabled。
     if (!g_config || !cfgBool(@"spoofKeychain", NO) || !query) {
@@ -3598,7 +3633,10 @@ static OSStatus bds_my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *res
         if (!orig_SecItemCopyMatching) {
             orig_SecItemCopyMatching = (OSStatus (*)(CFDictionaryRef, CFTypeRef *))dlsym(RTLD_NEXT, "SecItemCopyMatching");
         }
-        return orig_SecItemCopyMatching ? orig_SecItemCopyMatching(query, result) : errSecUnimplemented;
+        CFDictionaryRef q2 = bds_canonShareLoginQuery(query);
+        OSStatus st = orig_SecItemCopyMatching ? orig_SecItemCopyMatching(q2, result) : errSecUnimplemented;
+        if (q2 != query) CFRelease(q2);
+        return st;
     }
 
     @autoreleasepool {
@@ -3624,7 +3662,34 @@ static OSStatus bds_my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *res
     if (!orig_SecItemCopyMatching) {
         orig_SecItemCopyMatching = (OSStatus (*)(CFDictionaryRef, CFTypeRef *))dlsym(RTLD_NEXT, "SecItemCopyMatching");
     }
-    return orig_SecItemCopyMatching ? orig_SecItemCopyMatching(query, result) : errSecUnimplemented;
+    CFDictionaryRef q2 = bds_canonShareLoginQuery(query);
+    OSStatus st = orig_SecItemCopyMatching ? orig_SecItemCopyMatching(q2, result) : errSecUnimplemented;
+    if (q2 != query) CFRelease(q2);
+    return st;
+}
+
+static OSStatus bds_share_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) {
+    CFDictionaryRef q2 = bds_canonShareLoginQuery(attributes);
+    if (!orig_SecItemAdd) orig_SecItemAdd = (OSStatus (*)(CFDictionaryRef, CFTypeRef *))dlsym(RTLD_NEXT, "SecItemAdd");
+    OSStatus st = orig_SecItemAdd ? orig_SecItemAdd(q2, result) : errSecUnimplemented;
+    if (q2 != attributes) CFRelease(q2);
+    return st;
+}
+
+static OSStatus bds_share_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributes) {
+    CFDictionaryRef q2 = bds_canonShareLoginQuery(query);
+    if (!orig_SecItemUpdate) orig_SecItemUpdate = (OSStatus (*)(CFDictionaryRef, CFDictionaryRef))dlsym(RTLD_NEXT, "SecItemUpdate");
+    OSStatus st = orig_SecItemUpdate ? orig_SecItemUpdate(q2, attributes) : errSecUnimplemented;
+    if (q2 != query) CFRelease(q2);
+    return st;
+}
+
+static OSStatus bds_share_SecItemDelete(CFDictionaryRef query) {
+    CFDictionaryRef q2 = bds_canonShareLoginQuery(query);
+    if (!orig_SecItemDelete) orig_SecItemDelete = (OSStatus (*)(CFDictionaryRef))dlsym(RTLD_NEXT, "SecItemDelete");
+    OSStatus st = orig_SecItemDelete ? orig_SecItemDelete(q2) : errSecUnimplemented;
+    if (q2 != query) CFRelease(q2);
+    return st;
 }
 
 #pragma mark - User-Agent Hook
@@ -4650,6 +4715,9 @@ static void installCHooks(void) {
         {"sysctlbyname", (void *)bds_my_sysctlbyname, (void **)&orig_sysctlbyname},
         {"uname", (void *)bds_my_uname, (void **)&orig_uname},
         {"SecItemCopyMatching", (void *)bds_my_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching},
+        {"SecItemAdd", (void *)bds_share_SecItemAdd, (void **)&orig_SecItemAdd},
+        {"SecItemUpdate", (void *)bds_share_SecItemUpdate, (void **)&orig_SecItemUpdate},
+        {"SecItemDelete", (void *)bds_share_SecItemDelete, (void **)&orig_SecItemDelete},
         {"_dyld_get_image_name", (void *)bds_my_dyld_get_image_name, (void **)&orig_dyld_get_image_name},
         {"stat", (void *)bds_my_stat, (void **)&orig_stat},
         {"lstat", (void *)bds_my_lstat, (void **)&orig_lstat},
@@ -5624,7 +5692,7 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 11.24.04";
+    page.title=@"卐解 11.28.01";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
