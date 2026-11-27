@@ -4,6 +4,7 @@
 //  注入方式：TrollFools
 //  不依赖 Substrate/ElleKit，使用 Objective-C runtime method_setImplementation
 //
+//  11.28.03：总一键随机打开共用登录后保持打开。重新进面板不再写回关闭。
 //  11.28.02：共用登录仍在基础参数第一行，默认关。点总一键随机才打开。
 //  11.28.01：反关联设置的基础参数第一行增加「共用登录」，默认开。各容器读写同一套百度登录钥匙串。
 //  11.24.04：设备标识总开关和五个子项默认保持关闭。总一键随机不打开、不重新生成。
@@ -727,13 +728,8 @@ static void loadConfig() {
         merged[@"cuidOff112404"] = @YES;
         [merged writeToFile:p1 atomically:YES];
     }
-    // 11.28.02：共用登录默认关。11.28.01 强制开过的，这次启动关掉一次。
-    // 之后点总一键随机会打开，手动再开也保持。
-    if (![loaded[@"shareLoginOff112802"] boolValue]) {
-        merged[@"shareLogin"] = @NO;
-        merged[@"shareLoginOff112802"] = @YES;
-        [merged writeToFile:p1 atomically:YES];
-    }
+    // 11.28.03：不再在读配置时把共用登录写回关闭。
+    // 11.28.02 关掉过一次的，保持现状；点总一键随机后写入的开，重新进面板也保留。
     // 代理检测隐藏：不随机也开着。老配置里写成关的，补开一次并落盘。
     if (![loaded[@"proxyHideDefaultOn"] boolValue]) {
         BDSKeepProxyHideOn(merged, loaded);
@@ -1996,7 +1992,7 @@ static NSString *new_baidu_string_sync(id self, SEL _cmd) {
 // 自检面板：CUID 容器隔离状态（供 showDeviceIDProbe 调用）。
 static NSString *bds_cuidDiagnosticsString(void) {
     NSMutableString *m = [NSMutableString string];
-    [m appendString:@"\n========== 零、CUID 容器隔离（补丁 v11.28.02）=========="];
+    [m appendString:@"\n========== 零、CUID 容器隔离（补丁 v11.28.03）=========="];
     bds_cuidEnsureSlots();
     [m appendFormat:@"\nCUID隔离总开关: %@", cfgBool(@"cuidIsolation", NO) ? @"开 ★" : @"关（未隔离，仅透传）"];
     // 5 个子开关状态（设备标识页控制；没写过默认关）
@@ -5693,7 +5689,7 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
     UIViewController *presenter=BDSTopController();
     if(!presenter || [presenter isKindOfClass:UIAlertController.class]) return;
     BDSActionPage *page=[[BDSActionPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    page.title=@"卐解 11.28.02";
+    page.title=@"卐解 11.28.03";
     page.pageSummary=BDSConfigSummary();
     page.summaryProvider=^NSString *{ return BDSConfigSummary(); };
     __weak BDSActionPage *weakPage=page;
@@ -5748,6 +5744,7 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
 }
 
 - (void)showAssociationSettings {
+    loadConfig();
     UIViewController *presenter=BDSTopController();
     BDSAssociationPage *page=[[BDSAssociationPage alloc] initWithStyle:UITableViewStyleInsetGrouped];
     page.configuration=g_config;
@@ -5870,7 +5867,6 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
     }
     values[@"spoofProxyDetection"] = @YES;
     values[@"proxyHideDefaultOn"] = @YES;
-    values[@"shareLogin"] = @YES;
     if (g_lastBasicDevice) {
         [values addEntriesFromDictionary:BDSBaiduScreenSyncValues(g_lastBasicDevice)];
     }
@@ -5880,6 +5876,8 @@ static void bds_probe_enum_instance_methods(NSMutableString *out, NSString *cls,
     [values addEntriesFromDictionary:BDSRandomIdentityValues()];
     [values removeObjectForKey:@"cuid"];
     BDSMarkRandomModeRun(values, @"advanced");
+    values[@"shareLogin"] = @YES;
+    values[@"shareLoginOff112802"] = @YES;
     values[@"configVersion"] = @190;
     if (!saveConfigValues(values)) {
         [self presentMessage:@"配置文件写入失败，参数没有更换。" title:@"保存失败"];
